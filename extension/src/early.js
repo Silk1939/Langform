@@ -89,7 +89,19 @@
       'ytm-pivot-bar-item-renderer:has([aria-label="YouTube Shorts"])',
       ".shorts-ausblenden-hidden",
     ];
-    return always.concat(items).join(",\n") + " {\n  display: none !important;\n}\n";
+    var hidden = always.concat(items).join(",\n") + " {\n  display: none !important;\n}\n";
+    // The watch player is not a Short. A later display:none would collapse it
+    // and leave the video stuck at its intrinsic size in the corner.
+    var player = [
+      "ytm-watch .player-container",
+      "ytm-watch .player-size",
+      "ytm-watch .html5-video-player",
+      "ytd-watch-flexy #movie_player",
+      "ytd-watch-flexy .html5-video-player",
+      "#movie_player",
+      ".html5-video-player",
+    ].join(",\n");
+    return hidden + player + " {\n  display: block !important;\n  visibility: visible !important;\n}\n";
   }
 
   function install(doc) {

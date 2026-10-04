@@ -165,21 +165,56 @@
       queued = [];
     }
 
+    function onWatchPage() {
+      return logic.normalizePath(win.location.pathname) === "/watch";
+    }
+
+    function isWatchUrl(url) {
+      return logic.classifyHref(url, win.location.href) === "watch";
+    }
+
+    // Shorts handling waits until the history call has returned. Doing it
+    // inside pushState/replaceState makes WebKit drop the new entry, so
+    // canGoBack stays false and the feed position is gone.
+    function scheduleNavigate() {
+      setTimeout(function () {
+        onNavigate(null);
+      }, 0);
+    }
+
     var historyHooked = false;
     function ensureHistory() {
       if (historyHooked || !win.history) return;
       historyHooked = true;
-      ["pushState", "replaceState"].forEach(function (name) {
-        var original = win.history[name];
-        if (typeof original !== "function") return;
-        win.history[name] = function () {
-          var result = original.apply(this, arguments);
-          onNavigate(null);
+      var nativePush = win.history.pushState;
+      var nativeReplace = win.history.replaceState;
+
+      if (typeof nativePush === "function") {
+        win.history.pushState = function () {
+          var result = nativePush.apply(win.history, arguments);
+          scheduleNavigate();
           return result;
         };
-      });
+      }
+      if (typeof nativeReplace === "function") {
+        win.history.replaceState = function (state, title, url) {
+          // Opening a watch page must be its own entry. YouTube often
+          // replaceState's that URL over the feed, which leaves canGoBack false.
+          var openingWatch =
+            arguments.length >= 3 &&
+            url != null &&
+            url !== "" &&
+            !onWatchPage() &&
+            isWatchUrl(url) &&
+            typeof nativePush === "function";
+          var write = openingWatch ? nativePush : nativeReplace;
+          var result = write.apply(win.history, arguments);
+          scheduleNavigate();
+          return result;
+        };
+      }
       win.addEventListener("popstate", function () {
-        onNavigate(null);
+        scheduleNavigate();
       });
       win.addEventListener("yt-navigate-start", function (event) {
         onNavigate(event && event.detail);

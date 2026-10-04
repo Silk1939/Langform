@@ -90,6 +90,7 @@ test("SPA-Navigation auf /shorts leitet um, solange der Schalter an ist", async 
   const ctx = boot({ url: "https://www.youtube.com/feed/subscriptions", enabled: true });
   await delay(20);
   ctx.win.history.pushState({}, "", "/shorts/neu");
+  await delay(20);
   assert.deepEqual(ctx.redirects, ["https://www.youtube.com/"]);
 });
 
@@ -113,6 +114,7 @@ test("aus: SPA und Navigationsereignis bleiben folgenlos", async function () {
   ctx.win.dispatchEvent(
     new ctx.win.CustomEvent("yt-navigate-start", { detail: { url: "/shorts/event2" } })
   );
+  await delay(20);
   assert.deepEqual(ctx.redirects, []);
 });
 
@@ -153,6 +155,24 @@ test("geänderter href auf einen Short blendet die Karte aus", async function ()
   await delay(20);
   assert.equal(card.isConnected, false);
   assert.equal(marked(card), true);
+});
+
+test("eine Watch-Seite ist ein History-Eintrag, Zurück bleibt offen", async function () {
+  const ctx = boot({ url: "https://m.youtube.com/", enabled: true });
+  await delay(20);
+  const before = ctx.win.history.length;
+  ctx.win.history.replaceState({ scroll: 480 }, "", "/watch?v=abcdefghijk");
+  assert.equal(ctx.win.location.pathname, "/watch");
+  assert.equal(ctx.win.history.length, before + 1);
+  const onWatch = ctx.win.history.length;
+  ctx.win.history.replaceState({ t: 4 }, "", "/watch?v=abcdefghijk&t=4");
+  assert.equal(ctx.win.history.length, onWatch);
+  ctx.win.history.pushState({ next: 1 }, "", "/watch?v=bbcdefghijk");
+  assert.equal(ctx.win.history.length, onWatch + 1);
+  const redirects = ctx.redirects.length;
+  ctx.win.dispatchEvent(new ctx.win.PopStateEvent("popstate", { state: { scroll: 480 } }));
+  await delay(30);
+  assert.equal(ctx.redirects.length, redirects);
 });
 
 test("während des Scrollens bleibt die Karte, danach verschwindet sie", async function () {

@@ -32,7 +32,13 @@ Am 4. Oktober 2026 habe ich die YouTube-Anmeldung per HTTP abgefragt, einmal mit
 
 Beide Antworten waren HTTP 200, Titel „YouTube“, ohne `disallowed_useragent` und ohne den Satz zur unsicheren App. Der Unterschied lag in den Kopfzeilen. Bei der WebView-Kennung war `object-src 'none'`, und die zusätzliche `script-src`-Liste für `apis.google.com`, `ssl.gstatic.com` und `www.google.com` fehlte. Bei der Safari-Kennung war `object-src 'self'`, und diese Liste war da. Die Ablehnungsseite entsteht oft erst im echten WKWebView, nachdem man auf Anmelden tippt. Dieser Rechner ist kein iPhone, die Ansicht selbst lief hier nicht.
 
-Die App startet mit der normalen WebView-Kennung. Erscheint die Ablehnung (`disallowed_useragent`, „möglicherweise nicht sicher“, „may not be secure“, „Couldn't sign you in“, „Anmeldung nicht möglich“, „secure browsers policy“ und die verwandten Sätze, und zwar auf `accounts.google.com` oder `accounts.youtube.com`), setzt sie die Safari-Kennung von oben, merkt sich das auf dem Gerät und öffnet die YouTube-Anmeldung erneut. Eine zweite Ablehnung bleibt stehen, damit man sie sieht. Spätere Starts nutzen die Safari-Kennung sofort und öffnen wieder `https://m.youtube.com/`.
+Die App setzt von Anfang an die Safari-Kennung von oben, damit YouTube die mobile Seite zeichnet und nicht eine Desktop-Seite in die Handybreite quetscht. Erscheint die Ablehnung trotzdem (`disallowed_useragent`, „möglicherweise nicht sicher“, „may not be secure“, „Couldn't sign you in“, „Anmeldung nicht möglich“, „secure browsers policy“ und die verwandten Sätze, und zwar auf `accounts.google.com` oder `accounts.youtube.com`), bleibt die Safari-Kennung und die Anmeldung wird einmal neu geöffnet. Eine zweite Ablehnung bleibt stehen, damit man sie sieht.
+
+## Zurück und der Player
+
+Wischen vom linken Rand geht zurück, solange es einen History-Eintrag gibt. Ein kleiner Knopf **Zurück** oben links macht dasselbe, wenn die Wischgeste nicht greift. Er liegt nicht als Leiste über YouTubes eigener Navigation. Ein normales `/watch` ist ein eigener Eintrag, auch wenn YouTube es mit `replaceState` über die Liste legt. Zurück landet wieder auf der vorherigen YouTube-Seite, an der alten Scrollposition.
+
+Der Player ist auf der Watch-Seite die volle Breite, 16:9, ohne Abstand an den Seiten. Das Video füllt diese Fläche, es bleibt kein zweites kleines Video in der Ecke. Die Shorts-Regeln blenden den Hauptplayer nicht aus. Die Ansicht geht unter Statusleiste und Home-Indikator, wie mobiles Safari mit `viewport-fit=cover`. YouTube setzt den Abstand selbst.
 
 ## Shorts
 
