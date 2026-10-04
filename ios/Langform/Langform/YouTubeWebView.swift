@@ -4,6 +4,7 @@ import WebKit
 struct YouTubeWebView: UIViewRepresentable {
     @Binding var unreachable: Bool
     @Binding var canGoBack: Bool
+    @Binding var watchPage: Bool
     var reloadToken: Int
     var goBackToken: Int
 
@@ -15,6 +16,15 @@ struct YouTubeWebView: UIViewRepresentable {
     /// The frozen OS token is 18_7; Version/26.6 is the Safari release.
     static let safariUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Mobile/15E148 Safari/604.1"
     static let safariPreferenceKey = "langform.preferSafariUserAgent"
+
+    /// Watch pages already draw YouTube’s own back chevron in the player.
+    static func isWatchPage(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        let host = url.host?.lowercased() ?? ""
+        let youtube = host == "youtube.com" || host == "www.youtube.com" || host == "m.youtube.com"
+        guard youtube else { return false }
+        return url.path == "/watch" || url.path.hasPrefix("/watch/")
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -55,6 +65,7 @@ struct YouTubeWebView: UIViewRepresentable {
         #endif
         context.coordinator.onUnreachable = { unreachable = $0 }
         context.coordinator.onCanGoBack = { canGoBack = $0 }
+        context.coordinator.onWatchPage = { watchPage = $0 }
         context.coordinator.attach(webView)
         webView.load(URLRequest(url: Self.startURL))
         return webView
@@ -63,6 +74,7 @@ struct YouTubeWebView: UIViewRepresentable {
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.onUnreachable = { unreachable = $0 }
         context.coordinator.onCanGoBack = { canGoBack = $0 }
+        context.coordinator.onWatchPage = { watchPage = $0 }
         webView.allowsBackForwardNavigationGestures = true
         if webView.customUserAgent != Self.safariUserAgent {
             webView.customUserAgent = Self.safariUserAgent
@@ -88,17 +100,25 @@ struct YouTubeWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var onUnreachable: ((Bool) -> Void)?
         var onCanGoBack: ((Bool) -> Void)?
+        var onWatchPage: ((Bool) -> Void)?
         var reloadToken = 0
         var goBackToken = 0
         private var triedFallback = false
         private var switchingAgent = false
         private var canGoBackObservation: NSKeyValueObservation?
+        private var urlObservation: NSKeyValueObservation?
 
         func attach(_ webView: WKWebView) {
             UserDefaults.standard.set(true, forKey: YouTubeWebView.safariPreferenceKey)
             canGoBackObservation = webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] webView, _ in
                 DispatchQueue.main.async {
                     self?.onCanGoBack?(webView.canGoBack)
+                }
+            }
+            urlObservation = webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
+                let watch = YouTubeWebView.isWatchPage(webView.url)
+                DispatchQueue.main.async {
+                    self?.onWatchPage?(watch)
                 }
             }
         }
@@ -135,6 +155,7 @@ struct YouTubeWebView: UIViewRepresentable {
             switchingAgent = false
             onUnreachable?(false)
             onCanGoBack?(webView.canGoBack)
+            onWatchPage?(YouTubeWebView.isWatchPage(webView.url))
             considerUserAgentFallback(webView)
         }
 

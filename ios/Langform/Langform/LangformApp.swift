@@ -12,19 +12,21 @@ struct LangformApp: App {
 struct LangformRoot: View {
     @State private var unreachable = false
     @State private var canGoBack = false
+    @State private var watchPage = false
     @State private var reloadToken = 0
     @State private var goBackToken = 0
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack(alignment: .bottomLeading) {
             YouTubeWebView(
                 unreachable: $unreachable,
                 canGoBack: $canGoBack,
+                watchPage: $watchPage,
                 reloadToken: reloadToken,
                 goBackToken: goBackToken
             )
             .ignoresSafeArea()
-            if canGoBack && !unreachable {
+            if canGoBack && !watchPage && !unreachable {
                 Button {
                     goBackToken += 1
                 } label: {
@@ -35,8 +37,8 @@ struct LangformRoot: View {
                         .background(Color.black.opacity(0.55), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .padding(.leading, 10)
-                .padding(.top, 6)
+                .padding(.leading, 12)
+                .padding(.bottom, 68)
                 .accessibilityLabel("Zurück")
             }
             if unreachable {

@@ -163,5 +163,5 @@ test("CSS trifft Desktop- und Mobil-Hooks", function () {
   assert.match(css, /m\.youtube\.com\/shorts/);
   assert.doesNotMatch(css, /a\[href\^="\/shorts"\]/);
   assert.match(css, /#description a/);
-  assert.match(css, /#movie_player,\n\.html5-video-player \{\n  display: block !important;/);
+  assert.doesNotMatch(css, /movie_player|html5-video-player|player-container|object-fit/);
 });

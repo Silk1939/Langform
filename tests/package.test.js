@@ -47,6 +47,19 @@ test("Popup und README sprechen Deutsch und nennen die Grenzen", function () {
   assert.match(readme, /Nicht signierte Erweiterungen erlauben/);
 });
 
+test("die App setzt kein eigenes Layout auf den YouTube-Player", function () {
+  const frame = fs.readFileSync(path.join(root, "ios/Langform/Langform/PlayerFrame.js"), "utf8");
+  assert.doesNotMatch(frame, /object-fit|player-container|movie_player|html5-video-player/);
+  assert.doesNotMatch(frame, /(?:width|height|position|display)\s*:/);
+  const app = fs.readFileSync(path.join(root, "ios/Langform/Langform/LangformApp.swift"), "utf8");
+  assert.match(app, /watchPage/);
+  assert.doesNotMatch(app, /topLeading/);
+  assert.match(app, /bottomLeading/);
+  const web = fs.readFileSync(path.join(root, "ios/Langform/Langform/YouTubeWebView.swift"), "utf8");
+  assert.match(web, /allowsBackForwardNavigationGestures = true/);
+  assert.match(web, /isWatchPage/);
+});
+
 test("Konverter-Skript ist gültiges Bash und zielt auf Mac und iPhone", function () {
   const script = path.join(root, "scripts/convert-safari.sh");
   execFileSync("bash", ["-n", script], { stdio: "pipe" });

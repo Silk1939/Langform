@@ -36,9 +36,9 @@ Die App setzt von Anfang an die Safari-Kennung von oben, damit YouTube die mobil
 
 ## Zurück und der Player
 
-Wischen vom linken Rand geht zurück, solange es einen History-Eintrag gibt. Ein kleiner Knopf **Zurück** oben links macht dasselbe, wenn die Wischgeste nicht greift. Er liegt nicht als Leiste über YouTubes eigener Navigation. Ein normales `/watch` ist ein eigener Eintrag, auch wenn YouTube es mit `replaceState` über die Liste legt. Zurück landet wieder auf der vorherigen YouTube-Seite, an der alten Scrollposition.
+Wischen vom linken Rand geht zurück, solange es einen History-Eintrag gibt. Auf einer Watch-Seite zeigt YouTube selbst den Zurück-Pfeil im Player, dort legt die App keinen eigenen Knopf darüber und lässt das Zeichen oben links in Ruhe. Auf anderen Seiten, wenn die Wischgeste nicht reicht, sitzt ein kleiner Knopf **Zurück** unten links, über der Leiste, nicht auf dem Logo. Ein normales `/watch` ist ein eigener Eintrag, auch wenn YouTube es mit `replaceState` über die Liste legt. Zurück landet wieder auf der vorherigen YouTube-Seite, an der alten Scrollposition.
 
-Der Player ist auf der Watch-Seite die volle Breite, 16:9, ohne Abstand an den Seiten. Das Video füllt diese Fläche, es bleibt kein zweites kleines Video in der Ecke. Die Shorts-Regeln blenden den Hauptplayer nicht aus. Die Ansicht geht unter Statusleiste und Home-Indikator, wie mobiles Safari mit `viewport-fit=cover`. YouTube setzt den Abstand selbst.
+Der Player bleibt YouTubes eigener Player. Die App setzt keine Breite, Höhe, Position oder `object-fit` auf das Video oder den Player. Die Ansicht geht unter Statusleiste und Home-Indikator, wie mobiles Safari mit `viewport-fit=cover`. YouTube setzt den Abstand selbst.
 
 ## Shorts
 
