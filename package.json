@@ -1,0 +1,12 @@
+{
+  "name": "shorts-ausblenden",
+  "version": "1.0.0",
+  "private": true,
+  "description": "YouTube Shorts im Browser ausblenden",
+  "scripts": {
+    "test": "node --test tests"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

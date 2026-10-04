@@ -1,0 +1,174 @@
+:root {
+  color-scheme: dark;
+  --bg: #16130f;
+  --card: #241f1a;
+  --line: #3c342c;
+  --ink: #f6f1e7;
+  --muted: #b7ab9a;
+  --accent: #e23d2b;
+  --accent-ink: #ffd7d1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 320px;
+  max-width: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.4 "Avenir Next", "Segoe UI", system-ui, sans-serif;
+}
+
+main {
+  padding: 16px 16px 14px;
+}
+
+header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+h1,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+header p {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mark {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border-radius: 11px;
+  background: #2c261f;
+  box-shadow: inset 0 0 0 1px #4a4036;
+}
+
+.mark::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 7px;
+  width: 12px;
+  height: 24px;
+  border-radius: 3px;
+  background: var(--ink);
+}
+
+.mark::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 17px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  transform: rotate(-36deg);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  cursor: pointer;
+}
+
+.row-title {
+  display: block;
+  font-weight: 650;
+}
+
+.row-status {
+  display: block;
+  margin-top: 2px;
+  color: var(--accent-ink);
+  font-size: 12px;
+}
+
+body[data-on="0"] .row-status {
+  color: var(--muted);
+}
+
+input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 46px;
+  height: 28px;
+  margin: 0;
+  border: 1px solid #5c5348;
+  border-radius: 999px;
+  background: #3a342c;
+  position: relative;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform 160ms ease;
+}
+
+input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+input[type="checkbox"]:checked::after {
+  transform: translateX(18px);
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.hint,
+.note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.hint {
+  margin-top: 12px;
+}
+
+.note {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  input[type="checkbox"]::after {
+    transition: none;
+  }
+}

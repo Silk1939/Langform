@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shorts ausblenden</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body data-on="1">
+    <main>
+      <header>
+        <span class="mark" aria-hidden="true"></span>
+        <div>
+          <h1>Shorts ausblenden</h1>
+          <p>YouTube im Browser</p>
+        </div>
+      </header>
+      <label class="row">
+        <span class="row-text">
+          <span class="row-title">Shorts blockieren</span>
+          <span class="row-status" id="status">Aktiv</span>
+        </span>
+        <input id="toggle" type="checkbox" role="switch" checked />
+      </label>
+      <p class="hint">
+        Regale, Suche, Seitenleiste und verwandte Videos verschwinden. Wer eine
+        Shorts-Adresse öffnet, landet auf der Startseite.
+      </p>
+      <p class="note">Gilt nur in diesem Browser, nicht in der YouTube-App.</p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
