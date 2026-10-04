@@ -17,7 +17,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXT="$ROOT/extension"
 OUT="$ROOT/safari"
 
-# Weder --ios-only noch --macos-only: ein Projekt für Mac und iPhone.
+# Kein Plattform-Filter: ein Projekt für Mac und iPhone.
 xcrun safari-web-extension-converter "$EXT" \
   --project-location "$OUT" \
   --app-name "Shorts ausblenden" \

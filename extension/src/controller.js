@@ -20,6 +20,8 @@
     };
 
     var enabled = false;
+    // Redirect only after extension storage answers. A stale on-flag in
+    // page storage must not send someone away after the switch is off.
     var confirmed = false;
     var observer = null;
     var queued = [];
@@ -72,6 +74,7 @@
         queued = [];
         return;
       }
+      // SPA navigations mutate the DOM even when pushState stays in the page world.
       if (logic.isShortsPath(win.location.pathname)) {
         queued = [];
         if (confirmed) goHome(win.location.pathname);

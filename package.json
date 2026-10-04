@@ -4,7 +4,7 @@
   "private": true,
   "description": "YouTube Shorts im Browser ausblenden",
   "scripts": {
-    "test": "node --test tests"
+    "test": "node --test tests/*.test.js"
   },
   "devDependencies": {
     "jsdom": "^26.1.0"
