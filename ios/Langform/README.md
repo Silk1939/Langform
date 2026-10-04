@@ -44,7 +44,7 @@ Das Stylesheet blendet Shorts aus, bevor sie sichtbar werden. Die Skripte nehmen
 
 ## Kurzfassung
 
-Auf der Watch-Seite steht unter den Videodaten eine Kurzfassung auf Deutsch. Auf Startseite und in Feeds hat jedes lange Video einen Knopf **Kurzfassung**, der die Wiedergabe nicht startet. Der Text kommt aus den Untertiteln von YouTube. Ist die Spur schon Deutsch, wird sie genommen, eine von Hand geschriebene vor der automatischen. Sonst bittet die Seite YouTube um die Übersetzung nach Deutsch. Das Video wird nicht heruntergeladen. Ohne Untertitel steht: „Für dieses Video gibt es keine Untertitel.“ Die Kurzfassung sagt, worum es geht, nennt ein paar Punkte und das Ende. Sie liegt im Seitenfluss, mit hellem Grund, und bleibt nicht über dem Player liegen.
+Auf der Watch-Seite, auf der Startseite und in Playlists hat jedes lange Video einen Knopf **Kurzfassung** unter dem Titel. Er startet die Wiedergabe nicht und sitzt nicht in der Kopfzeile neben „Alle abspielen“ oder „Zufallsmix“. Der Text kommt aus den Untertiteln von YouTube, aus der signierten Spur im Player der Seite. Ist die Spur schon Deutsch, wird sie genommen, eine von Hand geschriebene vor der automatischen. Sonst bittet die Seite YouTube um die Übersetzung nach Deutsch. Das Video wird nicht heruntergeladen. Ohne Untertitel steht: „Für dieses Video gibt es keine Untertitel.“ Die Kurzfassung sagt, worum es geht, nennt ein paar Punkte und das Ende. Sie öffnet sich als dunkles Blatt über der Seite, mit **Schließen**, und wird nicht zu einer Zelle in der Liste.
 
 ## Was die App nicht tut
 
