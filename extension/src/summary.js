@@ -50,7 +50,69 @@
     return parts.join("").replace(/\s+/g, " ").trim();
   }
 
-  function captionUrl(track, translate) {
+  function decodeEntities(value) {
+    var text = String(value || "");
+    for (var pass = 0; pass < 2; pass++) {
+      var next = text
+        .replace(/<br\s*\/?>/gi, " ")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&apos;|&#39;/gi, "'")
+        .replace(/&#(\d+);/g, function (_, n) {
+          return String.fromCharCode(Number(n));
+        })
+        .replace(/&#x([0-9a-f]+);/gi, function (_, n) {
+          return String.fromCharCode(parseInt(n, 16));
+        });
+      if (next === text) break;
+      text = next;
+    }
+    return text;
+  }
+
+  function textFromTags(xml, tag) {
+    var parts = [];
+    var re = new RegExp("<" + tag + "\\b[^>]*>([\\s\\S]*?)</" + tag + ">", "gi");
+    var match;
+    var found = false;
+    while ((match = re.exec(xml))) {
+      found = true;
+      parts.push(decodeEntities(match[1]));
+      parts.push(" ");
+    }
+    if (!found) return "";
+    return parts.join("").replace(/\s+/g, " ").trim();
+  }
+
+  function textFromCaptions(raw) {
+    var source = String(raw || "")
+      .replace(/^\uFEFF/, "")
+      .trim();
+    if (!source) return "";
+    if (source.indexOf(")]}'") === 0) source = source.replace(/^\)\]\}'\s*/, "");
+    var fromJson = "";
+    if (source.charAt(0) === "{" || source.charAt(0) === "[") {
+      try {
+        fromJson = textFromJson3(JSON.parse(source));
+      } catch (err) {
+        fromJson = "";
+      }
+      if (fromJson) return fromJson;
+    }
+    if (source.indexOf("<") !== -1) {
+      var classic = textFromTags(source, "text");
+      if (classic) return classic;
+      var srv3 = textFromTags(source, "p");
+      if (srv3) return srv3;
+    }
+    return fromJson || "";
+  }
+
+  function captionUrl(track, translate, fmt) {
     if (!track || !track.baseUrl) return null;
     var url;
     try {
@@ -60,35 +122,66 @@
     }
     if (!hosts[url.hostname] || url.pathname.indexOf("/api/timedtext") !== 0) return null;
     if (url.hostname.indexOf("googlevideo") !== -1) return null;
-    url.searchParams.set("fmt", "json3");
+    if (fmt) url.searchParams.set("fmt", fmt);
     if (translate) url.searchParams.set("tlang", "de");
     var href = url.toString();
     if (href.indexOf("googlevideo") !== -1) return null;
     return href;
   }
 
-  function chooseTrack(tracks, translations) {
-    var list = tracks || [];
-    var german = list.filter(function (track) {
-      return track && track.languageCode === "de";
-    });
-    var manualGerman = german.filter(function (track) {
-      return track.kind !== "asr";
-    });
-    if (manualGerman.length) return { track: manualGerman[0], translate: false };
-    if (german.length) return { track: german[0], translate: false };
-    var manual = list.filter(function (track) {
-      return track && track.kind !== "asr";
-    });
-    var base = manual[0] || list[0];
-    if (!base) return null;
-    var canTranslate =
+  function timedtextUrls(track, translate) {
+    var first = captionUrl(track, translate);
+    if (!first) return [];
+    var second = captionUrl(track, translate, "json3");
+    if (!second || second === first) return [first];
+    return [first, second];
+  }
+
+  function isGerman(code) {
+    var value = String(code || "").toLowerCase();
+    return value === "de" || value.indexOf("de-") === 0;
+  }
+
+  function canTranslateToGerman(translations) {
+    return (
       !translations ||
       !translations.length ||
       translations.some(function (item) {
-        return item && item.languageCode === "de";
-      });
-    return { track: base, translate: !!canTranslate };
+        return item && isGerman(item.languageCode);
+      })
+    );
+  }
+
+  function rankTracks(tracks, translations) {
+    var list = (tracks || []).filter(function (track) {
+      return track && track.baseUrl;
+    });
+    var germanManual = [];
+    var germanAsr = [];
+    var otherManual = [];
+    var otherAsr = [];
+    list.forEach(function (track) {
+      var german = isGerman(track.languageCode);
+      var asr = track.kind === "asr";
+      if (german && !asr) germanManual.push(track);
+      else if (german) germanAsr.push(track);
+      else if (!asr) otherManual.push(track);
+      else otherAsr.push(track);
+    });
+    var translate = canTranslateToGerman(translations);
+    var ordered = [];
+    germanManual.concat(germanAsr).forEach(function (track) {
+      ordered.push({ track: track, translate: false });
+    });
+    otherManual.concat(otherAsr).slice(0, 2).forEach(function (track) {
+      ordered.push({ track: track, translate: !!translate });
+    });
+    return ordered;
+  }
+
+  function chooseTrack(tracks, translations) {
+    var ranked = rankTracks(tracks, translations);
+    return ranked.length ? ranked[0] : null;
   }
 
   function splitSentences(text) {
@@ -238,7 +331,7 @@
     return !!(player && player.videoDetails && player.videoDetails.videoId === videoId);
   }
 
-  function watchUrl(videoId, pageUrl) {
+  function pageHost(pageUrl) {
     var host = "www.youtube.com";
     try {
       host = new URL(pageUrl).hostname;
@@ -246,7 +339,73 @@
       host = "www.youtube.com";
     }
     if (!hosts[host]) host = "www.youtube.com";
-    return "https://" + host + "/watch?v=" + encodeURIComponent(videoId) + "&hl=de";
+    return host;
+  }
+
+  function watchUrl(videoId, pageUrl) {
+    return "https://" + pageHost(pageUrl) + "/watch?v=" + encodeURIComponent(videoId) + "&hl=de";
+  }
+
+  function playerEndpoint(pageUrl, apiKey) {
+    return (
+      "https://" +
+      pageHost(pageUrl) +
+      "/youtubei/v1/player?prettyPrint=false&key=" +
+      encodeURIComponent(apiKey)
+    );
+  }
+
+  function configValue(ytcfg, name) {
+    if (!ytcfg) return null;
+    if (typeof ytcfg.get === "function") {
+      try {
+        var viaGet = ytcfg.get(name);
+        if (viaGet != null && viaGet !== "") return viaGet;
+      } catch (err) {
+        /* the page config can throw while it is still booting */
+      }
+    }
+    if (ytcfg.data_ && ytcfg.data_[name] != null && ytcfg.data_[name] !== "") return ytcfg.data_[name];
+    if (ytcfg[name] != null && ytcfg[name] !== "") return ytcfg[name];
+    return null;
+  }
+
+  function readConfig(ytcfg) {
+    var key = configValue(ytcfg, "INNERTUBE_API_KEY");
+    var context = configValue(ytcfg, "INNERTUBE_CONTEXT");
+    if (!key || !context || !context.client) return null;
+    return { key: String(key), context: context, sts: configValue(ytcfg, "STS") };
+  }
+
+  function webClient(context) {
+    var source = (context && context.client) || {};
+    var client = {};
+    for (var key in source) {
+      if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+      // This block makes YouTube sign the caption URL with exp=xpe, and that URL returns an empty body.
+      if (key === "configInfo") continue;
+      client[key] = source[key];
+    }
+    if (client.clientName !== "WEB" && client.clientName !== "MWEB") client.clientName = "WEB";
+    return client;
+  }
+
+  function playerBody(videoId, config) {
+    var client = webClient(config.context);
+    var context = {};
+    for (var key in config.context) {
+      if (Object.prototype.hasOwnProperty.call(config.context, key)) context[key] = config.context[key];
+    }
+    context.client = client;
+    var body = {
+      context: context,
+      videoId: videoId,
+      contentCheckOk: true,
+      racyCheckOk: true,
+    };
+    var sts = Number(config.sts);
+    if (sts) body.playbackContext = { contentPlaybackContext: { signatureTimestamp: sts } };
+    return body;
   }
 
   function rowWatchHref(card, base) {
@@ -290,42 +449,115 @@
     return clockSeconds(badge.textContent || "");
   }
 
-  async function loadSummary(videoId, env) {
-    var player = env && env.player;
-    var fetchText = env && env.fetchText;
-    if (!playerMatches(player, videoId)) {
-      if (!fetchText) return { message: FAILED };
-      var page;
-      try {
-        page = await fetchText(watchUrl(videoId, env.pageUrl));
-      } catch (err) {
-        return { message: FAILED };
-      }
-      player = extractPlayer(page, videoId);
+  async function requestPlayer(videoId, env, config) {
+    var client = webClient(config.context);
+    var headers = { "Content-Type": "application/json" };
+    headers["X-YouTube-Client-Name"] = client.clientName === "MWEB" ? "2" : "1";
+    if (client.clientVersion) headers["X-YouTube-Client-Version"] = String(client.clientVersion);
+    if (client.visitorData) headers["X-Goog-Visitor-Id"] = String(client.visitorData);
+    var raw = await env.fetchText(playerEndpoint(env.pageUrl, config.key), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify(playerBody(videoId, config)),
+    });
+    var parsed = null;
+    try {
+      parsed = JSON.parse(String(raw || ""));
+    } catch (err) {
+      return null;
     }
+    if (!parsed || !tracksOf(parsed).tracks.length) return null;
+    var id = parsed.videoDetails && parsed.videoDetails.videoId;
+    if (id && id !== videoId) return null;
+    return parsed;
+  }
+
+  async function readTracks(player, fetchText) {
     var found = tracksOf(player);
-    var chosen = chooseTrack(found.tracks, found.translations);
-    if (!chosen) return { message: NO_CAPTIONS };
-    var url = captionUrl(chosen.track, chosen.translate);
-    if (!url) return { message: NO_CAPTIONS };
-    if (!fetchText) return { message: FAILED };
-    var raw;
-    try {
-      raw = await fetchText(url);
-    } catch (err2) {
-      return { message: FAILED };
+    var attempts = rankTracks(found.tracks, found.translations);
+    if (!attempts.length) return { kind: "none" };
+    if (!fetchText) return { kind: "error" };
+    var empty = false;
+    var error = false;
+    for (var i = 0; i < attempts.length; i++) {
+      var urls = timedtextUrls(attempts[i].track, attempts[i].translate);
+      for (var u = 0; u < urls.length; u++) {
+        var raw;
+        try {
+          raw = await fetchText(urls[u]);
+        } catch (err) {
+          error = true;
+          continue;
+        }
+        if (raw == null || String(raw).trim() === "") {
+          empty = true;
+          continue;
+        }
+        var text = textFromCaptions(raw);
+        if (!text) {
+          empty = true;
+          continue;
+        }
+        var summary = summarize(text);
+        if (!summary) {
+          empty = true;
+          continue;
+        }
+        return { kind: "ok", summary: summary };
+      }
     }
-    var payload = null;
-    try {
-      payload = JSON.parse(raw);
-    } catch (err3) {
-      payload = null;
+    if (empty) return { kind: "empty" };
+    if (error) return { kind: "error" };
+    return { kind: "empty" };
+  }
+
+  async function loadSummary(videoId, env) {
+    env = env || {};
+    var fetchText = env.fetchText;
+    var sawTracks = false;
+    var sawEmpty = false;
+    var sawError = false;
+
+    async function consider(player) {
+      if (!player) return null;
+      var read = await readTracks(player, fetchText);
+      if (read.kind === "none") return null;
+      sawTracks = true;
+      if (read.kind === "ok") return { summary: read.summary };
+      if (read.kind === "empty") sawEmpty = true;
+      if (read.kind === "error") sawError = true;
+      return null;
     }
-    var text = textFromJson3(payload);
-    if (!text) return { message: EMPTY_CAPTIONS };
-    var summary = summarize(text);
-    if (!summary) return { message: EMPTY_CAPTIONS };
-    return { summary: summary };
+
+    var config = readConfig(env.ytcfg);
+    if (config && fetchText) {
+      try {
+        var fromApi = await consider(await requestPlayer(videoId, env, config));
+        if (fromApi) return fromApi;
+      } catch (err) {
+        sawError = true;
+      }
+    }
+    var embedded = playerMatches(env.player, videoId) ? env.player : null;
+    if (!sawTracks && embedded) {
+      var fromEmbedded = await consider(embedded);
+      if (fromEmbedded) return fromEmbedded;
+      // The open watch page already answered. An empty track list is not a
+      // missing document, so do not fetch the watch HTML again.
+      if (!tracksOf(embedded).tracks.length) return { message: NO_CAPTIONS };
+    }
+    if (!sawTracks && fetchText && !embedded) {
+      try {
+        var page = await fetchText(watchUrl(videoId, env.pageUrl));
+        var fromWatch = await consider(extractPlayer(page, videoId));
+        if (fromWatch) return fromWatch;
+      } catch (err2) {
+        sawError = true;
+      }
+    }
+    if (!sawTracks) return { message: sawError ? FAILED : NO_CAPTIONS };
+    if (sawEmpty) return { message: EMPTY_CAPTIONS };
+    return { message: FAILED };
   }
 
   function parentAcross(node) {
@@ -522,11 +754,15 @@
   }
 
   function fetchTextFactory(win) {
-    return function (url) {
+    return function (url, init) {
       var fetchImpl = (win && win.fetch) || root.fetch;
+      var options = { credentials: "include" };
+      if (init && init.method) options.method = init.method;
+      if (init && init.body != null) options.body = init.body;
+      if (init && init.headers) options.headers = init.headers;
       return Promise.resolve()
         .then(function () {
-          return fetchImpl(url, { credentials: "include" });
+          return fetchImpl(url, options);
         })
         .then(function (response) {
           if (!response || !response.ok) throw new Error("Antwort fehlt");
@@ -554,6 +790,7 @@
     loadSummary(videoId, {
       player: playerMatches(player, videoId) ? player : null,
       pageUrl: win && win.location ? win.location.href : "https://www.youtube.com/",
+      ytcfg: win && win.ytcfg,
       fetchText: fetchTextFactory(win),
     }).then(function (result) {
       if (!sheet.isConnected) return;
@@ -739,7 +976,9 @@
 
   return {
     NO_CAPTIONS: NO_CAPTIONS,
+    EMPTY_CAPTIONS: EMPTY_CAPTIONS,
     textFromJson3: textFromJson3,
+    textFromCaptions: textFromCaptions,
     captionUrl: captionUrl,
     chooseTrack: chooseTrack,
     summarize: summarize,
