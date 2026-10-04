@@ -12,7 +12,24 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         let item = context.inputItems.first as? NSExtensionItem
         let message = item?.userInfo?[SFExtensionMessageKey] as? [String: Any]
         let text = message?["text"] as? String ?? ""
-        let payload = SafariOnDeviceSummary.replySync(for: text)
+        let request = KurzfassungRequest(context)
+        // Das Modell braucht den Run Loop des Hauptthreads. Hier nicht warten.
+        Task.detached {
+            let payload = await SafariOnDeviceSummary.reply(for: text)
+            await request.complete(payload)
+        }
+    }
+}
+
+private final class KurzfassungRequest: @unchecked Sendable {
+    private let context: NSExtensionContext
+
+    init(_ context: NSExtensionContext) {
+        self.context = context
+    }
+
+    @MainActor
+    func complete(_ payload: [String: Any]) {
         let response = NSExtensionItem()
         response.userInfo = [SFExtensionMessageKey: payload]
         context.completeRequest(returningItems: [response], completionHandler: nil)
@@ -22,18 +39,7 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 enum SafariOnDeviceSummary {
     static let unavailableMessage = "Die Kurzfassung geht nur mit dem Modell auf dem Gerät, und das ist gerade nicht verfügbar."
 
-    static func replySync(for text: String) -> [String: Any] {
-        let box = PayloadBox()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task.detached {
-            box.value = await reply(for: text)
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return box.value
-    }
-
-    private static func reply(for captions: String) async -> [String: Any] {
+    static func reply(for captions: String) async -> [String: Any] {
         let source = prepare(captions)
         guard !source.isEmpty else { return ["message": unavailableMessage] }
         #if canImport(FoundationModels)
@@ -98,8 +104,4 @@ enum SafariOnDeviceSummary {
         var points: [String]
     }
     #endif
-}
-
-private final class PayloadBox: @unchecked Sendable {
-    var value: [String: Any] = ["message": SafariOnDeviceSummary.unavailableMessage]
 }
