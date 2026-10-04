@@ -2,6 +2,8 @@
 
 Browser-Erweiterung für Tan Ipekkaya. Sie blendet YouTube Shorts aus, solange YouTube im Browser läuft — am Rechner und auf dem iPhone in Safari.
 
+Daneben liegt **Langform** in `apps/langform`: eine eigene Web-App für lange Videos, ohne Shorts und ohne Konto. Bedienung und Start stehen in `apps/langform/README.md`.
+
 ## Was sie tut
 
 - Läuft auf `https://www.youtube.com/*` und `https://m.youtube.com/*`. Safari auf dem iPhone öffnet die mobile Seite.
@@ -69,7 +71,14 @@ Die Tests bauen Desktop- und Mobil-Markup nach. Sie rufen nicht die echte YouTub
 
 ```bash
 npm install
+npm install --prefix apps/langform
 npm test
+```
+
+`npm test` prüft die Erweiterung und danach Langform. Der Produktionsbau der App:
+
+```bash
+npm run build --prefix apps/langform
 ```
 
 ## Aufbau
@@ -81,4 +90,5 @@ extension/src/             Inhaltsskript, ab document_start
 extension/popup/           Schalter, deutsch
 scripts/convert-safari.sh  Xcode-Projekt für Mac und iPhone
 tests/fixtures/            nachgebautes YouTube-Markup
+apps/langform/             Web-App für lange Videos
 ```

@@ -1,4 +1,5 @@
 node_modules/
+.next/
 safari/
 .DS_Store
 *.xcuserstate
