@@ -221,6 +221,45 @@
     return { summary: { points: points } };
   }
 
+  function ownGlobal() {
+    if (typeof globalThis !== "undefined") return globalThis;
+    return null;
+  }
+
+  function nativeRuntime(page) {
+    function take(runtime) {
+      return runtime && typeof runtime.sendNativeMessage === "function" ? runtime : null;
+    }
+    try {
+      if (typeof browser !== "undefined") {
+        var fromBrowser = take(browser && browser.runtime);
+        if (fromBrowser) return fromBrowser;
+      }
+    } catch (err) {
+      /* the page world has no extension binding */
+    }
+    try {
+      if (typeof chrome !== "undefined") {
+        var fromChrome = take(chrome && chrome.runtime);
+        if (fromChrome) return fromChrome;
+      }
+    } catch (err2) {
+      /* chrome is optional */
+    }
+    var scopes = [page, ownGlobal()];
+    for (var i = 0; i < scopes.length; i++) {
+      var scope = scopes[i];
+      if (!scope) continue;
+      try {
+        var found = take(scope.browser && scope.browser.runtime) || take(scope.chrome && scope.chrome.runtime);
+        if (found) return found;
+      } catch (err3) {
+        /* this scope is not the extension */
+      }
+    }
+    return null;
+  }
+
   function askHost(text, host) {
     return new Promise(function (resolve) {
       var settled = false;
@@ -229,9 +268,9 @@
         settled = true;
         resolve(normalizeModelSummary(payload));
       }
-      var page = host || root;
+      var page = host || ownGlobal();
       try {
-        var handlers = page.webkit && page.webkit.messageHandlers;
+        var handlers = page && page.webkit && page.webkit.messageHandlers;
         if (handlers && handlers.langformSummary && typeof handlers.langformSummary.postMessage === "function") {
           var id = String(Date.now()) + "-" + Math.random();
           page.__langformKurzWait = page.__langformKurzWait || {};
@@ -248,18 +287,8 @@
       } catch (err) {
         /* the page bridge is optional */
       }
-      var runtime = null;
-      try {
-        runtime =
-          (root.browser && root.browser.runtime) ||
-          (page.browser && page.browser.runtime) ||
-          (root.chrome && root.chrome.runtime) ||
-          (page.chrome && page.chrome.runtime) ||
-          null;
-      } catch (err2) {
-        runtime = null;
-      }
-      if (runtime && typeof runtime.sendNativeMessage === "function") {
+      var runtime = nativeRuntime(page);
+      if (runtime) {
         var callback = function (response) {
           var failed = false;
           try {
@@ -827,7 +856,7 @@
 
   function fetchTextFactory(win) {
     return function (url, init) {
-      var fetchImpl = (win && win.fetch) || root.fetch;
+      var fetchImpl = (win && win.fetch) || (ownGlobal() && ownGlobal().fetch);
       var options = { credentials: "include" };
       if (init && init.method) options.method = init.method;
       if (init && init.body != null) options.body = init.body;
@@ -1135,7 +1164,7 @@
     }
     if (watchId) {
       var meta = watchAnchor(doc);
-      if (meta) bindButton(doc, win || root, meta, watchId);
+      if (meta) bindButton(doc, win || ownGlobal(), meta, watchId);
     }
     forEachElement(doc, function (el) {
       if (el.tagName !== "A" || !el.getAttribute("href")) return;
@@ -1149,7 +1178,7 @@
       if (!rowId) return;
       var seconds = durationSecondsFromCard(card);
       if (seconds != null && seconds < 60) return;
-      bindButton(doc, win || root, card, rowId);
+      bindButton(doc, win || ownGlobal(), card, rowId);
     });
   }
 

@@ -41,6 +41,57 @@ function sentences(count) {
   return lines.join(" ");
 }
 
+test("Seitenwelt erreicht sendNativeMessage, ohne ein globales root", async function () {
+  const fs = require("fs");
+  const src = fs.readFileSync(require.resolve("../extension/src/summary.js"), "utf8");
+  const factoryAt = src.indexOf("function () {");
+  assert.equal(/\broot\b/.test(src.slice(factoryAt)), false);
+  const seen = [];
+  const previous = global.browser;
+  global.browser = {
+    runtime: {
+      sendNativeMessage(name, body, callback) {
+        if (String(body && body.text).indexOf("MARKER_SEITENWELT") === -1) {
+          if (typeof callback === "function") callback(null);
+          return;
+        }
+        seen.push({ name: name, text: body.text });
+        callback({
+          summary: {
+            points: [
+              "Der Markt wird aufgebaut.",
+              "Die Stadt lebt vom Handel.",
+              "Ohne Markt bleibt der Platz ungenutzt.",
+            ],
+          },
+        });
+      },
+    },
+  };
+  try {
+    const result = await summary.loadSummary("abcdefghijk", {
+      player: {
+        videoDetails: { videoId: "abcdefghijk" },
+        captions: { playerCaptionsTracklistRenderer: { captionTracks: [DE_TRACK] } },
+      },
+      fetchText() {
+        return Promise.resolve(
+          JSON.stringify({ events: [{ segs: [{ utf8: "MARKER_SEITENWELT gesprochen, nicht als Zitat zeigen." }] }] })
+        );
+      },
+    });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].name, "de.ipekkaya.shorts-ausblenden");
+    assert.match(seen[0].text, /MARKER_SEITENWELT/);
+    assert.equal(result.message, undefined);
+    assert.equal(result.summary.points.length, 3);
+    assert.equal(result.summary.points.join(" ").includes("MARKER_SEITENWELT"), false);
+  } finally {
+    if (previous === undefined) delete global.browser;
+    else global.browser = previous;
+  }
+});
+
 test("deutsche Spur gewinnt, sonst Übersetzung nach Deutsch", function () {
   const manual = summary.chooseTrack([DE_ASR, DE_TRACK, EN_TRACK], [{ languageCode: "de" }]);
   assert.equal(manual.track, DE_TRACK);
