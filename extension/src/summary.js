@@ -7,6 +7,7 @@
   var NO_CAPTIONS = "Für dieses Video gibt es keine Untertitel.";
   var EMPTY_CAPTIONS = "Die Untertitel sind leer.";
   var FAILED = "Die Untertitel sind gerade nicht zu lesen.";
+  var UNAVAILABLE = "Die Kurzfassung geht nur mit dem Modell auf dem Gerät, und das ist gerade nicht verfügbar.";
   var PANEL_ID = "langform-kurzfassung";
   var STYLE_ID = "langform-kurz-style";
   var BUTTON_ATTR = "data-langform-kurz";
@@ -195,67 +196,122 @@
       .filter(Boolean);
   }
 
-  function isNoise(sentence) {
-    if (sentence.length < 12) return true;
-    return /^[\s\[(]?(musik|applaus|gelächter|lachen|untertitel(?: im Auftrag| der amara)?|subtitle)[\])]?\.?$/i.test(
-      sentence
-    );
+  function cleanModelLine(line) {
+    return String(line || "")
+      .replace(/\[[^\]]*\]/g, " ")
+      .replace(/[♪♫]/g, " ")
+      .replace(/\b[Bb]ro\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
-  function isIntro(sentence) {
-    return /^(hallo|hi |hey |moin|servus|willkommen|was geht|leute[, ])/i.test(sentence);
+  function asParagraph(value) {
+    if (Array.isArray(value)) return cleanModelLine(value.join(" "));
+    return cleanModelLine(value);
   }
 
-  function isOutro(sentence) {
-    return /abonni|like and subscribe|daumen|bis zum nächsten|tschüss|link in der beschreibung|glocke aktiv/i.test(
-      sentence
-    );
+  function asPoints(value) {
+    var list = Array.isArray(value) ? value : splitSentences(value);
+    return list
+      .map(cleanModelLine)
+      .filter(Boolean)
+      .slice(0, 6);
   }
 
-  function clip(sentence) {
-    if (sentence.length <= 280) return sentence;
-    return sentence.slice(0, 277).replace(/\s+\S*$/, "") + "…";
+  function normalizeModelSummary(payload) {
+    var summary = payload && payload.summary ? payload.summary : null;
+    if (!summary) return { message: (payload && payload.message) || UNAVAILABLE };
+    var about = asParagraph(summary.about);
+    var points = asPoints(summary.points);
+    var ending = asParagraph(summary.ending);
+    if (!about && !points.length && !ending) return { message: UNAVAILABLE };
+    return {
+      summary: {
+        about: about ? [about] : [],
+        points: points,
+        ending: ending ? [ending] : [],
+      },
+    };
   }
 
-  function spread(list, count) {
-    if (list.length <= count) return list.slice();
-    var out = [];
-    for (var i = 0; i < count; i++) {
-      var idx = Math.round((i * (list.length - 1)) / (count - 1));
-      if (!out.length || out[out.length - 1] !== list[idx]) out.push(list[idx]);
-    }
-    return out;
-  }
-
-  function summarize(text) {
-    var sentences = splitSentences(text)
-      .map(clip)
-      .filter(function (sentence) {
-        return !isNoise(sentence);
-      });
-    var index = 0;
-    var skipped = 0;
-    while (index < sentences.length && skipped < 2 && isIntro(sentences[index])) {
-      index += 1;
-      skipped += 1;
-    }
-    var body = sentences.slice(index);
-    if (!body.length) body = sentences;
-    if (!body.length) return null;
-    var core = body.slice();
-    while (core.length > 1 && isOutro(core[core.length - 1])) core.pop();
-    var aboutCount = Math.min(2, core.length);
-    var ending = [];
-    if (core.length > aboutCount) ending = core.slice(core.length > 4 ? -2 : -1);
-    var about = core.slice(0, aboutCount);
-    if (ending.length && about[about.length - 1] === ending[0] && core.length <= aboutCount + ending.length) {
-      ending = core.length > aboutCount ? ending : [];
-    }
-    var middle = core.slice(about.length, core.length - ending.length);
-    var points = spread(middle, 4).filter(function (sentence) {
-      return about.indexOf(sentence) === -1 && ending.indexOf(sentence) === -1;
+  function askHost(text, host) {
+    return new Promise(function (resolve) {
+      var settled = false;
+      function finish(payload) {
+        if (settled) return;
+        settled = true;
+        resolve(normalizeModelSummary(payload));
+      }
+      var page = host || root;
+      try {
+        var handlers = page.webkit && page.webkit.messageHandlers;
+        if (handlers && handlers.langformSummary && typeof handlers.langformSummary.postMessage === "function") {
+          var id = String(Date.now()) + "-" + Math.random();
+          page.__langformKurzWait = page.__langformKurzWait || {};
+          page.__langformKurzWait[id] = finish;
+          page.__langformKurzFinish = function (ticket, payload) {
+            var wait = page.__langformKurzWait && page.__langformKurzWait[ticket];
+            if (!wait) return;
+            delete page.__langformKurzWait[ticket];
+            wait(payload);
+          };
+          handlers.langformSummary.postMessage({ id: id, text: String(text || "") });
+          return;
+        }
+      } catch (err) {
+        /* the page bridge is optional */
+      }
+      var runtime = null;
+      try {
+        runtime =
+          (root.browser && root.browser.runtime) ||
+          (page.browser && page.browser.runtime) ||
+          (root.chrome && root.chrome.runtime) ||
+          (page.chrome && page.chrome.runtime) ||
+          null;
+      } catch (err2) {
+        runtime = null;
+      }
+      if (runtime && typeof runtime.sendNativeMessage === "function") {
+        var callback = function (response) {
+          var failed = false;
+          try {
+            failed = !!runtime.lastError;
+          } catch (err3) {
+            failed = false;
+          }
+          if (failed || !response) finish({ message: UNAVAILABLE });
+          else finish(response);
+        };
+        try {
+          var pending = runtime.sendNativeMessage(
+            "de.ipekkaya.shorts-ausblenden",
+            { text: String(text || "") },
+            callback
+          );
+          if (pending && typeof pending.then === "function") {
+            pending.then(callback, function () {
+              finish({ message: UNAVAILABLE });
+            });
+          }
+          return;
+        } catch (err4) {
+          /* try the next path */
+        }
+      }
+      finish({ message: UNAVAILABLE });
     });
-    return { about: about, points: points, ending: ending };
+  }
+
+  async function askModel(text, env) {
+    try {
+      if (env && typeof env.summarize === "function") {
+        return normalizeModelSummary(await env.summarize(text));
+      }
+      return await askHost(text, env && env.host);
+    } catch (err) {
+      return { message: UNAVAILABLE };
+    }
   }
 
   function blocks(summary) {
@@ -498,12 +554,7 @@
           empty = true;
           continue;
         }
-        var summary = summarize(text);
-        if (!summary) {
-          empty = true;
-          continue;
-        }
-        return { kind: "ok", summary: summary };
+        return { kind: "text", text: text };
       }
     }
     if (empty) return { kind: "empty" };
@@ -523,7 +574,7 @@
       var read = await readTracks(player, fetchText);
       if (read.kind === "none") return null;
       sawTracks = true;
-      if (read.kind === "ok") return { summary: read.summary };
+      if (read.kind === "text") return askModel(read.text, env);
       if (read.kind === "empty") sawEmpty = true;
       if (read.kind === "error") sawError = true;
       return null;
@@ -627,11 +678,13 @@
       ".langform-kurz {",
       "  position: relative;",
       "  box-sizing: border-box;",
+      "  display: flex;",
+      "  flex-direction: column;",
       "  width: min(40rem, 100%);",
-      "  max-height: min(78vh, 100%);",
-      "  overflow: auto;",
+      "  max-height: min(78dvh, calc(100% - env(safe-area-inset-top, 0px)));",
+      "  overflow: hidden;",
       "  margin: 0;",
-      "  padding: 16px 18px 28px;",
+      "  padding: 0;",
       "  border-radius: 18px 18px 0 0;",
       "  background: #161410;",
       "  color: #f4efe6;",
@@ -639,7 +692,21 @@
       "  box-shadow: 0 -12px 36px rgba(0, 0, 0, 0.45);",
       "}",
       ".langform-kurz h2 { margin: 0; font-size: 1.15rem; color: #f4efe6; }",
-      ".langform-kurz header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }",
+      ".langform-kurz header {",
+      "  display: flex;",
+      "  flex: 0 0 auto;",
+      "  align-items: center;",
+      "  justify-content: space-between;",
+      "  gap: 12px;",
+      "  padding: 16px 18px 0;",
+      "}",
+      ".langform-kurz-body {",
+      "  flex: 1 1 auto;",
+      "  overflow-y: auto;",
+      "  -webkit-overflow-scrolling: touch;",
+      "  padding: 0 18px calc(36px + env(safe-area-inset-bottom, 0px));",
+      "}",
+      ".langform-kurz h3 { scroll-margin-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }",
       ".langform-kurz button {",
       "  font: inherit;",
       "  border: 0;",
@@ -782,7 +849,7 @@
     var body = sheet.querySelector(".langform-kurz-body");
     while (body.firstChild) body.removeChild(body.firstChild);
     var waiting = doc.createElement("p");
-    waiting.textContent = "Die Untertitel werden gelesen …";
+    waiting.textContent = "Die Kurzfassung wird geschrieben …";
     body.appendChild(waiting);
     var ticket = String(Date.now()) + "-" + Math.random();
     sheet.setAttribute("data-ticket", ticket);
@@ -791,6 +858,7 @@
       player: playerMatches(player, videoId) ? player : null,
       pageUrl: win && win.location ? win.location.href : "https://www.youtube.com/",
       ytcfg: win && win.ytcfg,
+      host: win,
       fetchText: fetchTextFactory(win),
     }).then(function (result) {
       if (!sheet.isConnected) return;
@@ -977,11 +1045,11 @@
   return {
     NO_CAPTIONS: NO_CAPTIONS,
     EMPTY_CAPTIONS: EMPTY_CAPTIONS,
+    UNAVAILABLE: UNAVAILABLE,
     textFromJson3: textFromJson3,
     textFromCaptions: textFromCaptions,
     captionUrl: captionUrl,
     chooseTrack: chooseTrack,
-    summarize: summarize,
     blocks: blocks,
     extractPlayer: extractPlayer,
     loadSummary: loadSummary,

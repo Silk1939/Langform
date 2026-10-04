@@ -63,6 +63,7 @@ test("öffentliches Video liefert Untertitel über den WEB-Player", { timeout: 3
   assert.equal(ytcfg.INNERTUBE_CONTEXT.client.clientName, "WEB");
   assert.ok(ytcfg.STS > 0);
   const calls = [];
+  let captionBody = "";
   const result = await summary.loadSummary(VIDEO_ID, {
     pageUrl: "https://www.youtube.com/",
     ytcfg: ytcfg,
@@ -87,14 +88,18 @@ test("öffentliches Video liefert Untertitel über den WEB-Player", { timeout: 3
       }).then(function (response) {
         if (!response.ok) throw new Error(String(response.status));
         return response.text();
+      }).then(function (text) {
+        if (href.includes("/api/timedtext") && text.trim()) captionBody = text;
+        return text;
       });
     },
   });
   assert.ok(calls.some(function (url) { return url.includes("/youtubei/v1/player"); }));
   assert.ok(calls.some(function (url) { return url.includes("/api/timedtext"); }));
   assert.equal(calls.some(function (url) { return url.includes("/watch?"); }), false);
-  const lines = []
-    .concat(result.summary.about, result.summary.points, result.summary.ending)
-    .join(" ");
-  assert.match(lines, /Liebe|Regeln|fremd/);
+  assert.ok(captionBody.length > 40);
+  assert.equal(result.message, summary.UNAVAILABLE);
+  assert.equal(result.summary, undefined);
+  assert.equal(String(result.message).includes("Liebe"), false);
+  assert.equal(captionBody.includes(result.message), false);
 });

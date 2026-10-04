@@ -11,7 +11,7 @@ struct YouTubeWebView: UIViewRepresentable {
     static let startURL = URL(string: "https://m.youtube.com/")!
     /// Fresh YouTube sign-in. Used once, after Google rejects the webview user agent.
     static let signInRetryURL = URL(string: "https://accounts.google.com/ServiceLogin?service=youtube&hl=de&passive=true&continue=https://m.youtube.com/")!
-    static let scriptNames = ["PlayerFrame", "early", "logic", "hide", "controller", "summary", "ShortsBootstrap"]
+    static let scriptNames = ["early", "logic", "hide", "controller", "summary", "ShortsBootstrap"]
     /// Mobile Safari 26.6, the current iPhone string as of October 2026.
     /// The frozen OS token is 18_7; Version/26.6 is the Safari release.
     static let safariUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Mobile/15E148 Safari/604.1"
@@ -38,6 +38,7 @@ struct YouTubeWebView: UIViewRepresentable {
         let pagePreferences = WKWebpagePreferences()
         pagePreferences.preferredContentMode = .mobile
         configuration.defaultWebpagePreferences = pagePreferences
+        configuration.userContentController.add(context.coordinator, contentWorld: .page, name: "langformSummary")
         let source = Self.concatenatedScripts()
         if !source.isEmpty {
             configuration.userContentController.addUserScript(
@@ -97,7 +98,7 @@ struct YouTubeWebView: UIViewRepresentable {
         }.joined(separator: "\n")
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var onUnreachable: ((Bool) -> Void)?
         var onCanGoBack: ((Bool) -> Void)?
         var onWatchPage: ((Bool) -> Void)?
@@ -120,6 +121,23 @@ struct YouTubeWebView: UIViewRepresentable {
                 DispatchQueue.main.async {
                     self?.onWatchPage?(watch)
                 }
+            }
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "langformSummary",
+                  let body = message.body as? [String: Any],
+                  let id = body["id"] as? String,
+                  let webView = message.webView else { return }
+            let text = body["text"] as? String ?? ""
+            Task { @MainActor in
+                let payload = await OnDeviceSummary.reply(for: text)
+                guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                      let json = String(data: data, encoding: .utf8),
+                      let idData = try? JSONEncoder().encode(id),
+                      let idLiteral = String(data: idData, encoding: .utf8) else { return }
+                let script = "window.__langformKurzFinish && window.__langformKurzFinish(\(idLiteral), \(json))"
+                webView.evaluateJavaScript(script, in: nil, in: .page)
             }
         }
 

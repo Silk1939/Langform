@@ -18,6 +18,7 @@ struct LangformRoot: View {
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
+            Color.black.ignoresSafeArea()
             YouTubeWebView(
                 unreachable: $unreachable,
                 canGoBack: $canGoBack,
@@ -25,7 +26,6 @@ struct LangformRoot: View {
                 reloadToken: reloadToken,
                 goBackToken: goBackToken
             )
-            .ignoresSafeArea()
             if canGoBack && !watchPage && !unreachable {
                 Button {
                     goBackToken += 1

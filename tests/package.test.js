@@ -48,16 +48,23 @@ test("Popup und README sprechen Deutsch und nennen die Grenzen", function () {
 });
 
 test("die App setzt kein eigenes Layout auf den YouTube-Player", function () {
-  const frame = fs.readFileSync(path.join(root, "ios/Langform/Langform/PlayerFrame.js"), "utf8");
-  assert.doesNotMatch(frame, /object-fit|player-container|movie_player|html5-video-player/);
-  assert.doesNotMatch(frame, /(?:width|height|position|display)\s*:/);
+  assert.equal(fs.existsSync(path.join(root, "ios/Langform/Langform/PlayerFrame.js")), false);
   const app = fs.readFileSync(path.join(root, "ios/Langform/Langform/LangformApp.swift"), "utf8");
   assert.match(app, /watchPage/);
   assert.doesNotMatch(app, /topLeading/);
   assert.match(app, /bottomLeading/);
+  assert.match(app, /Color\.black\.ignoresSafeArea/);
+  assert.doesNotMatch(app, /YouTubeWebView[\s\S]{0,280}ignoresSafeArea/);
   const web = fs.readFileSync(path.join(root, "ios/Langform/Langform/YouTubeWebView.swift"), "utf8");
   assert.match(web, /allowsBackForwardNavigationGestures = true/);
   assert.match(web, /isWatchPage/);
+  assert.doesNotMatch(web, /PlayerFrame|viewport-fit/);
+  const model = fs.readFileSync(path.join(root, "ios/Langform/Langform/OnDeviceSummary.swift"), "utf8");
+  assert.match(model, /FoundationModels/);
+  assert.match(model, /Die Kurzfassung geht nur mit dem Modell auf dem Gerät/);
+  const handler = fs.readFileSync(path.join(root, "native/SafariWebExtensionHandler.swift"), "utf8");
+  assert.match(handler, /SafariWebExtensionHandler/);
+  assert.match(handler, /sendNativeMessage|SFExtensionMessageKey/);
 });
 
 test("Konverter-Skript ist gültiges Bash und zielt auf Mac und iPhone", function () {
@@ -67,6 +74,7 @@ test("Konverter-Skript ist gültiges Bash und zielt auf Mac und iPhone", functio
   assert.match(text, /safari-web-extension-converter/);
   assert.match(text, /--swift/);
   assert.match(text, /de\.ipekkaya\.shorts-ausblenden/);
+  assert.match(text, /SafariWebExtensionHandler\.swift/);
   assert.doesNotMatch(text, /--ios-only|--macos-only/);
   const stat = fs.statSync(script);
   assert.ok(stat.mode & 0o111, "convert-safari.sh ist ausführbar");

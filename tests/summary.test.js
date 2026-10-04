@@ -18,6 +18,16 @@ const EN_TRACK = {
   baseUrl: "https://www.youtube.com/api/timedtext?v=abcdefghijk&lang=en&signature=abc",
 };
 
+function modelSummary() {
+  return {
+    summary: {
+      about: "Es geht um den Inhalt des Videos, nicht um einzelne gesprochene Sätze.",
+      points: ["Ein echter Punkt.", "Ein zweiter Punkt."],
+      ending: "Am Ende ist die Sache geklärt.",
+    },
+  };
+}
+
 function sentences(count) {
   const lines = [];
   for (let i = 0; i < count; i++) {
@@ -63,33 +73,56 @@ test("deutsche Spur gewinnt, sonst Übersetzung nach Deutsch", function () {
   assert.doesNotMatch(summary.captionUrl(regional.track, regional.translate), /tlang=/);
 });
 
-test("Kurzfassung ist ein kurzer Lesetext, kein Transkript", function () {
-  const text = [
-    "Hallo zusammen.",
-    "Musik",
-    sentences(12),
-    "Vergesst nicht zu abonnieren.",
-  ].join(" ");
-  const result = summary.summarize(text);
-  const parts = summary.blocks(result);
+test("Kurzfassung ist das Modell, kein Transkript", async function () {
+  const spoken = "Bro [musik] " + sentences(4) + " Das war wörtlich so gesagt.";
+  let handed = "";
+  const result = await summary.loadSummary("abcdefghijk", {
+    player: {
+      videoDetails: { videoId: "abcdefghijk" },
+      captions: { playerCaptionsTracklistRenderer: { captionTracks: [DE_TRACK] } },
+    },
+    fetchText() {
+      return Promise.resolve(JSON.stringify({ events: [{ segs: [{ utf8: spoken }] }] }));
+    },
+    summarize(text) {
+      handed = text;
+      return {
+        summary: {
+          about: "Es geht um ein Rezept mit mehreren Schritten. [musik]",
+          points: ["Bro das Gemüse wird vorbereitet.", "Der Ofen übernimmt den Rest."],
+          ending: "Am Ende ist das Essen fertig.",
+        },
+      };
+    },
+  });
+  assert.match(handed, /Satz Nummer 1/);
+  const parts = summary.blocks(result.summary);
   assert.deepEqual(
     parts.map(function (block) {
       return block.heading;
     }),
     ["Worum es geht", "Punkte", "Schluss"]
   );
-  const lines = parts.reduce(function (sum, block) {
-    return sum + block.lines.length;
-  }, 0);
-  assert.ok(lines <= 8);
-  assert.ok(lines < text.split(/(?<=[.!?])\s+/).length);
   const joined = parts
     .flatMap(function (block) {
       return block.lines;
     })
     .join(" ");
-  assert.equal(/abonni/i.test(joined), false);
-  assert.equal(summary.summarize(""), null);
+  assert.equal(/\[musik\]/i.test(joined), false);
+  assert.equal(/\b[Bb]ro\b/.test(joined), false);
+  assert.equal(joined.includes("Satz Nummer"), false);
+  assert.equal(joined.includes("wörtlich so gesagt"), false);
+  const missed = await summary.loadSummary("abcdefghijk", {
+    player: {
+      videoDetails: { videoId: "abcdefghijk" },
+      captions: { playerCaptionsTracklistRenderer: { captionTracks: [DE_TRACK] } },
+    },
+    fetchText() {
+      return Promise.resolve(JSON.stringify({ events: [{ segs: [{ utf8: spoken }] }] }));
+    },
+  });
+  assert.equal(missed.message, summary.UNAVAILABLE);
+  assert.equal(JSON.stringify(missed).includes("Satz Nummer"), false);
   assert.equal(summary.textFromJson3({ events: [] }), "");
   assert.equal(
     summary.textFromCaptions(
@@ -139,6 +172,7 @@ test("ohne Spur ein Satz, Fetch bleibt auf YouTube-Untertiteln", async function 
     ";";
   const loaded = await summary.loadSummary("abcdefghijk", {
     pageUrl: "https://m.youtube.com/",
+    summarize: modelSummary,
     fetchText(url) {
       calls.push(url);
       if (String(url).includes("/watch")) return Promise.resolve(page);
@@ -194,6 +228,8 @@ test("Watch-Seite zeigt die Kurzfassung unter dem Video", async function () {
   assert.match(css, /\.langform-kurz-sheet \{[^}]*position:\s*fixed/);
   assert.match(css, /#161410/);
   assert.match(css, /white-space:\s*nowrap/);
+  assert.match(css, /overflow-y:\s*auto/);
+  assert.match(css, /safe-area-inset-bottom/);
   assert.equal(player.contains(sheet), false);
   assert.equal(video.parentElement, player);
   await delay(20);
@@ -337,9 +373,26 @@ test("Playlist-Kopf ist keine Videozeile, jede Zeile hat genau einen Knopf", asy
   assert.equal(row.querySelector(".menu").parentElement, row);
   assert.equal(doc.getElementById("list").childElementCount, listCount);
   let followed = false;
+  let handed = "";
   row.querySelector("a.thumb").addEventListener("click", function () {
     followed = true;
   });
+  win.webkit = {
+    messageHandlers: {
+      langformSummary: {
+        postMessage(body) {
+          handed = body.text;
+          win.__langformKurzFinish(body.id, {
+            summary: {
+              about: "Ein Gespräch über den Markt in der Stadt.",
+              points: ["Der Markt wird aufgebaut."],
+              ending: "Am Ende bleibt der Platz leer.",
+            },
+          });
+        },
+      },
+    },
+  };
   button.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }));
   assert.equal(followed, false);
   const sheet = doc.getElementById("langform-kurzfassung");
@@ -349,7 +402,10 @@ test("Playlist-Kopf ist keine Videozeile, jede Zeile hat genau einen Knopf", asy
   assert.equal(sheet.getAttribute("data-video"), "videoone111");
   await delay(20);
   assert.equal(/keine Untertitel/.test(sheet.textContent), false);
+  assert.match(handed, /langes Gespräch/);
   assert.match(sheet.textContent, /Worum es geht/);
+  assert.match(sheet.textContent, /Schluss/);
+  assert.equal(sheet.textContent.includes("Zuerst erzählt sie"), false);
   assert.ok(fetched.length >= 2);
   assert.match(fetched[0].url, /m\.youtube\.com\/watch\?v=videoone111/);
   assert.equal(fetched[0].url.includes("headerid111"), false);
@@ -383,9 +439,14 @@ test("Startseite liest die signierte WEB-Spur, auch als XML", async function () 
       return null;
     },
   };
+  let seen = "";
   const result = await summary.loadSummary("abcdefghijk", {
     pageUrl: "https://www.youtube.com/",
     ytcfg: ytcfg,
+    summarize(text) {
+      seen = text;
+      return modelSummary();
+    },
     player: {
       videoDetails: { videoId: "abcdefghijk" },
       streamingData: { formats: [{ url: "https://rr.googlevideo.com/videoplayback?id=1" }] },
@@ -417,7 +478,8 @@ test("Startseite liest die signierte WEB-Spur, auch als XML", async function () 
       );
     },
   });
-  assert.ok(result.summary.about.length > 0);
+  assert.match(seen, /nachts offen bleibt/);
+  assert.equal(result.summary.about[0].includes("nachts offen bleibt"), false);
   assert.equal(result.message, undefined);
   assert.equal(calls.length, 2);
   assert.match(calls[0].url, /^https:\/\/www\.youtube\.com\/youtubei\/v1\/player\?/);
@@ -442,8 +504,13 @@ test("Startseite liest die signierte WEB-Spur, auch als XML", async function () 
 
 test("leerer Body, danach fmt=json3 auf derselben signierten URL", async function () {
   const calls = [];
+  let seen = "";
   const result = await summary.loadSummary("abcdefghijk", {
     pageUrl: "https://www.youtube.com/",
+    summarize(text) {
+      seen = text;
+      return modelSummary();
+    },
     ytcfg: {
       INNERTUBE_API_KEY: "test-key",
       STS: 20725,
@@ -485,7 +552,8 @@ test("leerer Body, danach fmt=json3 auf derselben signierten URL", async functio
       );
     },
   });
-  assert.ok(result.summary.about.length > 0);
+  assert.match(seen, /langen Auflauf/);
+  assert.equal(result.summary.about.join(" ").includes("langen Auflauf"), false);
   assert.equal(calls.length, 3);
   assert.match(calls[1], /signature=SIGNED/);
   assert.match(calls[1], /tlang=de/);
@@ -497,7 +565,18 @@ test("leerer Body, danach fmt=json3 auf derselben signierten URL", async functio
 });
 
 test("srv3 bleibt Text, ein leerer Body danach ist leer", async function () {
+  let seen = "";
   const srv = await summary.loadSummary("abcdefghijk", {
+    summarize(text) {
+      seen = text;
+      return {
+        summary: {
+          about: "Es geht um einen Auflauf.",
+          points: ["Das Gemüse kommt in die Form."],
+          ending: "Er ruht, bevor er auf den Tisch kommt.",
+        },
+      };
+    },
     player: {
       videoDetails: { videoId: "abcdefghijk" },
       captions: {
@@ -512,7 +591,9 @@ test("srv3 bleibt Text, ein leerer Body danach ist leer", async function () {
       );
     },
   });
-  assert.ok(srv.summary.about[0].includes("Auflauf"));
+  assert.match(seen, /langen Auflauf aus dem Ofen/);
+  assert.equal(srv.summary.about[0].includes("langen Auflauf aus dem Ofen"), false);
+  assert.match(srv.summary.about[0], /Auflauf/);
   assert.notEqual(srv.message, summary.EMPTY_CAPTIONS);
 
   const empty = await summary.loadSummary("abcdefghijk", {

@@ -36,9 +36,9 @@ Die App setzt von Anfang an die Safari-Kennung von oben, damit YouTube die mobil
 
 ## Zurück und der Player
 
-Wischen vom linken Rand geht zurück, solange es einen History-Eintrag gibt. Auf einer Watch-Seite zeigt YouTube selbst den Zurück-Pfeil im Player, dort legt die App keinen eigenen Knopf darüber und lässt das Zeichen oben links in Ruhe. Auf anderen Seiten, wenn die Wischgeste nicht reicht, sitzt ein kleiner Knopf **Zurück** unten links, über der Leiste, nicht auf dem Logo. Ein normales `/watch` ist ein eigener Eintrag, auch wenn YouTube es mit `replaceState` über die Liste legt. Zurück landet wieder auf der vorherigen YouTube-Seite, an der alten Scrollposition.
+Wischen vom linken Rand geht zurück, solange es einen History-Eintrag gibt. Auf einer Watch-Seite zeigt YouTube selbst den Zurück-Pfeil im Player, dort legt die App keinen eigenen Knopf darüber. Auf anderen Seiten, wenn die Wischgeste nicht reicht, sitzt ein kleiner Knopf **Zurück** unten links, über der Leiste. Ein normales `/watch` ist ein eigener Eintrag, auch wenn YouTube es mit `replaceState` über die Liste legt. Zurück landet wieder auf der vorherigen YouTube-Seite, an der alten Scrollposition.
 
-Der Player bleibt YouTubes eigener Player. Die App setzt keine Breite, Höhe, Position oder `object-fit` auf das Video oder den Player. Die Ansicht geht unter Statusleiste und Home-Indikator, wie mobiles Safari mit `viewport-fit=cover`. YouTube setzt den Abstand selbst.
+Die Seite, auch der Player, beginnt unter der Statusleiste, wie in mobilem Safari. Die App zieht die Seite nicht mit `viewport-fit=cover` unter die Uhr. Sie setzt keine Breite, Höhe, Position oder `object-fit` auf das Video. Zeit, Untertitel und der Regler bleiben YouTubes eigene Anordnung.
 
 ## Shorts
 
@@ -50,7 +50,9 @@ Das Stylesheet blendet Shorts aus, bevor sie sichtbar werden. Die Skripte nehmen
 
 ## Kurzfassung
 
-Auf der Watch-Seite, auf der Startseite und in Playlists hat jedes lange Video einen Knopf **Kurzfassung** unter dem Titel. Er startet die Wiedergabe nicht und sitzt nicht in der Kopfzeile neben „Alle abspielen“ oder „Zufallsmix“. Der Text kommt aus den Untertiteln von YouTube. Die signierte Spur liefert der Player-Endpunkt der Seite, mit dem Schlüssel und dem Client aus `ytcfg` (auf dem Desktop WEB). Gelesen wird json3, srv3 und XML. Ist die Spur schon Deutsch, wird sie genommen, eine von Hand geschriebene vor der automatischen, auch `de-DE`. Sonst bittet die Seite YouTube um die Übersetzung nach Deutsch. Ein leerer Body wird mit `fmt=json3` auf derselben URL noch einmal geholt. Das Video wird nicht heruntergeladen. Ohne Untertitel steht: „Für dieses Video gibt es keine Untertitel.“ Die Kurzfassung sagt, worum es geht, nennt ein paar Punkte und das Ende. Sie öffnet sich als dunkles Blatt über der Seite, mit **Schließen**, und wird nicht zu einer Zelle in der Liste.
+Auf der Watch-Seite, auf der Startseite und in Playlists hat jedes lange Video einen Knopf **Kurzfassung** unter dem Titel. Er startet die Wiedergabe nicht und sitzt nicht in der Kopfzeile neben „Alle abspielen“ oder „Zufallsmix“. Die Untertitel kommen von YouTube, über den Player-Endpunkt der Seite (`ytcfg`, auf dem Desktop der Client WEB), als json3, srv3 oder XML. Deutsch hat Vorrang, auch `de-DE`, eine von Hand geschriebene Spur vor der automatischen. Sonst bittet die Seite YouTube um die Übersetzung nach Deutsch. Ein leerer Body wird mit `fmt=json3` auf derselben URL noch einmal geholt. Das Video wird nicht heruntergeladen. Ohne Untertitel steht: „Für dieses Video gibt es keine Untertitel.“
+
+Den Text schreibt das Modell auf dem Gerät, ohne Schlüssel und ohne Konto. Zwei oder drei Sätze, worum es geht, ein paar Punkte, dann wie es ausgeht. Keine wörtlichen Untertitel. Ist Apple Intelligence aus oder das Modell nicht da, steht ein Satz, dass es gerade nicht verfügbar ist. Dieselbe Anfrage geht in der Mac-Erweiterung über native messaging an die App „Shorts ausblenden“. Das Blatt lässt sich scrollen, die Überschrift **Schluss** bleibt lesbar. **Schließen** schließt es. Es wird nicht zu einer Zelle in der Liste.
 
 ## Was die App nicht tut
 

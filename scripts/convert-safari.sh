@@ -28,5 +28,17 @@ xcrun safari-web-extension-converter "$EXT" \
   --no-open \
   --no-prompt
 
+HANDLER="$ROOT/native/SafariWebExtensionHandler.swift"
+copied=0
+while IFS= read -r dest; do
+  cp "$HANDLER" "$dest"
+  copied=$((copied + 1))
+done < <(find "$OUT" -name 'SafariWebExtensionHandler.swift' -print)
+if [[ "$copied" -eq 0 ]]; then
+  echo "SafariWebExtensionHandler.swift wurde im erzeugten Projekt nicht gefunden." >&2
+  exit 1
+fi
+
 echo "Xcode-Projekt liegt unter: $OUT"
 echo "Datei Shorts ausblenden.xcodeproj in Xcode öffnen."
+echo "Die Kurzfassung läuft über das Modell auf dem Gerät (native messaging)."
