@@ -39,9 +39,11 @@
         "https://m.youtube.com/*"
       ],
       "js": [
+        "src/early.js",
         "src/logic.js",
         "src/hide.js",
         "src/controller.js",
+        "src/summary.js",
         "src/content.js"
       ],
       "run_at": "document_start",

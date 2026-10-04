@@ -17,9 +17,11 @@ test("Manifest ist Safari-taugliches MV3 für beide YouTube-Hosts", function () 
   ]);
   assert.equal(manifest.content_scripts[0].run_at, "document_start");
   assert.deepEqual(manifest.content_scripts[0].js, [
+    "src/early.js",
     "src/logic.js",
     "src/hide.js",
     "src/controller.js",
+    "src/summary.js",
     "src/content.js",
   ]);
   assert.equal(manifest.action.default_popup, "popup/popup.html");

@@ -3,88 +3,110 @@ const assert = require("node:assert/strict");
 const { ns, loadDom, marked } = require("./helpers");
 const hide = ns.hide;
 
-function scan(name, url) {
-  const dom = loadDom(name, url);
-  hide.scan(dom.window.document, url || "https://www.youtube.com/");
-  return dom;
+function gone(el) {
+  assert.equal(el.isConnected, false);
+  assert.equal(marked(el), true);
+}
+
+function kept(el) {
+  assert.equal(el.isConnected, true);
+  assert.equal(marked(el), false);
 }
 
 test("Startseiten-Regal und normales Video", function () {
-  const dom = scan("desktop-home.html");
+  const dom = loadDom("desktop-home.html");
   const doc = dom.window.document;
-  assert.equal(marked(doc.querySelector("ytd-rich-section-renderer")), true);
-  assert.equal(marked(doc.querySelector("ytd-rich-shelf-renderer")), true);
+  const section = doc.querySelector("ytd-rich-section-renderer");
+  const shelf = doc.querySelector("ytd-rich-shelf-renderer");
   const normal = doc.querySelector('a[href="/watch?v=longhome"]').closest("ytd-rich-item-renderer");
-  assert.equal(marked(normal), false);
+  hide.scan(doc, "https://www.youtube.com/");
+  gone(section);
+  gone(shelf);
+  kept(normal);
 });
 
 test("gemischtes Abo-Regal behält lange Videos", function () {
-  const dom = scan("desktop-subscriptions.html");
+  const dom = loadDom("desktop-subscriptions.html");
   const doc = dom.window.document;
-  assert.equal(marked(doc.querySelector("ytd-rich-shelf-renderer")), false);
+  const shelf = doc.querySelector("ytd-rich-shelf-renderer");
   const shortItem = doc.querySelector('a[href="/shorts/abo1"]').closest("ytd-rich-item-renderer");
   const watchItem = doc.querySelector('a[href="/watch?v=abo2"]').closest("ytd-rich-item-renderer");
-  assert.equal(marked(shortItem), true);
-  assert.equal(marked(watchItem), false);
+  hide.scan(doc, "https://www.youtube.com/");
+  kept(shelf);
+  gone(shortItem);
+  kept(watchItem);
 });
 
 test("Seitenleiste, Mini-Guide und Shorts-Tab", function () {
-  const dom = scan("desktop-sidebar.html");
+  const dom = loadDom("desktop-sidebar.html");
   const doc = dom.window.document;
   const entries = [...doc.querySelectorAll("ytd-guide-entry-renderer")];
-  assert.equal(marked(entries[0]), false);
-  assert.equal(marked(entries[1]), true);
-  assert.equal(marked(entries[2]), false);
-  assert.equal(marked(entries[3]), true);
   const mini = [...doc.querySelectorAll("ytd-mini-guide-entry-renderer")];
-  assert.equal(marked(mini[0]), false);
-  assert.equal(marked(mini[1]), true);
   const chips = [...doc.querySelectorAll("yt-chip-cloud-chip-renderer")];
-  assert.equal(marked(chips[0]), false);
-  assert.equal(marked(chips[1]), true);
+  hide.scan(doc, "https://www.youtube.com/");
+  kept(entries[0]);
+  gone(entries[1]);
+  kept(entries[2]);
+  gone(entries[3]);
+  kept(mini[0]);
+  gone(mini[1]);
+  kept(chips[0]);
+  gone(chips[1]);
 });
 
 test("Suche: Shorts weg, Erwähnung in der Beschreibung bleibt", function () {
-  const dom = scan("desktop-search.html");
+  const dom = loadDom("desktop-search.html");
   const doc = dom.window.document;
   const videos = [...doc.querySelectorAll("ytd-video-renderer")];
-  assert.equal(marked(videos[0]), true);
-  assert.equal(marked(videos[1]), false);
-  assert.equal(marked(videos[2]), false);
-  assert.equal(marked(doc.querySelector("ytd-item-section-renderer")), false);
+  const section = doc.querySelector("ytd-item-section-renderer");
+  hide.scan(doc, "https://www.youtube.com/");
+  gone(videos[0]);
+  kept(videos[1]);
+  kept(videos[2]);
+  kept(section);
 });
 
 test("verwandte Videos: Reel-Regal weg, langes Video bleibt", function () {
-  const dom = scan("desktop-related.html");
+  const dom = loadDom("desktop-related.html");
   const doc = dom.window.document;
-  assert.equal(marked(doc.querySelector("ytd-reel-shelf-renderer")), true);
-  assert.equal(marked(doc.querySelector("ytd-item-section-renderer")), false);
+  const reel = doc.querySelector("ytd-reel-shelf-renderer");
+  const section = doc.querySelector("ytd-item-section-renderer");
   const shorts = doc.querySelector('a[href="/shorts/rel2?feature=share"]').closest("ytd-compact-video-renderer");
   const watch = doc.querySelector('a[href="/watch?v=rel3"]').closest("ytd-compact-video-renderer");
-  assert.equal(marked(shorts), true);
-  assert.equal(marked(watch), false);
+  hide.scan(doc, "https://www.youtube.com/");
+  gone(reel);
+  kept(section);
+  gone(shorts);
+  kept(watch);
 });
 
 test("mobile Startseite, Pivot und Reels", function () {
-  const home = scan("mobile-home.html", "https://m.youtube.com/");
+  const home = loadDom("mobile-home.html", "https://m.youtube.com/");
   const doc = home.window.document;
-  assert.equal(marked(doc.querySelector("ytm-rich-section-renderer")), true);
-  assert.equal(marked(doc.querySelector("ytm-reel-shelf-renderer")), true);
+  const section = doc.querySelector("ytm-rich-section-renderer");
+  const reel = doc.querySelector("ytm-reel-shelf-renderer");
   const watch = doc.querySelector('a[href="/watch?v=mobil2"]').closest("ytm-video-with-context-renderer");
-  assert.equal(marked(watch), false);
   const pivots = [...doc.querySelectorAll("ytm-pivot-bar-item-renderer")];
-  assert.equal(marked(pivots[0]), false);
-  assert.equal(marked(pivots[1]), true);
-  assert.equal(marked(pivots[2]), false);
+  hide.scan(doc, "https://m.youtube.com/");
+  gone(section);
+  gone(reel);
+  kept(watch);
+  kept(pivots[0]);
+  gone(pivots[1]);
+  kept(pivots[2]);
 
-  const reels = scan("mobile-reels.html", "https://m.youtube.com/results?search_query=teig");
+  const reels = loadDom("mobile-reels.html", "https://m.youtube.com/results?search_query=teig");
   const mobile = reels.window.document;
-  assert.equal(marked(mobile.querySelector("ytm-video-with-context-renderer")), true);
-  assert.equal(marked(mobile.querySelector("ytm-compact-video-renderer")), false);
-  assert.equal(marked(mobile.querySelector("ytm-shorts-lockup-view-model")), true);
+  const shortCard = mobile.querySelector("ytm-video-with-context-renderer");
+  const compact = mobile.querySelector("ytm-compact-video-renderer");
+  const lockup = mobile.querySelector("ytm-shorts-lockup-view-model");
+  hide.scan(mobile, "https://m.youtube.com/results?search_query=teig");
+  gone(shortCard);
+  kept(compact);
+  gone(lockup);
 });
 
-test("Links im Shadow DOM blenden die Karte aus", function () {
+test("Links im Shadow DOM nehmen die Karte aus dem DOM", function () {
   const dom = loadDom("desktop-home.html");
   const doc = dom.window.document;
   const host = doc.createElement("ytd-compact-video-renderer");
@@ -103,20 +125,22 @@ test("Links im Shadow DOM blenden die Karte aus", function () {
   doc.body.appendChild(watchHost);
 
   hide.scan(doc, "https://www.youtube.com/");
-  assert.equal(marked(host), true);
-  assert.equal(marked(watchHost), false);
+  gone(host);
+  kept(watchHost);
 });
 
 test("aus schaltet Markierungen und das Stylesheet ab", function () {
   const dom = loadDom("desktop-home.html");
   const doc = dom.window.document;
-  hide.applyEnabled(doc, true, "https://www.youtube.com/");
+  const shelf = doc.querySelector("ytd-rich-shelf-renderer");
+  hide.applyEnabled(doc, true, "https://www.youtube.com/", false);
   assert.ok(doc.getElementById(hide.STYLE_ID));
-  assert.equal(marked(doc.querySelector("ytd-rich-shelf-renderer")), true);
+  assert.equal(shelf.isConnected, true);
+  assert.equal(marked(shelf), true);
   hide.applyEnabled(doc, false, "https://www.youtube.com/");
   assert.equal(doc.getElementById(hide.STYLE_ID), null);
-  assert.equal(marked(doc.querySelector("ytd-rich-shelf-renderer")), false);
-  assert.equal(doc.querySelector("ytd-rich-shelf-renderer").style.display, "");
+  assert.equal(marked(shelf), false);
+  assert.equal(shelf.style.display, "");
 });
 
 test("Sperrseite nennt den blockierten Zustand auf Deutsch", function () {
@@ -138,4 +162,5 @@ test("CSS trifft Desktop- und Mobil-Hooks", function () {
   assert.match(css, /a\[href\^="\/shorts\/"\]/);
   assert.match(css, /m\.youtube\.com\/shorts/);
   assert.doesNotMatch(css, /a\[href\^="\/shorts"\]/);
+  assert.match(css, /#description a/);
 });

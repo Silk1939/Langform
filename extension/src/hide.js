@@ -167,108 +167,109 @@
     return label === "Shorts" || label === "YouTube Shorts";
   }
 
-  function hideElement(el) {
+  var removedCount = 0;
+
+  function hideElement(el, doRemove, doomed) {
     if (!el || el.nodeType !== 1) return;
     if (el.tagName === "HTML" || el.tagName === "BODY" || el.tagName === "HEAD") return;
-    if (el.getAttribute(MARK) === "1") return;
-    el.setAttribute(MARK, "1");
-    if (el.classList) el.classList.add(HIDDEN_CLASS);
-    if (el.style && el.style.setProperty) el.style.setProperty("display", "none", "important");
+    if (el.getAttribute(MARK) !== "1") {
+      el.setAttribute(MARK, "1");
+      if (el.classList) el.classList.add(HIDDEN_CLASS);
+      if (el.style && el.style.setProperty) el.style.setProperty("display", "none", "important");
+    }
+    if (doRemove && doomed) doomed.push(el);
   }
 
-  function hideWrappingSection(shelf, base) {
+  function isShortsTab(el) {
+    var tag = tagNameOf(el);
+    if (
+      tag !== "ytm-pivot-bar-item-renderer" &&
+      tag !== "ytd-guide-entry-renderer" &&
+      tag !== "ytd-mini-guide-entry-renderer"
+    ) {
+      return false;
+    }
+    var label = el.getAttribute("aria-label") || el.getAttribute("title") || "";
+    label = String(label).replace(/\s+/g, " ").trim();
+    if (!label && el.textContent) label = String(el.textContent).replace(/\s+/g, " ").trim();
+    return label === "Shorts" || label === "YouTube Shorts";
+  }
+
+  function hideWrappingSection(shelf, base, doRemove, doomed) {
     var node = parentAcross(shelf);
     var guard = 0;
     while (node && guard++ < 8) {
       if (node.nodeType === 1 && STOP_TAGS[node.tagName]) return;
       if (node.nodeType === 1 && SECTION_TAGS[tagNameOf(node)]) {
         var counts = countMedia(node, base);
-        if (counts.watch === 0) hideElement(node);
+        if (counts.watch === 0) hideElement(node, doRemove, doomed);
         return;
       }
       node = parentAcross(node);
     }
   }
 
-  function scan(rootNode, base) {
+  function scan(rootNode, base, options) {
     if (!rootNode || (rootNode.nodeType !== 1 && rootNode.nodeType !== 9 && rootNode.nodeType !== 11)) {
       return;
     }
+    var doRemove = !options || options.remove !== false;
+    var doomed = [];
     var pageBase = base || "https://www.youtube.com/";
     var anchors = [];
     var shelves = [];
     var chips = [];
     var marked = [];
+    var tabs = [];
     forEachElement(rootNode, function (el) {
       var tag = tagNameOf(el);
       if (el.tagName === "A" && el.hasAttribute("href")) anchors.push(el);
       if (REEL_TAGS[tag] || tag.indexOf("shelf") !== -1) shelves.push(el);
       if (tag.indexOf("chip") !== -1) chips.push(el);
       if (hasShortsAttr(el)) marked.push(el);
+      if (
+        tag === "ytm-pivot-bar-item-renderer" ||
+        tag === "ytd-guide-entry-renderer" ||
+        tag === "ytd-mini-guide-entry-renderer"
+      ) {
+        tabs.push(el);
+      }
     });
 
     for (var s = 0; s < shelves.length; s++) {
       if (!shelfIsShorts(shelves[s], pageBase)) continue;
-      hideElement(shelves[s]);
-      hideWrappingSection(shelves[s], pageBase);
+      hideElement(shelves[s], doRemove, doomed);
+      hideWrappingSection(shelves[s], pageBase, doRemove, doomed);
     }
     for (var m = 0; m < marked.length; m++) {
-      hideElement(outermostItem(marked[m]) || marked[m]);
+      hideElement(outermostItem(marked[m]) || marked[m], doRemove, doomed);
     }
     for (var c = 0; c < chips.length; c++) {
-      if (isShortsChip(chips[c])) hideElement(chips[c]);
+      if (isShortsChip(chips[c])) hideElement(chips[c], doRemove, doomed);
+    }
+    for (var t = 0; t < tabs.length; t++) {
+      if (isShortsTab(tabs[t])) hideElement(tabs[t], doRemove, doomed);
     }
     for (var a = 0; a < anchors.length; a++) {
       if (ignoredAnchor(anchors[a])) continue;
       if (!logic().isShortsHref(anchors[a].getAttribute("href"), pageBase)) continue;
-      hideElement(outermostItem(anchors[a]) || anchors[a]);
+      hideElement(outermostItem(anchors[a]) || anchors[a], doRemove, doomed);
     }
-  }
-
-  function anchorSelectors() {
-    return [
-      'a[href="/shorts"]',
-      'a[href="/shorts/"]',
-      'a[href^="/shorts/"]',
-      'a[href^="/shorts?"]',
-      'a[href="/feed/shorts"]',
-      'a[href^="/feed/shorts?"]',
-      'a[href^="https://www.youtube.com/shorts/"]',
-      'a[href="https://www.youtube.com/shorts"]',
-      'a[href^="https://www.youtube.com/shorts?"]',
-      'a[href^="https://m.youtube.com/shorts/"]',
-      'a[href="https://m.youtube.com/shorts"]',
-      'a[href^="https://m.youtube.com/shorts?"]',
-      'a[href^="https://youtube.com/shorts/"]',
-      'a[href="https://youtube.com/shorts"]',
-      'a[href^="https://youtube.com/shorts?"]',
-      'a[href^="https://www.youtube.com/feed/shorts"]',
-      'a[href^="https://m.youtube.com/feed/shorts"]',
-    ];
+    if (!doRemove) return 0;
+    var removedNow = 0;
+    for (var d = 0; d < doomed.length; d++) {
+      var node = doomed[d];
+      if (!node || !node.isConnected || !node.parentNode) continue;
+      node.remove();
+      removedNow += 1;
+      removedCount += 1;
+    }
+    return removedNow;
   }
 
   function cssText() {
-    var anchors = anchorSelectors().join(", ");
-    var items = Object.keys(ITEM_TAGS).map(function (tag) {
-      return tag + ":has(" + anchors + ")";
-    });
-    var always = [
-      "ytd-reel-shelf-renderer",
-      "ytm-reel-shelf-renderer",
-      "ytd-reel-item-renderer",
-      "ytm-reel-item-renderer",
-      "ytd-reel-video-renderer",
-      "ytm-reel-video-renderer",
-      "ytd-rich-shelf-renderer[is-shorts]",
-      "ytm-rich-shelf-renderer[is-shorts]",
-      "ytd-rich-section-renderer:has(ytd-reel-shelf-renderer)",
-      "ytd-rich-section-renderer:has(ytd-rich-shelf-renderer[is-shorts])",
-      "ytm-rich-section-renderer:has(ytm-reel-shelf-renderer)",
-      "ytm-rich-section-renderer:has(ytm-rich-shelf-renderer[is-shorts])",
-      "[overlay-style=\"SHORTS\"]",
-      "." + HIDDEN_CLASS,
-    ];
-    return always.concat(items).join(",\n") + " {\n  display: none !important;\n}\n";
+    var shared = globalThis.ShortsAusblenden && globalThis.ShortsAusblenden.buildCss;
+    return shared ? shared() : "";
   }
 
   function ensureStyle(doc) {
@@ -325,16 +326,22 @@
     doc.documentElement.appendChild(style);
   }
 
-  function applyEnabled(doc, enabled, base) {
-    if (!doc) return;
+  function applyEnabled(doc, enabled, base, remove) {
+    if (!doc) return 0;
     if (enabled) {
       ensureStyle(doc);
-      scan(doc, base);
-      return;
+      return scan(doc, base, { remove: remove !== false });
     }
     removeStyle(doc);
     clearMarks(doc);
     setVeil(doc, false);
+    return 0;
+  }
+
+  function pullRemoved() {
+    var count = removedCount;
+    removedCount = 0;
+    return count;
   }
 
   return {
@@ -348,5 +355,6 @@
     setVeil: setVeil,
     clearMarks: clearMarks,
     hideElement: hideElement,
+    pullRemoved: pullRemoved,
   };
 });

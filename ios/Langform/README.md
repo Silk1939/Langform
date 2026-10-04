@@ -36,9 +36,15 @@ Die App startet mit der normalen WebView-Kennung. Erscheint die Ablehnung (`disa
 
 ## Shorts
 
-Beim Dokumentstart, bevor YouTube zeichnet, hängt die App drei unveränderte Skripte aus `extension/src` in die Seite: `logic.js`, `hide.js`, `controller.js`. Dazu kommt ein kurzer Start in `ShortsBootstrap.js`, weil die Erweiterung sonst `chrome.storage` erwartet. In der App ist die Sperre immer an. Einen Schalter gibt es nicht.
+Beim Dokumentstart, bevor YouTube zeichnet, hängt die App dieselben Skripte wie die Safari-Erweiterung in die Seite: zuerst `early.js` mit dem Stylesheet, dann `logic.js`, `hide.js`, `controller.js`, `summary.js` und `ShortsBootstrap.js`. Die Erweiterung liest `chrome.storage`. Den Schalter gibt es in der App nicht, deshalb setzt `ShortsBootstrap.js` die Sperre fest auf an.
 
-Die Skripte blenden Shorts-Regale, den Shorts-Tab und Links auf Shorts aus, auf `www.youtube.com`, `m.youtube.com` und `youtube.com`. `/shorts`, `/shorts/…` und `/feed/shorts` gehen auf die Startseite desselben Hosts. Während der Umleitung steht dort: „Shorts sind blockiert. Weiter zur Startseite …“. Ein normales `/watch`-Video bleibt.
+Das Stylesheet blendet Shorts aus, bevor sie sichtbar werden. Die Skripte nehmen danach Tab, Regale, Chips und Links aus dem DOM, auch den Eintrag in der unteren Leiste auf `m.youtube.com`. Das gilt für `www.youtube.com` und `m.youtube.com`. Der Beobachter merkt sich neue Knoten nur und arbeitet sie nach dem Scrollen ab, damit die Liste nicht ruckelt.
+
+`/shorts`, `/shorts/…` und `/feed/shorts` gehen auf die Startseite desselben Hosts. Während der Umleitung steht dort: „Shorts sind blockiert. Weiter zur Startseite …“. Ein normales `/watch`-Video bleibt.
+
+## Kurzfassung
+
+Auf der Watch-Seite steht unter den Videodaten eine Kurzfassung auf Deutsch. Auf Startseite und in Feeds hat jedes lange Video einen Knopf **Kurzfassung**, der die Wiedergabe nicht startet. Der Text kommt aus den Untertiteln von YouTube. Ist die Spur schon Deutsch, wird sie genommen, eine von Hand geschriebene vor der automatischen. Sonst bittet die Seite YouTube um die Übersetzung nach Deutsch. Das Video wird nicht heruntergeladen. Ohne Untertitel steht: „Für dieses Video gibt es keine Untertitel.“ Die Kurzfassung sagt, worum es geht, nennt ein paar Punkte und das Ende. Sie liegt im Seitenfluss, mit hellem Grund, und bleibt nicht über dem Player liegen.
 
 ## Was die App nicht tut
 

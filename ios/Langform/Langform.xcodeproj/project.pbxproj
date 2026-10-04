@@ -10,6 +10,8 @@
 		A10000000000000000000013 /* logic.js in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000010 /* logic.js */; };
 		A10000000000000000000014 /* hide.js in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* hide.js */; };
 		A10000000000000000000015 /* controller.js in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* controller.js */; };
+		A10000000000000000000018 /* early.js in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000016 /* early.js */; };
+		A10000000000000000000019 /* summary.js in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* summary.js */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -17,6 +19,8 @@
 		A10000000000000000000010 /* logic.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = logic.js; path = ../../extension/src/logic.js; sourceTree = SOURCE_ROOT; };
 		A10000000000000000000011 /* hide.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = hide.js; path = ../../extension/src/hide.js; sourceTree = SOURCE_ROOT; };
 		A10000000000000000000012 /* controller.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = controller.js; path = ../../extension/src/controller.js; sourceTree = SOURCE_ROOT; };
+		A10000000000000000000016 /* early.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = early.js; path = ../../extension/src/early.js; sourceTree = SOURCE_ROOT; };
+		A10000000000000000000017 /* summary.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = summary.js; path = ../../extension/src/summary.js; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -46,9 +50,11 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000002 /* Langform */,
+				A10000000000000000000016 /* early.js */,
 				A10000000000000000000010 /* logic.js */,
 				A10000000000000000000011 /* hide.js */,
 				A10000000000000000000012 /* controller.js */,
+				A10000000000000000000017 /* summary.js */,
 				A10000000000000000000004 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -122,9 +128,11 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000018 /* early.js in Resources */,
 				A10000000000000000000013 /* logic.js in Resources */,
 				A10000000000000000000014 /* hide.js in Resources */,
 				A10000000000000000000015 /* controller.js in Resources */,
+				A10000000000000000000019 /* summary.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

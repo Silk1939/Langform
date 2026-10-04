@@ -23,9 +23,12 @@
     // Redirect only after extension storage answers. A stale on-flag in
     // page storage must not send someone away after the switch is off.
     var confirmed = false;
+    var removedInSession = 0;
     var observer = null;
     var queued = [];
     var flushScheduled = false;
+    var scrolling = false;
+    var scrollTimer = 0;
     var lastRedirectKey = "";
 
     function pageBase() {
@@ -65,11 +68,21 @@
         else hide.setVeil(doc, true);
         return;
       }
-      hide.scan(doc, pageBase());
+      remember(hide.scan(doc, pageBase(), { remove: confirmed }));
+    }
+
+    function remember(count) {
+      if (typeof count === "number" && count > 0) removedInSession += count;
+    }
+
+    function pokeSummary() {
+      var summary = win.ShortsAusblenden && win.ShortsAusblenden.summary;
+      if (summary && summary.poke) summary.poke(win);
     }
 
     function flushQueue() {
       flushScheduled = false;
+      if (scrolling) return;
       if (!enabled) {
         queued = [];
         return;
@@ -79,19 +92,43 @@
         queued = [];
         if (confirmed) goHome(win.location.pathname);
         else hide.setVeil(doc, true);
+        pokeSummary();
         return;
       }
-      var batch = queued;
-      queued = [];
-      for (var i = 0; i < batch.length; i++) hide.scan(batch[i], pageBase());
+      var start = Date.now();
+      while (queued.length && Date.now() - start < 8) {
+        var node = queued.shift();
+        if (!node || node.nodeType !== 1 || !node.isConnected) continue;
+        if (node.tagName === "VIDEO" || node.tagName === "YTD-PLAYER" || node.tagName === "YTM-PLAYER") continue;
+        if (node.id === "movie_player") continue;
+        remember(hide.scan(node, pageBase(), { remove: confirmed }));
+      }
+      if (queued.length) scheduleFlush();
+      else pokeSummary();
+    }
+
+    function scheduleFlush() {
+      if (flushScheduled || scrolling) return;
+      flushScheduled = true;
+      setTimeout(flushQueue, 0);
+    }
+
+    function noteScroll() {
+      scrolling = true;
+      if (scrollTimer) clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(function () {
+        scrolling = false;
+        scrollTimer = 0;
+        scheduleFlush();
+      }, 140);
     }
 
     function queue(node) {
       if (!node || node.nodeType !== 1) return;
+      if (node.tagName === "VIDEO" || node.id === "movie_player") return;
       queued.push(node);
-      if (flushScheduled) return;
-      flushScheduled = true;
-      Promise.resolve().then(flushQueue);
+      if (queued.length > 40) queued = [doc.documentElement];
+      scheduleFlush();
     }
 
     function ensureObserver() {
@@ -114,9 +151,14 @@
         attributes: true,
         attributeFilter: ["href", "is-shorts", "overlay-style"],
       });
+      doc.addEventListener("scroll", noteScroll, { passive: true, capture: true });
     }
 
     function stopObserver() {
+      if (scrollTimer) clearTimeout(scrollTimer);
+      scrollTimer = 0;
+      scrolling = false;
+      doc.removeEventListener("scroll", noteScroll, true);
       if (!observer) return;
       observer.disconnect();
       observer = null;
@@ -152,15 +194,26 @@
       if (allowRedirect) confirmed = true;
       ensureHistory();
       ensureObserver();
-      hide.applyEnabled(doc, true, pageBase());
+      remember(hide.applyEnabled(doc, true, pageBase(), confirmed));
+      pokeSummary();
     }
 
     function disarm() {
+      var removed = removedInSession;
+      removedInSession = 0;
       enabled = false;
       confirmed = false;
       lastRedirectKey = "";
       stopObserver();
       hide.applyEnabled(doc, false, pageBase());
+      if (removed > 0) {
+        try {
+          if (deps && deps.reload) deps.reload();
+          else win.location.reload();
+        } catch (err) {
+          /* reload is optional in tests */
+        }
+      }
     }
 
     function applyStored(isOn) {
@@ -201,6 +254,9 @@
         applyStored(flag !== "0");
       }
     }
+
+    var summary = win.ShortsAusblenden && win.ShortsAusblenden.summary;
+    if (summary && summary.start) summary.start(win);
   }
 
   return { start: start };

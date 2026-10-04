@@ -52,29 +52,37 @@ test("veraltetes An-Flag verliert gegen den ausgeschalteten Speicher", async fun
     enabled: false,
     flag: "1",
   });
-  assert.equal(marked(ctx.win.document.querySelector("ytd-rich-shelf-renderer")), true);
+  const shelf = ctx.win.document.querySelector("ytd-rich-shelf-renderer");
+  assert.equal(marked(shelf), true);
+  assert.equal(shelf.isConnected, true);
   await delay(20);
   assert.deepEqual(ctx.redirects, []);
-  assert.equal(marked(ctx.win.document.querySelector("ytd-rich-shelf-renderer")), false);
+  assert.deepEqual(ctx.reloads, []);
+  assert.equal(shelf.isConnected, true);
+  assert.equal(marked(shelf), false);
   assert.equal(ctx.win.document.documentElement.classList.contains(hide.VEIL_CLASS), false);
   assert.equal(ctx.win.localStorage.getItem(ns.logic.STORAGE_FLAG), "0");
 });
 
-test("Schalter blendet ein Regal live aus und wieder ein", async function () {
+test("Schalter nimmt ein Regal aus dem DOM und lädt beim Ausschalten neu", async function () {
   const ctx = boot({
     url: "https://www.youtube.com/",
     html: fixture("desktop-home.html"),
     enabled: true,
   });
-  await delay(20);
   const shelf = ctx.win.document.querySelector("ytd-rich-shelf-renderer");
   const normal = ctx.win.document.querySelector('a[href="/watch?v=longhome"]').closest("ytd-rich-item-renderer");
+  await delay(20);
+  assert.equal(shelf.isConnected, false);
   assert.equal(marked(shelf), true);
+  assert.equal(normal.isConnected, true);
   assert.equal(marked(normal), false);
   ctx.storage.setEnabled(false);
-  assert.equal(marked(shelf), false);
+  assert.deepEqual(ctx.reloads, ["https://www.youtube.com/"]);
+  assert.equal(ctx.win.document.getElementById(hide.STYLE_ID), null);
   ctx.storage.setEnabled(true);
-  assert.equal(marked(shelf), true);
+  assert.ok(ctx.win.document.getElementById(hide.STYLE_ID));
+  assert.equal(normal.isConnected, true);
   assert.equal(marked(normal), false);
 });
 
@@ -123,8 +131,10 @@ test("neue Shorts-Karte verschwindet über den MutationObserver", async function
   item.appendChild(link);
   doc.body.appendChild(item);
   await delay(20);
+  assert.equal(item.isConnected, false);
   assert.equal(marked(item), true);
   const watch = doc.querySelector('a[href="/watch?v=rel3"]').closest("ytd-compact-video-renderer");
+  assert.equal(watch.isConnected, true);
   assert.equal(marked(watch), false);
 });
 
@@ -141,5 +151,29 @@ test("geänderter href auf einen Short blendet die Karte aus", async function ()
   assert.equal(marked(card), false);
   link.setAttribute("href", "/shorts/umbenannt");
   await delay(20);
+  assert.equal(card.isConnected, false);
   assert.equal(marked(card), true);
+});
+
+test("während des Scrollens bleibt die Karte, danach verschwindet sie", async function () {
+  const ctx = boot({
+    url: "https://www.youtube.com/",
+    html: fixture("desktop-related.html"),
+    enabled: true,
+  });
+  await delay(20);
+  const doc = ctx.win.document;
+  doc.dispatchEvent(new ctx.win.Event("scroll", { bubbles: true }));
+  const item = doc.createElement("ytd-compact-video-renderer");
+  const link = doc.createElement("a");
+  link.setAttribute("href", "/shorts/scroll1");
+  link.textContent = "Beim Scrollen";
+  item.appendChild(link);
+  doc.body.appendChild(item);
+  assert.equal(item.isConnected, true);
+  await delay(20);
+  assert.equal(item.isConnected, true);
+  await delay(200);
+  assert.equal(item.isConnected, false);
+  assert.equal(marked(item), true);
 });

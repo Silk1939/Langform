@@ -2,9 +2,11 @@ const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
 
+require("../extension/src/early.js");
 require("../extension/src/logic.js");
 require("../extension/src/hide.js");
 require("../extension/src/controller.js");
+require("../extension/src/summary.js");
 
 const ns = globalThis.ShortsAusblenden;
 
@@ -56,13 +58,17 @@ function boot(options) {
     win.localStorage.setItem(ns.logic.STORAGE_FLAG, options.flag);
   }
   const redirects = [];
+  const reloads = [];
   const storage = createStorage(options.enabled !== false);
   ns.controller.start(win, storage, {
     redirect(url) {
       redirects.push(url);
     },
+    reload() {
+      reloads.push(win.location.href);
+    },
   });
-  return { dom: dom, win: win, redirects: redirects, storage: storage };
+  return { dom: dom, win: win, redirects: redirects, reloads: reloads, storage: storage };
 }
 
 function delay(ms) {

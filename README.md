@@ -9,10 +9,11 @@ Die iPhone-App liegt in `ios/Langform`. Sie zeigt die echte YouTube-Seite und bl
 ## Was sie tut
 
 - Läuft auf `https://www.youtube.com/*` und `https://m.youtube.com/*`. Safari auf dem iPhone öffnet die mobile Seite.
-- Versteckt Shorts auf der Startseite, in Abos, in der Suche, in der Seitenleiste, bei verwandten Videos und in mobilen Reels.
-- Wer `/shorts`, `/shorts/…` oder `/feed/shorts` öffnet, landet sofort auf der YouTube-Startseite. Während die Umleitung läuft, steht dort: „Shorts sind blockiert. Weiter zur Startseite …“.
-- Das Symbol in der Symbolleiste öffnet einen Schalter, **Shorts blockieren**. Standard ist an. Aus heißt: nichts verstecken und nicht umleiten. Die Wahl bleibt auf dem Gerät, ohne Konto.
-- Kein Server, keine Auswertung, keine weiteren Dienste.
+- Nimmt Shorts aus der Seite: Tab, Regale, Chips und Links, auch die untere Leiste auf dem Handy. Bevor YouTube zeichnet, liegt ein Stylesheet, danach entfernen die Skripte die Knoten. Watch-Videos bleiben.
+- Wer `/shorts`, `/shorts/…` oder `/feed/shorts` öffnet, landet auf der Startseite desselben Hosts. Während die Umleitung läuft, steht dort: „Shorts sind blockiert. Weiter zur Startseite …“.
+- Das Symbol in der Symbolleiste öffnet einen Schalter, **Shorts blockieren**. Standard ist an. Aus heißt: nichts verstecken und nicht umleiten. Waren Shorts schon aus dem DOM entfernt, lädt die Seite neu, damit sie wiederkommen. Die Wahl bleibt auf dem Gerät, ohne Konto.
+- Lange Videos bekommen eine **Kurzfassung** auf Deutsch. Quelle sind die Untertitel von YouTube, bei einer anderen Sprache die Übersetzung nach Deutsch. Das Video wird nicht heruntergeladen. Ohne Untertitel steht ein Satz. Die Kurzfassung liegt im Textfluss und deckt den Player nicht dauerhaft zu.
+- Kein Server, keine Auswertung, keine weiteren Dienste. Kein Werbeblocker, kein Download, kein Auslesen von Stream-Adressen.
 
 ## Was sie nicht tut
 
@@ -26,7 +27,7 @@ Mit einer kostenlosen Apple-ID muss die App etwa alle **7 Tage** neu signiert we
 2. Entwicklermodus einschalten.
 3. „Entpackte Erweiterung laden“ und den Ordner `extension` dieses Projekts wählen.
 4. YouTube öffnen. Shorts-Regale sollten fehlen. Ein Aufruf von `https://www.youtube.com/shorts` springt auf die Startseite.
-5. Auf das Symbol klicken und **Shorts blockieren** ausstellen. Shorts sind danach wieder da, auch ohne die Seite neu zu laden.
+5. Auf das Symbol klicken und **Shorts blockieren** ausstellen. Die Seite lädt neu, danach sind Shorts wieder da.
 
 ## Kurz testen in Firefox
 
