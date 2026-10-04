@@ -4,6 +4,8 @@ Browser-Erweiterung für Tan Ipekkaya. Sie blendet YouTube Shorts aus, solange Y
 
 Daneben liegt **Langform** in `apps/langform`: eine eigene Web-App für lange Videos, ohne Shorts und ohne Konto. Bedienung und Start stehen in `apps/langform/README.md`.
 
+Die iPhone-App liegt in `ios/Langform`. Sie zeigt die echte YouTube-Seite und blendet Shorts mit denselben Skripten aus. Öffnen und Anmeldung stehen in `ios/Langform/README.md`.
+
 ## Was sie tut
 
 - Läuft auf `https://www.youtube.com/*` und `https://m.youtube.com/*`. Safari auf dem iPhone öffnet die mobile Seite.
@@ -91,4 +93,5 @@ extension/popup/           Schalter, deutsch
 scripts/convert-safari.sh  Xcode-Projekt für Mac und iPhone
 tests/fixtures/            nachgebautes YouTube-Markup
 apps/langform/             Web-App für lange Videos
+ios/Langform/              iPhone-App, Vollbild auf youtube.com
 ```

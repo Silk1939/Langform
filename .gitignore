@@ -3,3 +3,5 @@ node_modules/
 safari/
 .DS_Store
 *.xcuserstate
+*.xcuserdatad/
+DerivedData/
