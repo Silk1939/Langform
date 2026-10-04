@@ -9,31 +9,36 @@ import FoundationModels
 /// The page script sends caption text; this handler asks the on-device model.
 class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     func beginRequest(with context: NSExtensionContext) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.sync {
+                self.beginRequest(with: context)
+            }
+            return
+        }
         let item = context.inputItems.first as? NSExtensionItem
         let message = item?.userInfo?[SFExtensionMessageKey] as? [String: Any]
         let text = message?["text"] as? String ?? ""
-        let request = KurzfassungRequest(context)
-        // Das Modell braucht den Run Loop des Hauptthreads. Hier nicht warten.
-        Task.detached {
-            let payload = await SafariOnDeviceSummary.reply(for: text)
-            await request.complete(payload)
+        let box = SummaryBox()
+        // Bleib in beginRequest. Task.detached kehrt vorher zurück, und Safari
+        // beendet die Anfrage, bevor completeRequest läuft. Keine Semaphore:
+        // der Run Loop muss wach bleiben, sonst antwortet das Modell nicht.
+        let task = Task { @MainActor in
+            box.value = await SafariOnDeviceSummary.reply(for: text)
+            box.done = true
         }
+        while !box.done {
+            RunLoop.main.run(mode: .common, before: Date(timeIntervalSinceNow: 0.05))
+        }
+        withExtendedLifetime(task) {}
+        let response = NSExtensionItem()
+        response.userInfo = [SFExtensionMessageKey: box.value]
+        context.completeRequest(returningItems: [response], completionHandler: nil)
     }
 }
 
-private final class KurzfassungRequest: @unchecked Sendable {
-    private let context: NSExtensionContext
-
-    init(_ context: NSExtensionContext) {
-        self.context = context
-    }
-
-    @MainActor
-    func complete(_ payload: [String: Any]) {
-        let response = NSExtensionItem()
-        response.userInfo = [SFExtensionMessageKey: payload]
-        context.completeRequest(returningItems: [response], completionHandler: nil)
-    }
+private final class SummaryBox: @unchecked Sendable {
+    var value: [String: Any] = ["message": SafariOnDeviceSummary.unavailableMessage]
+    var done = false
 }
 
 enum SafariOnDeviceSummary {
