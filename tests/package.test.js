@@ -62,9 +62,13 @@ test("die App setzt kein eigenes Layout auf den YouTube-Player", function () {
   const model = fs.readFileSync(path.join(root, "ios/Langform/Langform/OnDeviceSummary.swift"), "utf8");
   assert.match(model, /FoundationModels/);
   assert.match(model, /Die Kurzfassung geht nur mit dem Modell auf dem Gerät/);
+  assert.match(model, /drei bis sechs Merksätze/);
+  assert.match(model, /\["summary": \["points": points\]\]/);
   const handler = fs.readFileSync(path.join(root, "native/SafariWebExtensionHandler.swift"), "utf8");
   assert.match(handler, /SafariWebExtensionHandler/);
   assert.match(handler, /sendNativeMessage|SFExtensionMessageKey/);
+  assert.match(handler, /drei bis sechs Merksätze/);
+  assert.match(handler, /\["summary": \["points": points\]\]/);
 });
 
 test("Konverter-Skript ist gültiges Bash und zielt auf Mac und iPhone", function () {

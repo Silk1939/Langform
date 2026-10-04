@@ -66,23 +66,26 @@ enum SafariOnDeviceSummary {
             return ["message": unavailableMessage]
         }
         let session = LanguageModelSession(instructions: """
-        Du schreibst eine kurze deutsche Kurzfassung eines YouTube-Videos.
-        Die Quelle sind Untertitel. Formuliere neu, auf Deutsch.
-        Worum es geht: zwei oder drei Sätze.
-        Punkte: ein paar echte Inhalte, keine Zitate.
-        Schluss: ein oder zwei Sätze, wie das Video ausgeht.
-        Keine wörtlichen Untertitel, keine Regieanweisungen, kein [musik], keine Füllwörter wie Bro.
+        Du schreibst auf Deutsch drei bis sechs Merksätze zu einem YouTube-Video.
+        Die Quelle sind Untertitel. Formuliere neu. Jeder Satz ist ein Punkt, den eine Person behalten kann.
+        Bei einem Argument sind die Punkte die Behauptungen.
+        Bei einer Anleitung sind die Punkte die Schritte, die zählen.
+        Keine Handlung, keine wörtlichen Untertitel, keine Zitate.
+        Keine Regieanweisungen, kein [musik], keine Füllwörter wie Bro.
         """)
         do {
             let response = try await session.respond(to: "Untertitel:\n\(source)", generating: KurzfassungDraft.self)
             let draft = response.content
-            let about = draft.about.trimmingCharacters(in: .whitespacesAndNewlines)
-            let ending = draft.ending.trimmingCharacters(in: .whitespacesAndNewlines)
-            let points = draft.points.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-            if about.isEmpty && ending.isEmpty && points.isEmpty {
+            let points = Array(
+                draft.points
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .prefix(6)
+            )
+            if points.count < 3 {
                 return ["message": unavailableMessage]
             }
-            return ["summary": ["about": about, "points": points, "ending": ending]]
+            return ["summary": ["points": points]]
         } catch {
             return ["message": unavailableMessage]
         }
@@ -91,14 +94,8 @@ enum SafariOnDeviceSummary {
     @available(iOS 26.0, macOS 26.0, *)
     @Generable
     struct KurzfassungDraft {
-        @Guide(description: "Zwei oder drei deutsche Sätze, worum es geht. Keine Zitate.")
-        var about: String
-
-        @Guide(description: "Drei bis fünf kurze deutsche Punkte zum Inhalt. Keine Zitate, kein [musik].")
+        @Guide(description: "Drei bis sechs deutsche Merksätze. Bei einem Argument die Behauptungen, bei einer Anleitung die Schritte, die zählen. Keine Handlung, keine Zitate, kein [musik].")
         var points: [String]
-
-        @Guide(description: "Ein oder zwei deutsche Sätze, wie das Video ausgeht. Keine Zitate.")
-        var ending: String
     }
     #endif
 }

@@ -205,11 +205,6 @@
       .trim();
   }
 
-  function asParagraph(value) {
-    if (Array.isArray(value)) return cleanModelLine(value.join(" "));
-    return cleanModelLine(value);
-  }
-
   function asPoints(value) {
     var list = Array.isArray(value) ? value : splitSentences(value);
     return list
@@ -221,17 +216,9 @@
   function normalizeModelSummary(payload) {
     var summary = payload && payload.summary ? payload.summary : null;
     if (!summary) return { message: (payload && payload.message) || UNAVAILABLE };
-    var about = asParagraph(summary.about);
     var points = asPoints(summary.points);
-    var ending = asParagraph(summary.ending);
-    if (!about && !points.length && !ending) return { message: UNAVAILABLE };
-    return {
-      summary: {
-        about: about ? [about] : [],
-        points: points,
-        ending: ending ? [ending] : [],
-      },
-    };
+    if (points.length < 3) return { message: UNAVAILABLE };
+    return { summary: { points: points } };
   }
 
   function askHost(text, host) {
@@ -315,12 +302,8 @@
   }
 
   function blocks(summary) {
-    if (!summary) return [];
-    var out = [];
-    if (summary.about && summary.about.length) out.push({ heading: "Worum es geht", lines: summary.about });
-    if (summary.points && summary.points.length) out.push({ heading: "Punkte", lines: summary.points });
-    if (summary.ending && summary.ending.length) out.push({ heading: "Schluss", lines: summary.ending });
-    return out;
+    if (!summary || !summary.points) return [];
+    return summary.points.slice();
   }
 
   function parseObjectAt(html, start) {
@@ -745,32 +728,20 @@
     var body = panel.querySelector(".langform-kurz-body");
     if (!body) return;
     while (body.firstChild) body.removeChild(body.firstChild);
-    if (!result || result.message) {
+    var points = result && result.summary && result.summary.points;
+    if (!result || result.message || !points || points.length < 3) {
       var note = doc.createElement("p");
       note.textContent = (result && result.message) || FAILED;
       body.appendChild(note);
       return;
     }
-    blocks(result.summary).forEach(function (block) {
-      var heading = doc.createElement("h3");
-      heading.textContent = block.heading;
-      body.appendChild(heading);
-      if (block.heading === "Punkte") {
-        var list = doc.createElement("ul");
-        block.lines.forEach(function (line) {
-          var item = doc.createElement("li");
-          item.textContent = line;
-          list.appendChild(item);
-        });
-        body.appendChild(list);
-        return;
-      }
-      block.lines.forEach(function (line) {
-        var paragraph = doc.createElement("p");
-        paragraph.textContent = line;
-        body.appendChild(paragraph);
-      });
+    var list = doc.createElement("ul");
+    points.forEach(function (line) {
+      var item = doc.createElement("li");
+      item.textContent = line;
+      list.appendChild(item);
     });
+    body.appendChild(list);
   }
 
   function closeSheet(sheet) {
@@ -791,7 +762,7 @@
     var header = doc.createElement("header");
     var title = doc.createElement("h2");
     title.id = "langform-kurz-title";
-    title.textContent = "Kurzfassung";
+    title.textContent = "Das Wichtigste";
     var close = doc.createElement("button");
     close.type = "button";
     close.textContent = "Schließen";

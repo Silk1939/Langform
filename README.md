@@ -12,7 +12,7 @@ Die iPhone-App liegt in `ios/Langform`. Sie zeigt die echte YouTube-Seite und bl
 - Nimmt Shorts aus der Seite: Tab, Regale, Chips und Links, auch die untere Leiste auf dem Handy. Bevor YouTube zeichnet, liegt ein Stylesheet, danach entfernen die Skripte die Knoten. Watch-Videos bleiben.
 - Wer `/shorts`, `/shorts/…` oder `/feed/shorts` öffnet, landet auf der Startseite desselben Hosts. Während die Umleitung läuft, steht dort: „Shorts sind blockiert. Weiter zur Startseite …“.
 - Das Symbol in der Symbolleiste öffnet einen Schalter, **Shorts blockieren**. Standard ist an. Aus heißt: nichts verstecken und nicht umleiten. Waren Shorts schon aus dem DOM entfernt, lädt die Seite neu, damit sie wiederkommen. Die Wahl bleibt auf dem Gerät, ohne Konto.
-- Lange Videos bekommen eine **Kurzfassung** auf Deutsch. Die Untertitel holt die Seite von YouTube. Den Text schreibt das Modell auf dem Gerät, in der iPhone-App direkt und in Safari über die App „Shorts ausblenden“. Ohne Modell steht ein Satz. Das Video wird nicht heruntergeladen. Der Knopf sitzt unter dem Titel. Die Kurzfassung öffnet sich als Blatt über der Seite, lässt sich scrollen und schließen.
+- Lange Videos bekommen eine **Kurzfassung** auf Deutsch. Die Untertitel holt die Seite von YouTube. Den Text schreibt das Modell auf dem Gerät, in der iPhone-App direkt und in Safari über die App „Shorts ausblenden“. Das Blatt heißt **Das Wichtigste** und zeigt drei bis sechs Merksätze. Ohne Modell steht ein Satz. Das Video wird nicht heruntergeladen. Der Knopf sitzt unter dem Titel. Das Blatt lässt sich scrollen und schließen.
 - Kein Server, keine Auswertung, keine weiteren Dienste. Kein Werbeblocker, kein Download, kein Auslesen von Stream-Adressen.
 
 ## Was sie nicht tut

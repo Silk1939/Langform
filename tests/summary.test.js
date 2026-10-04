@@ -22,7 +22,11 @@ function modelSummary() {
   return {
     summary: {
       about: "Es geht um den Inhalt des Videos, nicht um einzelne gesprochene Sätze.",
-      points: ["Ein echter Punkt.", "Ein zweiter Punkt."],
+      points: [
+        "Ein echter Punkt zum Inhalt.",
+        "Ein zweiter Punkt, den man behalten kann.",
+        "Ein dritter Punkt ohne Zitat.",
+      ],
       ending: "Am Ende ist die Sache geklärt.",
     },
   };
@@ -89,7 +93,11 @@ test("Kurzfassung ist das Modell, kein Transkript", async function () {
       return {
         summary: {
           about: "Es geht um ein Rezept mit mehreren Schritten. [musik]",
-          points: ["Bro das Gemüse wird vorbereitet.", "Der Ofen übernimmt den Rest."],
+          points: [
+            "Bro das Gemüse wird vorbereitet.",
+            "Der Ofen übernimmt den Rest.",
+            "Die Form kommt erst in den Ofen, wenn das Gemüse drin ist.",
+          ],
           ending: "Am Ende ist das Essen fertig.",
         },
       };
@@ -97,21 +105,48 @@ test("Kurzfassung ist das Modell, kein Transkript", async function () {
   });
   assert.match(handed, /Satz Nummer 1/);
   const parts = summary.blocks(result.summary);
-  assert.deepEqual(
-    parts.map(function (block) {
-      return block.heading;
-    }),
-    ["Worum es geht", "Punkte", "Schluss"]
-  );
-  const joined = parts
-    .flatMap(function (block) {
-      return block.lines;
-    })
-    .join(" ");
+  assert.equal(parts.length, 3);
+  assert.equal(result.summary.about, undefined);
+  assert.equal(result.summary.ending, undefined);
+  const joined = parts.join(" ");
   assert.equal(/\[musik\]/i.test(joined), false);
   assert.equal(/\b[Bb]ro\b/.test(joined), false);
   assert.equal(joined.includes("Satz Nummer"), false);
   assert.equal(joined.includes("wörtlich so gesagt"), false);
+  assert.equal(joined.includes("Am Ende ist das Essen fertig"), false);
+  assert.equal(joined.includes("Es geht um ein Rezept"), false);
+  const tooFew = await summary.loadSummary("abcdefghijk", {
+    player: {
+      videoDetails: { videoId: "abcdefghijk" },
+      captions: { playerCaptionsTracklistRenderer: { captionTracks: [DE_TRACK] } },
+    },
+    fetchText() {
+      return Promise.resolve(JSON.stringify({ events: [{ segs: [{ utf8: spoken }] }] }));
+    },
+    summarize() {
+      return { summary: { about: "Nur ein Überblick.", points: ["Ein einzelner Punkt."] } };
+    },
+  });
+  assert.equal(tooFew.message, summary.UNAVAILABLE);
+  assert.equal(tooFew.summary, undefined);
+  assert.equal(JSON.stringify(tooFew).includes("Satz Nummer"), false);
+  const tooMany = await summary.loadSummary("abcdefghijk", {
+    player: {
+      videoDetails: { videoId: "abcdefghijk" },
+      captions: { playerCaptionsTracklistRenderer: { captionTracks: [DE_TRACK] } },
+    },
+    fetchText() {
+      return Promise.resolve(JSON.stringify({ events: [{ segs: [{ utf8: spoken }] }] }));
+    },
+    summarize() {
+      return {
+        summary: {
+          points: ["Eins.", "Zwei.", "Drei.", "Vier.", "Fünf.", "Sechs.", "Sieben.", "Acht."],
+        },
+      };
+    },
+  });
+  assert.deepEqual(tooMany.summary.points, ["Eins.", "Zwei.", "Drei.", "Vier.", "Fünf.", "Sechs."]);
   const missed = await summary.loadSummary("abcdefghijk", {
     player: {
       videoDetails: { videoId: "abcdefghijk" },
@@ -187,7 +222,8 @@ test("ohne Spur ein Satz, Fetch bleibt auf YouTube-Untertiteln", async function 
       );
     },
   });
-  assert.ok(loaded.summary.about.length > 0);
+  assert.equal(loaded.summary.points.length, 3);
+  assert.equal(loaded.summary.about, undefined);
   assert.ok(calls.length >= 2);
   calls.forEach(function (url) {
     assert.equal(String(url).includes("googlevideo"), false);
@@ -222,7 +258,7 @@ test("Watch-Seite zeigt die Kurzfassung unter dem Video", async function () {
   assert.equal(sheet.parentElement, win.document.body);
   assert.equal(sheet.className, "langform-kurz-sheet");
   assert.equal(sheet.getAttribute("lang"), "de");
-  assert.match(sheet.textContent, /Kurzfassung/);
+  assert.match(sheet.textContent, /Das Wichtigste/);
   assert.match(sheet.textContent, /Schließen/);
   const css = win.document.getElementById("langform-kurz-style").textContent;
   assert.match(css, /\.langform-kurz-sheet \{[^}]*position:\s*fixed/);
@@ -385,7 +421,11 @@ test("Playlist-Kopf ist keine Videozeile, jede Zeile hat genau einen Knopf", asy
           win.__langformKurzFinish(body.id, {
             summary: {
               about: "Ein Gespräch über den Markt in der Stadt.",
-              points: ["Der Markt wird aufgebaut."],
+              points: [
+                "Der Markt wird aufgebaut.",
+                "Die Stadt lebt vom Handel auf dem Platz.",
+                "Ohne den Markt bleibt der Platz ungenutzt.",
+              ],
               ending: "Am Ende bleibt der Platz leer.",
             },
           });
@@ -403,8 +443,14 @@ test("Playlist-Kopf ist keine Videozeile, jede Zeile hat genau einen Knopf", asy
   await delay(20);
   assert.equal(/keine Untertitel/.test(sheet.textContent), false);
   assert.match(handed, /langes Gespräch/);
-  assert.match(sheet.textContent, /Worum es geht/);
-  assert.match(sheet.textContent, /Schluss/);
+  assert.match(sheet.textContent, /Das Wichtigste/);
+  assert.match(sheet.textContent, /Der Markt wird aufgebaut/);
+  assert.equal(sheet.querySelectorAll(".langform-kurz-body li").length, 3);
+  assert.equal(sheet.querySelector(".langform-kurz-body h3"), null);
+  assert.equal(/Worum es geht/.test(sheet.textContent), false);
+  assert.equal(/Schluss/.test(sheet.textContent), false);
+  assert.equal(sheet.textContent.includes("Ein Gespräch über den Markt"), false);
+  assert.equal(sheet.textContent.includes("Platz leer"), false);
   assert.equal(sheet.textContent.includes("Zuerst erzählt sie"), false);
   assert.ok(fetched.length >= 2);
   assert.match(fetched[0].url, /m\.youtube\.com\/watch\?v=videoone111/);
@@ -479,7 +525,8 @@ test("Startseite liest die signierte WEB-Spur, auch als XML", async function () 
     },
   });
   assert.match(seen, /nachts offen bleibt/);
-  assert.equal(result.summary.about[0].includes("nachts offen bleibt"), false);
+  assert.equal(result.summary.points.join(" ").includes("nachts offen bleibt"), false);
+  assert.equal(result.summary.about, undefined);
   assert.equal(result.message, undefined);
   assert.equal(calls.length, 2);
   assert.match(calls[0].url, /^https:\/\/www\.youtube\.com\/youtubei\/v1\/player\?/);
@@ -553,7 +600,8 @@ test("leerer Body, danach fmt=json3 auf derselben signierten URL", async functio
     },
   });
   assert.match(seen, /langen Auflauf/);
-  assert.equal(result.summary.about.join(" ").includes("langen Auflauf"), false);
+  assert.equal(result.summary.points.join(" ").includes("langen Auflauf"), false);
+  assert.equal(result.summary.about, undefined);
   assert.equal(calls.length, 3);
   assert.match(calls[1], /signature=SIGNED/);
   assert.match(calls[1], /tlang=de/);
@@ -571,9 +619,13 @@ test("srv3 bleibt Text, ein leerer Body danach ist leer", async function () {
       seen = text;
       return {
         summary: {
-          about: "Es geht um einen Auflauf.",
-          points: ["Das Gemüse kommt in die Form."],
-          ending: "Er ruht, bevor er auf den Tisch kommt.",
+          about: "Es geht um einen Auflauf aus dem Ofen, wörtlich.",
+          points: [
+            "Der Auflauf kommt aus dem Ofen.",
+            "Das Gemüse kommt in die Form.",
+            "Er soll ruhen, bevor er auf den Tisch kommt.",
+          ],
+          ending: "Zum Schluss ruht er zehn Minuten.",
         },
       };
     },
@@ -592,8 +644,10 @@ test("srv3 bleibt Text, ein leerer Body danach ist leer", async function () {
     },
   });
   assert.match(seen, /langen Auflauf aus dem Ofen/);
-  assert.equal(srv.summary.about[0].includes("langen Auflauf aus dem Ofen"), false);
-  assert.match(srv.summary.about[0], /Auflauf/);
+  assert.equal(srv.summary.points.join(" ").includes("langen Auflauf aus dem Ofen"), false);
+  assert.equal(srv.summary.points.join(" ").includes("Zum Schluss ruht"), false);
+  assert.match(srv.summary.points.join(" "), /Auflauf/);
+  assert.equal(srv.summary.about, undefined);
   assert.notEqual(srv.message, summary.EMPTY_CAPTIONS);
 
   const empty = await summary.loadSummary("abcdefghijk", {
