@@ -24,6 +24,11 @@ test("Manifest ist Safari-taugliches MV3 für beide YouTube-Hosts", function () 
     "src/summary.js",
     "src/content.js",
   ]);
+  assert.equal(manifest.content_scripts[1].world, "MAIN");
+  assert.equal(manifest.content_scripts[1].run_at, "document_start");
+  assert.deepEqual(manifest.content_scripts[1].js, ["src/page-captions.js"]);
+  assert.deepEqual(manifest.content_scripts[1].matches, manifest.content_scripts[0].matches);
+  assert.deepEqual(manifest.web_accessible_resources[0].resources, ["src/page-captions.js"]);
   assert.equal(manifest.action.default_popup, "popup/popup.html");
   ["icon16.png", "icon32.png", "icon48.png", "icon128.png", "icon512.png"].forEach(function (name) {
     assert.ok(fs.existsSync(path.join(root, "extension/icons", name)), name);

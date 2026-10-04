@@ -370,6 +370,33 @@
     return !!(player && player.videoDetails && player.videoDetails.videoId === videoId);
   }
 
+  function livePlayer(win, videoId) {
+    var player = win && win.ytInitialPlayerResponse;
+    if (!player || typeof player !== "object") return null;
+    return playerMatches(player, videoId) ? player : null;
+  }
+
+  function isWatchPageUrl(pageUrl, videoId) {
+    try {
+      var page = new URL(pageUrl || "");
+      if (!hosts[page.hostname]) return false;
+      if (page.pathname !== "/watch" && page.pathname !== "/watch/") return false;
+      return page.searchParams.get("v") === videoId;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function isolatedFromPage(win) {
+    try {
+      if (win.chrome && win.chrome.runtime && win.chrome.runtime.id) return true;
+      if (win.browser && win.browser.runtime && win.browser.runtime.id) return true;
+    } catch (err) {
+      return false;
+    }
+    return false;
+  }
+
   function pageHost(pageUrl) {
     var host = "www.youtube.com";
     try {
@@ -563,6 +590,13 @@
       return null;
     }
 
+    if (env.watchPage && playerMatches(env.player, videoId)) {
+      var fromWatchPlayer = await consider(env.player);
+      if (fromWatchPlayer) return fromWatchPlayer;
+      // A filled player with no tracks will not grow captions later.
+      // An empty body can still be an unreadable signature; the player endpoint below may sign another.
+      if (!tracksOf(env.player).tracks.length) return { message: NO_CAPTIONS };
+    }
     var config = readConfig(env.ytcfg);
     if (config && fetchText) {
       try {
@@ -809,6 +843,161 @@
     };
   }
 
+  function askPage(win, request, timeoutMs) {
+    return new Promise(function (resolve) {
+      var id = String(Date.now()) + "-" + Math.random();
+      var timer = win.setTimeout(function () {
+        win.removeEventListener("message", onMessage);
+        resolve(null);
+      }, timeoutMs || 1500);
+      function onMessage(event) {
+        var data = event && event.data;
+        if (!data || data.source !== "langform-page-res" || data.id !== id) return;
+        win.clearTimeout(timer);
+        win.removeEventListener("message", onMessage);
+        resolve(data.payload || null);
+      }
+      win.addEventListener("message", onMessage);
+      try {
+        win.postMessage(
+          {
+            source: "langform-page-req",
+            id: id,
+            op: request.op,
+            videoId: request.videoId,
+            watch: request.watch,
+            url: request.url,
+            method: request.method,
+            headers: request.headers,
+            body: request.body,
+          },
+          "*"
+        );
+      } catch (err) {
+        win.clearTimeout(timer);
+        win.removeEventListener("message", onMessage);
+        resolve(null);
+      }
+    });
+  }
+
+  function injectPageHook(win) {
+    var doc = win && win.document;
+    if (!doc || doc.getElementById("langform-page-captions")) return Promise.resolve();
+    var runtime = null;
+    try {
+      runtime = (win.chrome && win.chrome.runtime) || (win.browser && win.browser.runtime) || null;
+    } catch (err) {
+      runtime = null;
+    }
+    if (!runtime || typeof runtime.getURL !== "function") return Promise.resolve();
+    return new Promise(function (resolve) {
+      var script = doc.createElement("script");
+      script.id = "langform-page-captions";
+      var nonceNode = doc.querySelector && doc.querySelector("script[nonce]");
+      if (nonceNode) {
+        try {
+          if (nonceNode.nonce) script.nonce = nonceNode.nonce;
+        } catch (err2) {
+          /* the nonce stays on the page */
+        }
+      }
+      var finished = false;
+      function finish() {
+        if (finished) return;
+        finished = true;
+        resolve();
+      }
+      var timer = win.setTimeout(finish, 400);
+      script.onload = script.onerror = function () {
+        win.clearTimeout(timer);
+        finish();
+      };
+      try {
+        script.src = runtime.getURL("src/page-captions.js");
+        (doc.documentElement || doc.head || doc.body).appendChild(script);
+      } catch (err3) {
+        win.clearTimeout(timer);
+        if (script.parentNode) script.parentNode.removeChild(script);
+        finish();
+      }
+    });
+  }
+
+  function pageFetch(win) {
+    return function (url, init) {
+      return askPage(
+        win,
+        {
+          op: "fetch",
+          url: String(url),
+          method: init && init.method,
+          headers: init && init.headers,
+          body: init && init.body != null ? String(init.body) : undefined,
+        },
+        8000
+      ).then(function (payload) {
+        if (!payload || payload.error) throw new Error("Antwort fehlt");
+        return payload.text;
+      });
+    };
+  }
+
+  function waitForLivePlayer(win, videoId) {
+    var found = livePlayer(win, videoId);
+    if (found) return Promise.resolve(found);
+    return new Promise(function (resolve) {
+      var tries = 0;
+      (function tick() {
+        var player = livePlayer(win, videoId);
+        if (player || tries++ >= 80) {
+          resolve(player);
+          return;
+        }
+        win.setTimeout(tick, 50);
+      })();
+    });
+  }
+
+  function bridgeFor(win, videoId, pageUrl) {
+    var watch = isWatchPageUrl(pageUrl, videoId);
+    if (!isolatedFromPage(win)) {
+      if (!watch) {
+        return Promise.resolve({
+          player: livePlayer(win, videoId),
+          ytcfg: win && win.ytcfg,
+          fetchText: fetchTextFactory(win),
+          watchPage: false,
+        });
+      }
+      return waitForLivePlayer(win, videoId).then(function (player) {
+        return {
+          player: player,
+          ytcfg: win && win.ytcfg,
+          fetchText: fetchTextFactory(win),
+          watchPage: true,
+        };
+      });
+    }
+    return injectPageHook(win)
+      .then(function () {
+        return askPage(win, { op: "ping" }, 700);
+      })
+      .then(function (pong) {
+        if (!pong || !pong.ok) return null;
+        return askPage(win, { op: "context", videoId: videoId, watch: watch }, watch ? 7000 : 2000);
+      })
+      .then(function (payload) {
+        if (!payload) return null;
+        return {
+          player: payload.player,
+          ytcfg: payload.ytcfg,
+          fetchText: pageFetch(win),
+          watchPage: watch,
+        };
+      });
+  }
+
   function showSummary(doc, win, videoId) {
     ensureStyle(doc);
     var sheet = ensureSheet(doc);
@@ -824,14 +1013,21 @@
     body.appendChild(waiting);
     var ticket = String(Date.now()) + "-" + Math.random();
     sheet.setAttribute("data-ticket", ticket);
-    var player = win && win.ytInitialPlayerResponse;
-    loadSummary(videoId, {
-      player: playerMatches(player, videoId) ? player : null,
-      pageUrl: win && win.location ? win.location.href : "https://www.youtube.com/",
-      ytcfg: win && win.ytcfg,
-      host: win,
-      fetchText: fetchTextFactory(win),
+    var pageUrl = win && win.location ? win.location.href : "https://www.youtube.com/";
+    bridgeFor(win, videoId, pageUrl).then(function (bridge) {
+      if (!sheet.isConnected) return null;
+      if (sheet.getAttribute("data-ticket") !== ticket) return null;
+      if (!bridge) return { message: FAILED };
+      return loadSummary(videoId, {
+        player: bridge.player,
+        pageUrl: pageUrl,
+        ytcfg: bridge.ytcfg,
+        host: win,
+        fetchText: bridge.fetchText,
+        watchPage: bridge.watchPage,
+      });
     }).then(function (result) {
+      if (!result) return;
       if (!sheet.isConnected) return;
       if (sheet.getAttribute("data-ticket") !== ticket) return;
       if (sheet.getAttribute("data-video") !== videoId) return;
@@ -991,6 +1187,7 @@
     }
     if (!hosts[host]) return;
     win.__langformKurzStarted = true;
+    if (isolatedFromPage(win)) injectPageHook(win);
     win.addEventListener("yt-navigate-finish", function () {
       schedule(win);
     });

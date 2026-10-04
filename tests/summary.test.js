@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const { JSDOM } = require("jsdom");
 const { ns, delay } = require("./helpers");
 const summary = ns.summary;
+const pageCaptions = require("../extension/src/page-captions.js");
 
 const DE_TRACK = {
   languageCode: "de",
@@ -273,6 +274,102 @@ test("Watch-Seite zeigt die Kurzfassung unter dem Video", async function () {
   assert.deepEqual(seen, []);
   sheet.querySelector("button").click();
   assert.equal(win.document.getElementById("langform-kurzfassung"), null);
+});
+
+test("isolierte Safari-Welt liest den gefüllten Player in der Seite", async function () {
+  const dom = new JSDOM(
+    "<!DOCTYPE html><html><body><ytd-watch-metadata><h1>Gespräch</h1></ytd-watch-metadata></body></html>",
+    { url: "https://www.youtube.com/watch?v=abcdefghijk" }
+  );
+  const win = dom.window;
+  win.chrome = { runtime: { id: "de.ipekkaya.shorts-ausblenden" } };
+  win.ytInitialPlayerResponse = null;
+  let filled = false;
+  const calls = [];
+  win.fetch = function (url) {
+    const href = String(url);
+    assert.equal(filled, true);
+    assert.equal(href.includes("googlevideo"), false);
+    assert.equal(href.includes("/watch"), false);
+    calls.push(href);
+    if (href.includes("fmt=json3")) {
+      return Promise.resolve({
+        ok: true,
+        text: async function () {
+          return JSON.stringify({ events: [{ segs: [{ utf8: "Der Ofen übernimmt den Rest." }] }] });
+        },
+      });
+    }
+    return Promise.resolve({ ok: true, text: async function () { return "   "; } });
+  };
+  pageCaptions.install(win);
+  win.setTimeout(function () {
+    filled = true;
+    win.ytInitialPlayerResponse = {
+      videoDetails: { videoId: "abcdefghijk" },
+      captions: {
+        playerCaptionsTracklistRenderer: {
+          captionTracks: [DE_TRACK],
+          translationLanguages: [],
+        },
+      },
+    };
+  }, 40);
+  summary.decorate(win.document, win.location.href, win);
+  const button = win.document.querySelector("[data-langform-kurz]");
+  button.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }));
+  await delay(400);
+  const sheet = win.document.getElementById("langform-kurzfassung");
+  assert.match(calls[0], /\/api\/timedtext/);
+  assert.match(calls[1], /fmt=json3/);
+  assert.match(sheet.textContent, /Das Wichtigste/);
+  assert.match(sheet.textContent, /Die Kurzfassung geht nur mit dem Modell auf dem Gerät/);
+  assert.equal(/Untertitel sind leer/.test(sheet.textContent), false);
+  assert.equal(sheet.textContent.includes("Der Ofen übernimmt den Rest"), false);
+});
+
+test("Watch-Seite wartet, das erste null ist kein Player", async function () {
+  const dom = new JSDOM(
+    "<!DOCTYPE html><html><body><ytd-watch-metadata><h1>Gespräch</h1></ytd-watch-metadata></body></html>",
+    { url: "https://www.youtube.com/watch?v=abcdefghijk" }
+  );
+  const win = dom.window;
+  win.ytInitialPlayerResponse = null;
+  const calls = [];
+  win.fetch = function (url) {
+    const href = String(url);
+    assert.equal(href.includes("googlevideo"), false);
+    assert.equal(href.includes("/watch"), false);
+    calls.push(href);
+    return Promise.resolve({
+      ok: true,
+      text: async function () {
+        return '<transcript><text start="0" dur="1">Der Ofen übernimmt den Rest.</text></transcript>';
+      },
+    });
+  };
+  win.setTimeout(function () {
+    win.ytInitialPlayerResponse = {
+      videoDetails: { videoId: "abcdefghijk" },
+      captions: {
+        playerCaptionsTracklistRenderer: {
+          captionTracks: [DE_TRACK],
+          translationLanguages: [],
+        },
+      },
+    };
+  }, 30);
+  summary.decorate(win.document, win.location.href, win);
+  win.document.querySelector("[data-langform-kurz]").dispatchEvent(
+    new win.MouseEvent("click", { bubbles: true, cancelable: true })
+  );
+  await delay(300);
+  const sheet = win.document.getElementById("langform-kurzfassung");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /\/api\/timedtext/);
+  assert.match(sheet.textContent, /Modell auf dem Gerät/);
+  assert.equal(/Untertitel sind leer/.test(sheet.textContent), false);
+  assert.equal(/keine Untertitel/.test(sheet.textContent), false);
 });
 
 test("Startseite öffnet die Kurzfassung, ohne die Wiedergabe zu starten", async function () {

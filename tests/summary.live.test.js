@@ -103,3 +103,69 @@ test("öffentliches Video liefert Untertitel über den WEB-Player", { timeout: 3
   assert.equal(String(result.message).includes("Liebe"), false);
   assert.equal(captionBody.includes(result.message), false);
 });
+
+test("Watch-Seite: null ist kein Player, die signierte Spur hat Text", { timeout: 30000 }, async function () {
+  assert.equal(summary.extractPlayer("var ytInitialPlayerResponse = null;", VIDEO_ID), null);
+  const response = await fetch("https://www.youtube.com/watch?v=" + VIDEO_ID + "&hl=de", {
+    headers: {
+      "User-Agent": UA,
+      "Accept-Language": "de-DE,de;q=0.9",
+      Cookie: SOCS,
+    },
+  });
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const cookies = cookieHeader(response);
+  const player = summary.extractPlayer(html, VIDEO_ID);
+  assert.equal(player.videoDetails.videoId, VIDEO_ID);
+  const tracks = player.captions.playerCaptionsTracklistRenderer.captionTracks;
+  assert.ok(tracks.length > 0);
+  const ytcfg = {
+    INNERTUBE_API_KEY: JSON.parse('"' + html.match(/"INNERTUBE_API_KEY":"([^"]+)"/)[1] + '"'),
+    INNERTUBE_CONTEXT: parseObject(html, "INNERTUBE_CONTEXT"),
+    STS: Number(html.match(/"STS":(\d+)/)[1]),
+  };
+  const calls = [];
+  let captionBody = "";
+  const result = await summary.loadSummary(VIDEO_ID, {
+    watchPage: true,
+    player: player,
+    ytcfg: ytcfg,
+    pageUrl: "https://www.youtube.com/watch?v=" + VIDEO_ID,
+    fetchText(url, init) {
+      const href = String(url);
+      calls.push(href);
+      assert.equal(href.includes("googlevideo"), false);
+      assert.equal(href.includes("/watch"), false);
+      assert.match(href, /\/api\/timedtext|\/youtubei\/v1\/player/);
+      const headers = Object.assign(
+        {
+          "User-Agent": UA,
+          "Accept-Language": "de-DE,de;q=0.9",
+          Origin: "https://www.youtube.com",
+          Referer: "https://www.youtube.com/watch?v=" + VIDEO_ID,
+          Cookie: cookies,
+        },
+        (init && init.headers) || {}
+      );
+      return fetch(href, {
+        method: (init && init.method) || "GET",
+        headers: headers,
+        body: init && init.body,
+      }).then(function (captionResponse) {
+        if (!captionResponse.ok) throw new Error(String(captionResponse.status));
+        return captionResponse.text();
+      }).then(function (text) {
+        if (href.includes("/api/timedtext") && text.trim()) captionBody = text;
+        return text;
+      });
+    },
+  });
+  assert.ok(calls.some(function (url) { return url.includes("/api/timedtext"); }));
+  assert.ok(calls.some(function (url) { return url.includes("/youtubei/v1/player"); }));
+  assert.ok(captionBody.length > 40);
+  assert.ok(summary.textFromCaptions(captionBody).length > 20);
+  assert.equal(result.message, summary.UNAVAILABLE);
+  assert.notEqual(result.message, summary.EMPTY_CAPTIONS);
+  assert.equal(String(result.message).includes("Liebe"), false);
+});
