@@ -111,7 +111,16 @@ test("der Player meldet die Videofläche und ob es läuft, ohne das Video anzufa
   video.dispatchEvent(new dom.window.Event("playing"));
   await new Promise(function (resolve) { setTimeout(resolve, 200); });
   assert.equal(posts.length, 1);
-  assert.deepEqual(posts[0].body, { x: 0, y: 0, width: 390, height: 219.375, playing: true });
+  assert.deepEqual(posts[0].body, {
+    x: 0,
+    y: 0,
+    width: 390,
+    height: 219.375,
+    playing: true,
+    hasVideo: true,
+    painted: false,
+    href: "https://m.youtube.com/watch?v=abcdefghijk",
+  });
 
   // Same box, nothing new to say.
   video.dispatchEvent(new dom.window.Event("resize"));
@@ -137,4 +146,30 @@ test("ohne Watch-Seite meldet der Player eine leere Fläche, die keine Karte erg
   assert.equal(measured.height, 0);
   assert.equal(measured.playing, false);
   dom.window.close();
+});
+
+test("der Player meldet den ersten gezeichneten Inhalt, damit die App ihn erst dann zeigt", async function (t) {
+  const { dom, posts } = page(
+    `<!DOCTYPE html><body><div id="movie_player"></div></body>`,
+    "https://m.youtube.com/watch?v=abcdefghijk",
+    ["langformPlayer"]
+  );
+  t.after(function () { dom.window.close(); });
+  let fire = null;
+  dom.window.PerformanceObserver = function (callback) {
+    this.observe = function (options) {
+      assert.equal(options.type, "paint");
+      assert.equal(options.buffered, true);
+      fire = function () { callback({ getEntries: function () { return [{ name: "first-contentful-paint" }]; } }); };
+    };
+  };
+  dom.window.eval(RECT);
+  assert.equal(dom.window.__langformMeasureVideo().painted, false);
+  assert.equal(dom.window.__langformMeasureVideo().hasVideo, false);
+  fire();
+  await new Promise(function (resolve) { setTimeout(resolve, 200); });
+  const last = posts[posts.length - 1].body;
+  assert.equal(last.painted, true);
+  assert.equal(last.hasVideo, false);
+  assert.equal(last.href, "https://m.youtube.com/watch?v=abcdefghijk");
 });

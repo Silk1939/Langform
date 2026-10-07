@@ -118,6 +118,22 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   assert.match(apply, /player\.transform = CGAffineTransform\(scaleX: scale, y: scale\)/);
   assert.doesNotMatch(apply, /player\.bounds|player\.frame|evaluateJavaScript/);
 
+  // The player loads behind the feed and comes forward only once the page drew.
+  const open = swiftFunction(web, "openWatch");
+  assert.doesNotMatch(open, /UIView\.animate|aboveSubview/);
+  assert.match(open, /beginLoading\(\)/);
+  const loading = swiftFunction(web, "beginLoading");
+  assert.match(loading, /insertSubview\(card, belowSubview: feed\)/);
+  assert.match(swiftFunction(web, "considerReveal"), /\(loadFinished && loadHasVideo\) \|\| loadPainted/);
+  const reveal = swiftFunction(web, "reveal");
+  assert.match(reveal, /guard mode == \.loading/);
+  assert.match(reveal, /insertSubview\(card, aboveSubview: feed\)/);
+  assert.match(reveal, /UIView\.animate/);
+  const failed = swiftFunction(web, "handleFailure");
+  assert.match(failed, /if mode == \.loading \{\s*closePlayer\(\)\s*return/);
+  const finished = web.slice(web.indexOf("didFinish navigation"), web.indexOf("didFail navigation"));
+  assert.match(finished, /loadFinished = true/);
+
   // Close leaves the watch page; tapping the card expands it.
   const close = swiftFunction(web, "closePlayer");
   assert.match(close, /about:blank|blankURL/);

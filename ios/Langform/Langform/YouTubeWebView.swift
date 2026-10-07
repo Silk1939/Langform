@@ -132,6 +132,8 @@ final class ScriptRelay: NSObject, WKScriptMessageHandler {
 final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIGestureRecognizerDelegate {
     enum Mode {
         case closed
+        /// The watch page loads behind the feed. Nothing of the player is on screen yet.
+        case loading
         case expanded
         case mini
     }
@@ -151,6 +153,13 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private var lastWatchURL: URL?
     private var triedFallback = false
     private var showsMiniChevron: Bool?
+    /// What the loading watch page has done so far. The player comes forward once
+    /// the navigation finished and a video element exists, or once the page painted.
+    private var loadTicket = 0
+    private var loadingVideoID: String?
+    private var loadFinished = false
+    private var loadHasVideo = false
+    private var loadPainted = false
     private var observations: [NSKeyValueObservation] = []
 
     private var feed: WKWebView!
@@ -323,8 +332,9 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         player.center = CGPoint(x: origin.x + scale * full.width / 2, y: origin.y + scale * full.height / 2)
         card.layer.cornerRadius = 12 * t
         closeButton.frame = CGRect(x: box.width - 34, y: 6, width: 28, height: 28)
-        closeButton.alpha = mode == .closed ? 0 : max(0, (t - 0.8) / 0.2)
-        collapseButton.alpha = mode == .closed ? 0 : max(0, 1 - t * 3)
+        let offStage = mode == .closed || mode == .loading
+        closeButton.alpha = offStage ? 0 : max(0, (t - 0.8) / 0.2)
+        collapseButton.alpha = offStage ? 0 : max(0, 1 - t * 3)
     }
 
     // MARK: Modes
@@ -336,35 +346,81 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         if !sameVideo {
             videoRect = .zero
             videoPlaying = false
+            loadTicket += 1
+            loadingVideoID = YouTubeWebView.videoID(url)
+            loadFinished = false
+            loadHasVideo = false
+            loadPainted = false
             player.load(URLRequest(url: url))
         }
         switch mode {
-        case .expanded:
+        case .expanded, .loading:
             return
         case .mini:
             settle(.expanded)
         case .closed:
-            mode = .expanded
-            progress = 0
-            player.isUserInteractionEnabled = true
-            cardTap.isEnabled = false
-            card.alpha = 1
-            apply(0)
-            collapseButton.alpha = 0
-            card.isHidden = false
-            card.transform = CGAffineTransform(translationX: 0, y: bounds.height)
-            updateChrome()
-            UIView.animate(
-                withDuration: 0.42,
-                delay: 0,
-                usingSpringWithDamping: 0.9,
-                initialSpringVelocity: 0,
-                options: [.allowUserInteraction],
-                animations: {
-                    self.card.transform = .identity
-                    self.collapseButton.alpha = 1
+            beginLoading()
+        }
+    }
+
+    /// The player view loads at full size behind the opaque feed. WebKit sees it
+    /// as visible and paints it; the user still sees and uses the feed.
+    private func beginLoading() {
+        mode = .loading
+        progress = 0
+        player.isUserInteractionEnabled = true
+        cardTap.isEnabled = false
+        card.layer.removeAllAnimations()
+        card.alpha = 1
+        card.transform = .identity
+        apply(0)
+        insertSubview(card, belowSubview: feed)
+        card.isHidden = false
+        updateChrome()
+    }
+
+    private func considerReveal() {
+        guard mode == .loading else { return }
+        if (loadFinished && loadHasVideo) || loadPainted {
+            reveal()
+        }
+    }
+
+    /// Brings the painted player in front of the feed and springs it up from the bottom.
+    private func reveal() {
+        guard mode == .loading else { return }
+        mode = .expanded
+        insertSubview(card, aboveSubview: feed)
+        apply(0)
+        collapseButton.alpha = 0
+        card.transform = CGAffineTransform(translationX: 0, y: bounds.height)
+        updateChrome()
+        UIView.animate(
+            withDuration: 0.42,
+            delay: 0,
+            usingSpringWithDamping: 0.9,
+            initialSpringVelocity: 0,
+            options: [.allowUserInteraction],
+            animations: {
+                self.card.transform = .identity
+                self.collapseButton.alpha = 1
+            }
+        )
+    }
+
+    /// Fallback for a WebKit without paint timing: after the load event, a body
+    /// with laid-out content has been painted.
+    private func checkPaintAfterLoad(ticket: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.mode == .loading, self.loadTicket == ticket else { return }
+            let script = "(function(){var b=document.body;return !!(b&&b.childElementCount>0&&b.getBoundingClientRect().height>0);})()"
+            self.player.evaluateJavaScript(script) { [weak self] result, _ in
+                guard let self, self.mode == .loading, self.loadTicket == ticket else { return }
+                if (result as? NSNumber)?.boolValue == true {
+                    self.loadPainted = true
+                    self.considerReveal()
                 }
-            )
+            }
         }
     }
 
@@ -610,17 +666,25 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         }
         let rect = CGRect(x: number("x"), y: number("y"), width: number("width"), height: number("height"))
         videoPlaying = (dict["playing"] as? NSNumber)?.boolValue ?? false
+        if mode == .loading,
+           let href = dict["href"] as? String,
+           let id = YouTubeWebView.videoID(URL(string: href)),
+           id == loadingVideoID {
+            if (dict["hasVideo"] as? NSNumber)?.boolValue == true { loadHasVideo = true }
+            if (dict["painted"] as? NSNumber)?.boolValue == true { loadPainted = true }
+        }
         let valid = rect.width > 8 && rect.height > 8
         // The card keeps its last picture; an empty rect only counts in the full player.
         if valid {
             videoRect = rect
-        } else if mode == .expanded && !dragging {
+        } else if (mode == .expanded || mode == .loading) && !dragging {
             videoRect = .zero
         }
         if valid && mode == .mini && !dragging {
             UIView.animate(withDuration: 0.2) { self.apply(1) }
         }
         updateChrome()
+        considerReveal()
     }
 
     // MARK: Messages
@@ -721,6 +785,12 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             feedFailed = false
         } else {
             playerFailed = false
+            if mode == .loading, YouTubeWebView.videoID(webView.url) == loadingVideoID {
+                loadFinished = true
+                let ticket = loadTicket
+                measureVideo(after: 0) { [weak self] in self?.considerReveal() }
+                checkPaintAfterLoad(ticket: ticket)
+            }
         }
         if !feedFailed && !playerFailed {
             report(unreachable: false)
@@ -744,6 +814,11 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 { return }
         if webView === player {
             guard mode != .closed else { return }
+            // The watch page never drew: the feed stays up, no black layer is left behind.
+            if mode == .loading {
+                closePlayer()
+                return
+            }
             playerFailed = true
         } else {
             feedFailed = true
