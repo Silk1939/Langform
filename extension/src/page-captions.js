@@ -288,7 +288,7 @@
 
   function findSeekBar(doc) {
     if (!doc) return null;
-    var time = findTimePill(doc);
+    var time = timePill(doc);
     var timeBox = time && boxOf(time);
     var live = !!(timeBox && timeBox.width > 8 && timeBox.height > 4);
     if (live) {
@@ -499,8 +499,8 @@
     }, { passive: true });
   }
 
-  function queryDeep(doc, match) {
-    var root = (doc && (doc.body || doc.documentElement)) || null;
+  function queryDeep(doc, match, start) {
+    var root = start || (doc && (doc.body || doc.documentElement)) || null;
     if (!root) return null;
     var stack = [root];
     var seen = new Set();
@@ -564,13 +564,13 @@
     return !/^(view chapters|chapters|kapitel|kapitel ansehen|kapitel anzeigen)$/i.test(text);
   }
 
-  function findNativeChip(doc) {
+  function findNativeChip(doc, scope) {
     var found = queryDeep(doc, function (el) {
       var cls = classText(el);
       if (cls.indexOf("ytwPlayerTimeDisplayPlayerBarActionContainer") !== -1) return true;
       if (cls.indexOf("ytp-chapter-container") !== -1 || cls.indexOf("ytp-chapter-title") !== -1) return true;
       return el.tagName === "YTM-CHAPTER-TITLE-RENDERER" || el.tagName === "YTD-CHAPTER-TITLE-RENDERER";
-    });
+    }, scope);
     if (found && found.tagName !== "BUTTON" && found.querySelectorAll) {
       var buttons = found.querySelectorAll("button");
       for (var b = 0; b < buttons.length; b++) {
@@ -584,9 +584,21 @@
       found = queryDeep(doc, function (el) {
         if (el.tagName !== "BUTTON") return false;
         return /view chapters|kapitel ansehen|kapitel anzeigen/i.test(el.getAttribute("aria-label") || "");
-      });
+      }, scope);
     }
     return found;
+  }
+
+  // The few levels around the time display: YouTube's chapter chip sits there.
+  function timeRowScope(doc) {
+    var node = timePill(doc);
+    if (!node) return null;
+    for (var i = 0; i < 4; i++) {
+      var up = node.parentElement || (node.getRootNode && node.getRootNode().host) || null;
+      if (!up || up === doc.body || up === doc.documentElement) break;
+      node = up;
+    }
+    return node;
   }
 
   function findNativeSheet(doc) {
@@ -601,14 +613,17 @@
 
   // YouTube's own chip opens its own sheet, which it often builds only on tap,
   // so the chip alone is enough to leave the time row to YouTube.
-  function nativeChapterChrome(doc) {
-    var chip = findNativeChip(doc);
+  // Scoped, it only looks around the time display and never walks the page.
+  function nativeChapterChrome(doc, scoped) {
+    var scope = scoped ? timeRowScope(doc) : null;
+    if (scoped && !scope) return null;
+    var chip = findNativeChip(doc, scope);
     if (!chip) return null;
-    var sheet = findNativeSheet(doc);
+    var sheet = scoped ? null : findNativeSheet(doc);
     if (hiddenByUs(chip)) unhide(chip);
     if (sheet && hiddenByUs(sheet)) unhide(sheet);
     if (!nativeChipShowsTitle(chip) || !visiblyShown(chip)) return null;
-    var time = findTimePill(doc);
+    var time = timePill(doc);
     var timeBox = time && boxOf(time);
     if (timeBox && timeBox.width > 8 && timeBox.height > 4) {
       var chipBox = boxOf(chip);
@@ -627,6 +642,17 @@
       if (el && el.parentNode) el.parentNode.removeChild(el);
     });
     if (doc.documentElement) doc.documentElement.removeAttribute("data-langform-chapter-ui");
+  }
+
+  // Found once while it is laid out, then reused as long as it stays in the page.
+  function timePill(doc) {
+    var cached = doc.__langformTimePill;
+    if (cached && cached.isConnected && visiblyShown(cached)) return cached;
+    doc.__langformTimePill = null;
+    var found = findTimePill(doc);
+    var box = found && boxOf(found);
+    if (box && box.width > 8 && box.height > 4) doc.__langformTimePill = found;
+    return found;
   }
 
   function findTimePill(doc) {
@@ -688,7 +714,7 @@
   function placeChip(doc, chip) {
     chip.style.minHeight = "44px";
     chip.style.minWidth = "44px";
-    var time = findTimePill(doc);
+    var time = timePill(doc);
     if (!time || !time.parentNode) {
       if (chip.parentNode) chip.parentNode.removeChild(chip);
       chip.removeAttribute("data-langform-chip-placed");
@@ -978,6 +1004,25 @@
     video.addEventListener("seeked", onMove);
   }
 
+  function videoPlaying(doc) {
+    var videos = doc.getElementsByTagName("video");
+    for (var i = 0; i < videos.length; i++) {
+      if (!videos[i].paused && !videos[i].ended) return true;
+    }
+    return false;
+  }
+
+  // Our chip sits in the time row, or YouTube shows its own. Nothing left to do
+  // until the chapter index changes.
+  function chapterUiSettled(doc) {
+    var root = doc.documentElement;
+    var shown = root && root.getAttribute("data-langform-chapter-ui");
+    if (!shown) return false;
+    if (shown === "native") return true;
+    var chip = doc.getElementById(CHIP_ID);
+    return !!(chip && chip.isConnected && chip.getAttribute("data-langform-chip-placed") === "1");
+  }
+
   function stopChapterRetry(win) {
     if (!win.__langformChapterRetry) return;
     win.clearInterval(win.__langformChapterRetry);
@@ -1010,6 +1055,17 @@
 
   function isSettingsControl(el) {
     return /einstellungen|settings/i.test(controlText(el));
+  }
+
+  // A tap follows YouTube's chrome for a few seconds. The buttons are found once
+  // and reused while they stay in the page, so that does not walk the player again.
+  function cachedControls(root) {
+    var known = root.__langformControls;
+    var anchor = known && (known.caption || known.settings);
+    if (anchor && anchor.isConnected && (!known.airplay || known.airplay.isConnected)) return known;
+    var found = playerControls(root);
+    root.__langformControls = found.caption || found.settings ? found : null;
+    return found;
   }
 
   // Buttons of YouTube's own player chrome, light and shadow DOM, never the video.
@@ -1168,7 +1224,7 @@
       if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
       return null;
     }
-    var controls = playerControls(root);
+    var controls = cachedControls(root);
     if (controls.airplay) {
       if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
       return null;
@@ -1300,11 +1356,11 @@
     var placed = !!(chip && chip.isConnected && chip.getAttribute("data-langform-chip-placed") === "1");
     var barReady = !!(bar && bar.isConnected && bar.getAttribute("data-langform-chapter-sig") === barSig);
     var videoKey = pageVideoKey(win, player);
-    if (marked !== "native" && chip && nativeChapterChrome(doc)) {
+    if (marked !== "native" && chip && nativeChapterChrome(doc, true)) {
       dropChipForNative(doc);
       marked = "native";
     }
-    if (marked === "native" && nativeChapterChrome(doc)) {
+    if (marked === "native" && nativeChapterChrome(doc, true)) {
       win.__langformNativeVideo = videoKey;
       win.__langformNativeHit = true;
       bindChapterPlayback(win, doc);
@@ -1348,7 +1404,7 @@
     }
     bindChapterPlayback(win, doc);
     chip = doc.getElementById(CHIP_ID);
-    if ((marked === "native" && nativeChapterChrome(doc)) || (chip && chip.getAttribute("data-langform-chip-placed") === "1" && bar && bar.getAttribute("data-langform-chapter-sig") === barSig)) {
+    if ((marked === "native" && nativeChapterChrome(doc, true)) || (chip && chip.getAttribute("data-langform-chip-placed") === "1" && bar && bar.getAttribute("data-langform-chapter-sig") === barSig)) {
       stopChapterRetry(win);
     }
   }
@@ -1382,9 +1438,18 @@
         tries += 1;
         // Without a player after a few seconds, a tap or the next navigation starts it again.
         if (tries > 24 || !onWatchPath(win) || (tries > 6 && !playerRoot(win.document))) stopChapterRetry(win);
-        else schedule();
+        // While the video plays the page is not walked on a timer; its own events
+        // and a tap finish the chapter chrome instead.
+        else if (!videoPlaying(win.document)) schedule();
       }, 500);
     }
+    function scheduleUnlessSettled() {
+      if (!onWatchPath(win) || chapterUiSettled(win.document)) return;
+      schedule();
+    }
+    ["loadedmetadata", "durationchange", "playing"].forEach(function (name) {
+      win.document.addEventListener(name, scheduleUnlessSettled, true);
+    });
     function onPageChange() {
       if (!onWatchPath(win)) {
         if (timer) win.clearTimeout(timer);
@@ -1409,7 +1474,7 @@
       scrollTimer = win.setTimeout(function () {
         scrollTimer = 0;
         win.__langformChapterScrolling = false;
-        schedule();
+        scheduleUnlessSettled();
       }, 180);
     }, { capture: true, passive: true });
     win.document.addEventListener("pointerdown", function (event) {
@@ -1419,12 +1484,8 @@
         var chip = win.document.getElementById(CHIP_ID);
         if (!chip || (event.target !== chip && !chip.contains(event.target))) setSheetOpen(win.document, false);
       }
-      var root = win.document.documentElement;
-      var shown = root && root.getAttribute("data-langform-chapter-ui");
-      var placedChip = win.document.getElementById(CHIP_ID);
-      var placed = shown === "native" || (placedChip && placedChip.getAttribute("data-langform-chip-placed") === "1");
       followControls();
-      if (!shown || !placed) schedule();
+      scheduleUnlessSettled();
     }, { capture: true, passive: true });
     // A tap shows YouTube's chrome and it fades out a few seconds later.
     // AirPlay follows it for that long, reading the row and writing only our button.
@@ -1443,7 +1504,7 @@
         try {
           ensureAirPlay(win);
           // A tap can bring up YouTube's own chapter chip next to ours.
-          if ((followTicks === 1 || followTicks === 4) && win.document.getElementById(CHIP_ID) && nativeChapterChrome(win.document)) {
+          if ((followTicks === 1 || followTicks === 4) && win.document.getElementById(CHIP_ID) && nativeChapterChrome(win.document, true)) {
             win.__langformNativeVideo = pageVideoKey(win, win.ytInitialPlayerResponse);
             dropChipForNative(win.document);
           }
