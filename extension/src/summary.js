@@ -1186,14 +1186,52 @@
   // at most this often instead of once per mutation batch.
   var DECORATE_GAP = 300;
 
+  function watchIdOf(win) {
+    try {
+      var page = new URL(win.location.href);
+      if (!hosts[page.hostname] || (page.pathname !== "/watch" && page.pathname !== "/watch/")) return "";
+      var id = page.searchParams.get("v") || "";
+      return VIDEO_ID.test(id) ? id : "";
+    } catch (err) {
+      return "";
+    }
+  }
+
+  function watchPlaying(win) {
+    if (!watchIdOf(win)) return false;
+    var videos = win.document.getElementsByTagName("video");
+    for (var i = 0; i < videos.length; i++) {
+      if (!videos[i].paused && !videos[i].ended) return true;
+    }
+    return false;
+  }
+
+  // While the video plays only the button under it is placed, once per video.
+  // The walk over every link waits until playback pauses or ends.
+  function holdForPlayback(win) {
+    if (!watchPlaying(win)) return false;
+    win.__langformKurzDeferred = true;
+    var id = watchIdOf(win);
+    if (win.__langformKurzWatchBound !== id) {
+      var meta = watchAnchor(win.document);
+      if (meta) {
+        bindButton(win.document, win, meta, id);
+        win.__langformKurzWatchBound = id;
+      }
+    }
+    return true;
+  }
+
   function schedule(win) {
     if (!win || win.__langformKurzTimer) return;
     if (win.__langformKurzScrolling) return;
+    if (holdForPlayback(win)) return;
     var last = win.__langformKurzLast || 0;
     var wait = Math.max(0, last + DECORATE_GAP - Date.now());
     win.__langformKurzTimer = setTimeout(function () {
       win.__langformKurzTimer = 0;
       if (win.__langformKurzScrolling || !win.document) return;
+      if (holdForPlayback(win)) return;
       win.__langformKurzLast = Date.now();
       try {
         decorate(win.document, win.location.href, win);
@@ -1256,6 +1294,13 @@
     win.addEventListener("popstate", function () {
       schedule(win);
     });
+    function afterPlayback() {
+      if (!win.__langformKurzDeferred) return;
+      win.__langformKurzDeferred = false;
+      schedule(win);
+    }
+    win.document.addEventListener("pause", afterPlayback, true);
+    win.document.addEventListener("ended", afterPlayback, true);
     win.document.addEventListener(
       "scroll",
       function () {
@@ -1265,6 +1310,10 @@
     );
     if (win.MutationObserver && win.document.documentElement) {
       var observer = new win.MutationObserver(function (records) {
+        if (watchPlaying(win)) {
+          holdForPlayback(win);
+          return;
+        }
         if (relevantMutation(records)) schedule(win);
       });
       observer.observe(win.document.documentElement, { childList: true, subtree: true });

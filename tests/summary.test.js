@@ -813,3 +813,33 @@ test("srv3 bleibt Text, ein leerer Body danach ist leer", async function () {
   });
   assert.equal(empty.message, summary.EMPTY_CAPTIONS);
 });
+
+test("während das Video läuft, kommt nur der Knopf unter dem Video, die Liste wartet bis zur Pause", async function () {
+  const dom = new JSDOM(
+    '<!DOCTYPE html><html><body><ytm-player id="movie_player"><video id="v"></video></ytm-player>' +
+      '<ytm-slim-video-metadata-section-renderer><h1>Auflauf</h1></ytm-slim-video-metadata-section-renderer>' +
+      '<div id="related"></div></body></html>',
+    { url: "https://m.youtube.com/watch?v=abcdefghijk" }
+  );
+  const win = dom.window;
+  const doc = win.document;
+  const video = doc.getElementById("v");
+  let paused = false;
+  Object.defineProperty(video, "paused", { configurable: true, get: function () { return paused; } });
+  summary.start(win);
+  await delay(400);
+  const own = doc.querySelector("ytm-slim-video-metadata-section-renderer [data-langform-kurz]");
+  assert.ok(own, "der Knopf unter dem Video ist da");
+  doc.getElementById("related").innerHTML =
+    '<ytm-video-with-context-renderer id="row"><a href="/watch?v=zyxwvutsrqp">Weiter</a>' +
+    '<span class="ytd-thumbnail-overlay-time-status-renderer">12:00</span></ytm-video-with-context-renderer>';
+  await delay(400);
+  assert.equal(doc.querySelector("#row [data-langform-kurz]"), null);
+  assert.equal(doc.querySelectorAll("[data-langform-kurz]").length, 1);
+  paused = true;
+  video.dispatchEvent(new win.Event("pause"));
+  await delay(400);
+  assert.ok(doc.querySelector('#row [data-langform-kurz="zyxwvutsrqp"]'));
+  assert.equal(video.getAttribute("style"), null);
+  win.close();
+});
