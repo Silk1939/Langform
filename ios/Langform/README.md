@@ -34,11 +34,30 @@ Beide Antworten waren HTTP 200, Titel „YouTube“, ohne `disallowed_useragent`
 
 Die App setzt von Anfang an die Safari-Kennung von oben, damit YouTube die mobile Seite zeichnet und nicht eine Desktop-Seite in die Handybreite quetscht. Erscheint die Ablehnung trotzdem (`disallowed_useragent`, „möglicherweise nicht sicher“, „may not be secure“, „Couldn't sign you in“, „Anmeldung nicht möglich“, „secure browsers policy“ und die verwandten Sätze, und zwar auf `accounts.google.com` oder `accounts.youtube.com`), bleibt die Safari-Kennung und die Anmeldung wird einmal neu geöffnet. Eine zweite Ablehnung bleibt stehen, damit man sie sieht.
 
-## Zurück und der Player
+## Feed, Player und Miniplayer
 
-Auf einer Watch-Seite gehen drei Wege zurück zur Seite davor, meist der Feed: nach unten wischen auf dem Video, der Chevron **Zurück** oben links im Player und das Wischen vom linken Rand. Ohne History-Eintrag lädt die App `https://m.youtube.com/`. Langform hat keinen Miniplayer. Eine einzige Webansicht kann das Video und den Feed nicht gleichzeitig zeigen, eine Karte wäre schwarz. Das Wischen nach unten gilt nur auf dem Bild selbst, nicht auf YouTubes Leiste darunter, und nimmt dem Scrollen keinen Zug weg. Die Startseite in der unteren Leiste bleibt YouTubes Knopf. Startet YouTube nach dem Tipp keine eigene Navigation, lädt die Seite `https://m.youtube.com/` oder `https://www.youtube.com/`, je nach Host. Auf der Startseite liegt oben links kein Chevron, das YouTube-Zeichen bleibt frei. Auf anderen Seiten, wenn die Wischgeste nicht reicht, sitzt ein kleiner Knopf **Zurück** unten links. Ein normales `/watch` ist ein eigener Eintrag, auch wenn YouTube es mit `replaceState` über die Liste legt.
+Langform hat zwei Webansichten auf derselben Anmeldung (`WKWebsiteDataStore.default()`).
 
-AirPlay sitzt in YouTubes eigener Steuerzeile des Players, neben Untertiteln und dem Zahnrad, nur auf der Watch-Seite, und öffnet die AirPlay-Auswahl von iOS. Der Cast-Knopf der Seite bleibt, wie YouTube ihn zeichnet; kann er in der Webansicht nicht auf einen Fernseher senden, ist AirPlay in der Steuerzeile der Weg dorthin.
+- **Feed.** Hier läuft die Startseite, die Suche, Kanäle und Abos. Ein Tipp auf ein Video lädt den Feed nicht um. `WebViewLinks.js` fängt den Tipp ab und gibt die Watch-Adresse an die App. Navigiert YouTube den Feed trotzdem auf `/watch`, holt die App die Adresse ab und schickt den Feed einen Schritt zurück.
+- **Player.** Die zweite Webansicht lädt die Watch-Seite und fährt von unten über den Feed. Weitere Videos aus der Liste darunter bleiben im Player. Kanal, Startseite und Suche gehen an den Feed; das Video läuft dabei als Karte weiter.
+
+**Nach unten wischen** auf dem Bild macht aus dem Player eine Karte über YouTubes unterer Leiste, rechts. Die Karte folgt dem Finger und federt beim Loslassen in die Karte oder zurück. Die Karte zeigt genau das Videobild. `PlayerRect.js` liest dafür das Rechteck des `<video>`-Elements, und die App skaliert und beschneidet die ganze Webansicht so, dass dieses Rechteck die Karte füllt. Die Seite selbst bekommt keine neue Größe, und am Video ändert niemand Breite, Höhe, `object-fit` oder `display`. Ist das Rechteck leer oder weggescrollt, gibt es keine Karte. Der Feed darunter bleibt sichtbar und lässt sich scrollen. Der Player bleibt auf der Watch-Seite, deshalb läuft die Wiedergabe weiter.
+
+- Ein Tipp auf die Karte holt den Player wieder groß.
+- Das **×** auf der Karte verlässt die Watch-Seite (`about:blank`) und nimmt die Karte weg.
+- Das Wischen ist eine Pan-Geste mit `cancelsTouchesInView = false`. Sie beginnt erst, wenn sich der Finger klar nach unten bewegt hat, mindestens doppelt so weit nach unten wie zur Seite. Ein Tipp auf Play, das Scrubben auf der Leiste unten im Bild und seitliche Bewegungen bleiben YouTubes Sache. Die Geste ruft kein `history.back` auf und navigiert nicht.
+
+Oben links im großen Player sitzt ein Chevron. Läuft ein Video, zeigt er nach unten und macht die Karte. Läuft nichts, ist es **Zurück**: Der Player schließt, und der Feed steht da, wo er war. Unten links im Feed sitzt ein kleiner Knopf **Zurück**, wenn der Feed nicht auf der Startseite ist; ohne History-Eintrag lädt er `https://m.youtube.com/`. Die Startseite in der unteren Leiste bleibt YouTubes Knopf. Startet YouTube nach dem Tipp keine eigene Navigation, lädt die Seite `https://m.youtube.com/` oder `https://www.youtube.com/`, je nach Host.
+
+## Cast und AirPlay
+
+Den Cast-Knopf zeichnet YouTube, und Langform fasst ihn nicht an. Weder das Stylesheet noch `hide.js` treffen ihn. Bis zur letzten Version steckte Langforms AirPlay-Knopf als fremder Knoten in YouTubes Steuerzeile. YouTube baut diese Zeile reaktiv auf, und mit dem fremden Knoten verschwanden AirPlay und Cast. Das ist vorbei: An der Zeile ändert Langform nichts mehr.
+
+AirPlay ist jetzt eine eigene Ebene, auf derselben Linie wie die Zeile. Der Knopf sitzt direkt links von YouTubes Knopfgruppe mit Cast, Untertiteln und Zahnrad, gleich groß wie diese Knöpfe. Er erscheint nur, solange YouTube die Leiste zeigt, und blendet sich mit ihr aus. Ein Tipp öffnet die AirPlay-Auswahl des Players (`movie_player.showAirplayPicker()`), sonst die von WebKit. Zeichnet YouTube selbst einen AirPlay-Knopf, bleibt Langforms weg. Es gibt kein Cast-SDK und keine Stream-Adresse.
+
+## Wiedergabe ohne Aussetzer
+
+Kein Skript ruft `pause()` auf oder setzt die Zeit beim Laden, beim Wischen oder wenn der Player erscheint. Gesprungen wird nur bei einem Tipp auf einen Zeitstempel, eine Kapitelzeile oder eine Kapitellücke, nie aus `pushState`, `replaceState` oder `yt-navigate-start`. Shorts-Einträge, die den Player enthalten, bleiben im DOM, denn ein Video aus dem Dokument zu nehmen hält es an.
 
 Die Startseite zeichnet, ohne auf Kapitel zu warten. Kapitel und AirPlay laufen nur auf einer Watch-Seite und erst, wenn der Player da ist. Shorts blendet zuerst das Stylesheet aus; das Entfernen aus dem DOM wird gebündelt und wartet, bis das Scrollen aufhört.
 
@@ -48,7 +67,7 @@ Die Seite, auch der Player, beginnt unter der Statusleiste, wie in mobilem Safar
 
 ## Shorts
 
-Beim Dokumentstart, bevor YouTube zeichnet, hängt die App dieselben Skripte wie die Safari-Erweiterung in die Seite: zuerst `early.js` mit dem Stylesheet, dann `logic.js`, `hide.js`, `controller.js`, `summary.js`, `page-captions.js` und `ShortsBootstrap.js`. Die Erweiterung liest `chrome.storage`. Den Schalter gibt es in der App nicht, deshalb setzt `ShortsBootstrap.js` die Sperre fest auf an.
+Beim Dokumentstart, bevor YouTube zeichnet, hängt die App dieselben Skripte wie die Safari-Erweiterung in die Seite: zuerst `early.js` mit dem Stylesheet, dann `logic.js`, `hide.js`, `controller.js`, `summary.js`, `page-captions.js`, `ShortsBootstrap.js` und `WebViewLinks.js`, in den Player zusätzlich `PlayerRect.js`. Die Erweiterung liest `chrome.storage`. Den Schalter gibt es in der App nicht, deshalb setzt `ShortsBootstrap.js` die Sperre fest auf an.
 
 Das Stylesheet blendet Shorts aus, bevor sie sichtbar werden. Die Skripte nehmen danach Tab, Regale, Chips und Links aus dem DOM, auch den Eintrag in der unteren Leiste auf `m.youtube.com`. Das gilt für `www.youtube.com` und `m.youtube.com`. Der Beobachter merkt sich neue Knoten nur und arbeitet sie nach dem Scrollen ab, damit die Liste nicht ruckelt.
 
