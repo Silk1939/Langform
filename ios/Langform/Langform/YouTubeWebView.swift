@@ -161,6 +161,14 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private var loadHasVideo = false
     private var loadPainted = false
     private var observations: [NSKeyValueObservation] = []
+    /// The spring between full player and card. Core Animation runs it on the
+    /// display link; a finger can grab it mid-flight and it stops where it is.
+    private var settler: UIViewPropertyAnimator?
+    private var revealer: UIViewPropertyAnimator?
+    /// Progress when the finger went down, so a grab mid-flight does not jump.
+    private var dragOrigin: CGFloat = 0
+    /// A rect the page reported while the card moved. Applied once it rests.
+    private var pendingRect: CGRect?
 
     private var feed: WKWebView!
     private var player: WKWebView!
@@ -370,6 +378,10 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         progress = 0
         player.isUserInteractionEnabled = true
         cardTap.isEnabled = false
+        settler?.stopAnimation(true)
+        settler = nil
+        revealer?.stopAnimation(true)
+        revealer = nil
         card.layer.removeAllAnimations()
         card.alpha = 1
         card.transform = .identity
@@ -395,17 +407,27 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         collapseButton.alpha = 0
         card.transform = CGAffineTransform(translationX: 0, y: bounds.height)
         updateChrome()
-        UIView.animate(
-            withDuration: 0.42,
-            delay: 0,
-            usingSpringWithDamping: 0.9,
-            initialSpringVelocity: 0,
-            options: [.allowUserInteraction],
-            animations: {
-                self.card.transform = .identity
-                self.collapseButton.alpha = 1
-            }
-        )
+        let animator = UIViewPropertyAnimator(duration: 0.42, timingParameters: UISpringTimingParameters(dampingRatio: 0.9))
+        animator.isUserInteractionEnabled = true
+        animator.addAnimations {
+            self.card.transform = .identity
+            self.collapseButton.alpha = 1
+        }
+        animator.addCompletion { [weak self, weak animator] _ in
+            guard let self, self.revealer === animator else { return }
+            self.revealer = nil
+            self.card.transform = .identity
+            self.flushPendingRect()
+        }
+        revealer = animator
+        animator.startAnimation()
+    }
+
+    private func stopReveal() {
+        guard let animator = revealer else { return }
+        revealer = nil
+        animator.stopAnimation(true)
+        card.transform = .identity
     }
 
     /// Fallback for a WebKit without paint timing: after the load event, a body
@@ -424,31 +446,83 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         }
     }
 
+    /// Springs the card to the full player or the card. The finger's speed carries
+    /// into the spring, measured in the animation's own unit (distance left per second).
     private func settle(_ target: Mode, speed: CGFloat = 0, travel: CGFloat = 1) {
         guard target != .closed else { return }
+        freezeSettle()
+        stopReveal()
         mode = target
         let end: CGFloat = target == .mini ? 1 : 0
-        let remaining = abs(end - progress) * travel
-        let spring = remaining > 1 ? min(8, abs(speed) / remaining) : 0
+        let distance = end - progress
+        var relative: CGFloat = 0
+        if abs(distance) > 0.001, travel > 0 {
+            relative = min(12, max(-12, (speed / travel) / distance))
+        }
         player.isUserInteractionEnabled = target == .expanded
         cardTap.isEnabled = target == .mini
         updateChrome()
-        UIView.animate(
-            withDuration: 0.45,
-            delay: 0,
-            usingSpringWithDamping: 0.88,
-            initialSpringVelocity: spring,
-            options: [.allowUserInteraction, .beginFromCurrentState],
-            animations: {
-                self.progress = end
-                self.apply(end)
+        let timing = UISpringTimingParameters(dampingRatio: 0.86, initialVelocity: CGVector(dx: relative, dy: relative))
+        let animator = UIViewPropertyAnimator(duration: 0.48, timingParameters: timing)
+        animator.isUserInteractionEnabled = true
+        animator.addAnimations {
+            self.apply(end)
+        }
+        animator.addCompletion { [weak self, weak animator] position in
+            guard let self, self.settler === animator else { return }
+            self.settler = nil
+            if position == .end { self.flushPendingRect() }
+        }
+        progress = end
+        settler = animator
+        animator.startAnimation()
+    }
+
+    /// Stops a running spring where the card is on screen and makes that the model.
+    private func freezeSettle() {
+        guard let animator = settler else { return }
+        settler = nil
+        let shown = card.layer.presentation()?.bounds.size.height ?? card.bounds.height
+        animator.stopAnimation(true)
+        let full = bounds.height
+        let small = miniFrame().height
+        if full - small > 1 {
+            progress = min(1, max(0, (full - shown) / (full - small)))
+        }
+        apply(progress)
+    }
+
+    private var cardMoving: Bool {
+        dragging || settler != nil || revealer != nil
+    }
+
+    private func flushPendingRect() {
+        guard !cardMoving, let rect = pendingRect else { return }
+        pendingRect = nil
+        videoRect = rect
+        if mode == .mini {
+            let animator = UIViewPropertyAnimator(duration: 0.2, curve: .easeOut) { self.apply(1) }
+            animator.isUserInteractionEnabled = true
+            settler = animator
+            animator.addCompletion { [weak self, weak animator] _ in
+                guard let self, self.settler === animator else { return }
+                self.settler = nil
             }
-        )
+            animator.startAnimation()
+        } else if mode == .expanded {
+            apply(progress)
+        }
     }
 
     /// Leaves the watch page and removes the card.
     @objc private func closePlayer() {
         guard mode != .closed else { return }
+        freezeSettle()
+        if let animator = revealer {
+            revealer = nil
+            animator.stopAnimation(true)
+        }
+        pendingRect = nil
         mode = .closed
         endDrag()
         videoPlaying = false
@@ -465,6 +539,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             guard self.mode == .closed else { return }
             self.card.isHidden = true
             self.card.alpha = 1
+            self.card.transform = .identity
             self.videoRect = .zero
             self.progress = 0
             self.apply(0)
@@ -507,6 +582,11 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         guard let feed else { return }
         let feedOnPage = !YouTubeWebView.isHomePage(feed.url) && !YouTubeWebView.isWatchPage(feed.url)
         backButton.isHidden = !(mode != .expanded && feed.canGoBack && feedOnPage)
+        // Only the view on top answers a tap on the status bar. Two candidates
+        // and iOS scrolls neither.
+        let playerOnTop = mode == .expanded
+        if feed.scrollView.scrollsToTop == playerOnTop { feed.scrollView.scrollsToTop = !playerOnTop }
+        if player.scrollView.scrollsToTop != playerOnTop { player.scrollView.scrollsToTop = playerOnTop }
         if showsMiniChevron != videoPlaying {
             showsMiniChevron = videoPlaying
             collapseButton.setImage(Self.symbol(videoPlaying ? "chevron.down" : "chevron.backward", size: 19), for: .normal)
@@ -529,9 +609,10 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     @objc private func dragPlayer(_ pan: UIPanGestureRecognizer) {
         switch pan.state {
         case .began:
+            // A spring still running stops where the card is; the finger takes it from there.
+            freezeSettle()
             dragging = true
-            card.layer.removeAllAnimations()
-            player.layer.removeAllAnimations()
+            dragOrigin = progress
             // The scroll pan has already failed; this keeps the page still until the finger lifts.
             player.scrollView.isScrollEnabled = false
             follow(pan)
@@ -549,10 +630,11 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     }
 
     /// The card follows the finger: progress is the downward translation over the way to the card.
+    /// Runs in the pan's own callback, once per touch frame, without a timer of its own.
     private func follow(_ pan: UIPanGestureRecognizer) {
-        let t = min(1, max(0, pan.translation(in: self).y / dragTravel))
+        let t = min(1, max(0, dragOrigin + pan.translation(in: self).y / dragTravel))
         progress = t
-        apply(t)
+        UIView.performWithoutAnimation { apply(t) }
     }
 
     private func endDrag() {
@@ -563,7 +645,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === drag else { return super.gestureRecognizerShouldBegin(gestureRecognizer) }
-        guard mode == .expanded, YouTubeWebView.isWatchPage(player.url) else { return false }
+        guard mode == .expanded, revealer == nil, YouTubeWebView.isWatchPage(player.url) else { return false }
         // Only a clear downward swipe. A tap, a scrub or a sideways move stays YouTube's.
         let move = drag.translation(in: self)
         let speed = drag.velocity(in: self)
@@ -674,14 +756,17 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             if (dict["painted"] as? NSNumber)?.boolValue == true { loadPainted = true }
         }
         let valid = rect.width > 8 && rect.height > 8
-        // The card keeps its last picture; an empty rect only counts in the full player.
-        if valid {
-            videoRect = rect
-        } else if (mode == .expanded || mode == .loading) && !dragging {
+        // While the card moves its crop stays fixed; a new rect waits until it rests.
+        if cardMoving {
+            if valid { pendingRect = rect }
+        } else if valid {
+            if rect != videoRect {
+                pendingRect = rect
+                flushPendingRect()
+            }
+        } else if mode == .expanded || mode == .loading {
+            // The card keeps its last picture; an empty rect only counts in the full player.
             videoRect = .zero
-        }
-        if valid && mode == .mini && !dragging {
-            UIView.animate(withDuration: 0.2) { self.apply(1) }
         }
         updateChrome()
         considerReveal()

@@ -128,7 +128,25 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   const reveal = swiftFunction(web, "reveal");
   assert.match(reveal, /guard mode == \.loading/);
   assert.match(reveal, /insertSubview\(card, aboveSubview: feed\)/);
-  assert.match(reveal, /UIView\.animate/);
+  assert.match(reveal, /UIViewPropertyAnimator\(duration: [\d.]+, timingParameters: UISpringTimingParameters/);
+
+  // Card motion is a spring animator Core Animation drives on the display link.
+  // A finger stops it where it is on screen and takes over from that progress.
+  const settle = swiftFunction(web, "settle");
+  assert.match(settle, /UISpringTimingParameters\(dampingRatio: [\d.]+, initialVelocity: CGVector/);
+  assert.match(settle, /UIViewPropertyAnimator\(duration:/);
+  assert.doesNotMatch(settle, /UIView\.animate|Timer|CADisplayLink|asyncAfter/);
+  const freeze = swiftFunction(web, "freezeSettle");
+  assert.match(freeze, /layer\.presentation\(\)/);
+  assert.match(freeze, /stopAnimation\(true\)/);
+  assert.match(dragged, /freezeSettle\(\)[\s\S]*dragOrigin = progress/);
+  assert.doesNotMatch(dragged, /removeAllAnimations/);
+  assert.match(swiftFunction(web, "follow"), /dragOrigin \+ pan\.translation/);
+  assert.doesNotMatch(web, /Timer\.scheduledTimer|CADisplayLink\(/);
+  // While the card moves a new picture rect waits, so the crop never jumps under the finger.
+  assert.match(swiftFunction(web, "takeVideoReport"), /if cardMoving \{\s*if valid \{ pendingRect = rect \}/);
+  // Only the view on top owns the status-bar tap.
+  assert.match(swiftFunction(web, "updateChrome"), /scrollsToTop/);
   const failed = swiftFunction(web, "handleFailure");
   assert.match(failed, /if mode == \.loading \{\s*closePlayer\(\)\s*return/);
   const finished = web.slice(web.indexOf("didFinish navigation"), web.indexOf("didFail navigation"));
