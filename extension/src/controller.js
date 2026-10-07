@@ -27,6 +27,7 @@
     var observer = null;
     var queued = [];
     var flushScheduled = false;
+    var scanning = false;
     var scrolling = false;
     var scrollTimer = 0;
     var lastRedirectKey = "";
@@ -82,26 +83,31 @@
 
     function flushQueue() {
       flushScheduled = false;
-      if (scrolling) return;
+      if (scrolling || scanning) return;
       if (!enabled) {
         queued = [];
         return;
       }
-      // SPA navigations mutate the DOM even when pushState stays in the page world.
-      if (logic.isShortsPath(win.location.pathname)) {
-        queued = [];
-        if (confirmed) goHome(win.location.pathname);
-        else hide.setVeil(doc, true);
-        pokeSummary();
-        return;
-      }
-      var start = Date.now();
-      while (queued.length && Date.now() - start < 8) {
-        var node = queued.shift();
-        if (!node || node.nodeType !== 1 || !node.isConnected) continue;
-        if (node.tagName === "VIDEO" || node.tagName === "YTD-PLAYER" || node.tagName === "YTM-PLAYER") continue;
-        if (node.id === "movie_player") continue;
-        remember(hide.scan(node, pageBase(), { remove: confirmed }));
+      scanning = true;
+      try {
+        // SPA navigations mutate the DOM even when pushState stays in the page world.
+        if (logic.isShortsPath(win.location.pathname)) {
+          queued = [];
+          if (confirmed) goHome(win.location.pathname);
+          else hide.setVeil(doc, true);
+          return;
+        }
+        var start = Date.now();
+        while (queued.length && Date.now() - start < 8) {
+          var node = queued.shift();
+          if (!node || node.nodeType !== 1 || !node.isConnected) continue;
+          if (node.tagName === "VIDEO" || node.tagName === "YTD-PLAYER" || node.tagName === "YTM-PLAYER") continue;
+          if (node.id === "movie_player") continue;
+          if (hide.isSearchControl && hide.isSearchControl(node)) continue;
+          remember(hide.scan(node, pageBase(), { remove: confirmed }));
+        }
+      } finally {
+        scanning = false;
       }
       if (queued.length) scheduleFlush();
       else pokeSummary();
@@ -125,7 +131,9 @@
 
     function queue(node) {
       if (!node || node.nodeType !== 1) return;
-      if (node.tagName === "VIDEO" || node.id === "movie_player") return;
+      if (node.tagName === "VIDEO" || node.tagName === "INPUT" || node.tagName === "TEXTAREA") return;
+      if (node.id === "movie_player") return;
+      if (hide.isSearchControl && hide.isSearchControl(node)) return;
       queued.push(node);
       if (queued.length > 40) queued = [doc.documentElement];
       scheduleFlush();
@@ -134,7 +142,7 @@
     function ensureObserver() {
       if (observer || !win.MutationObserver || !doc.documentElement) return;
       observer = new win.MutationObserver(function (records) {
-        if (!enabled) return;
+        if (!enabled || scanning) return;
         for (var i = 0; i < records.length; i++) {
           var record = records[i];
           if (record.type === "childList") {
@@ -173,6 +181,111 @@
       return logic.classifyHref(url, win.location.href) === "watch";
     }
 
+    function currentVideoId() {
+      return logic.watchVideoId(win.location.href, win.location.href);
+    }
+
+    function sameVideoTimestamp(url) {
+      if (!onWatchPage() || url == null || url === "") return null;
+      var seconds = logic.timestampSeconds(url, win.location.href);
+      if (seconds == null) return null;
+      var nextId = logic.watchVideoId(url, win.location.href);
+      var currentId = currentVideoId();
+      if (!nextId || nextId !== currentId) return null;
+      return seconds;
+    }
+
+    function seekPlayer(seconds) {
+      if (seconds == null || !isFinite(seconds) || seconds < 0) return false;
+      var movie = doc.getElementById("movie_player");
+      var players = [];
+      if (movie) players.push(movie);
+      var nodes = doc.querySelectorAll("ytd-player, ytm-player, .html5-video-player");
+      for (var i = 0; i < nodes.length; i++) players.push(nodes[i]);
+      for (var p = 0; p < players.length; p++) {
+        if (typeof players[p].seekTo !== "function") continue;
+        try {
+          players[p].seekTo(seconds, true);
+          return true;
+        } catch (err) {
+          /* the player can reject a seek while it is detaching */
+        }
+      }
+      var videos = doc.getElementsByTagName("video");
+      for (var v = 0; v < videos.length; v++) {
+        try {
+          videos[v].currentTime = seconds;
+          return true;
+        } catch (err2) {
+          /* jsdom and a detached element throw */
+        }
+      }
+      return false;
+    }
+
+    function consumeTimestamp(url) {
+      if (!enabled) return false;
+      var seconds = sameVideoTimestamp(url);
+      if (seconds == null) return false;
+      seekPlayer(seconds);
+      return true;
+    }
+
+    function anchorFromEvent(event) {
+      var path = event.composedPath ? event.composedPath() : null;
+      if (path) {
+        for (var i = 0; i < path.length; i++) {
+          var node = path[i];
+          if (node && node.tagName === "A" && node.hasAttribute && node.hasAttribute("href")) return node;
+        }
+      }
+      var target = event.target;
+      if (target && target.nodeType !== 1) target = target.parentElement;
+      if (target && target.closest) return target.closest("a[href]");
+      return null;
+    }
+
+    function onTimestampClick(event) {
+      if (!enabled || !event || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      var target = event.target;
+      if (target && target.nodeType !== 1) target = target.parentElement;
+      if (target && hide.isSearchControl && (hide.isSearchControl(target) || (target.closest && target.closest("form")))) {
+        var form = target.closest ? target.closest("form") : null;
+        if (form && hide.isSearchControl(form)) return;
+        if (hide.isSearchControl(target)) return;
+      }
+      var link = anchorFromEvent(event);
+      if (!link || (hide.isChapterUi && hide.isChapterUi(link) && logic.timestampSeconds(link.getAttribute("href"), win.location.href) == null)) {
+        return;
+      }
+      if (link && hide.isSearchControl && link.closest && link.closest("form") && hide.isSearchControl(link.closest("form"))) {
+        return;
+      }
+      var seconds = sameVideoTimestamp(link.getAttribute("href"));
+      if (seconds == null) return;
+      if (!seekPlayer(seconds)) return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+    }
+
+    function loadHome() {
+      if (!enabled) return;
+      if (logic.isHomeHref(win.location.href, win.location.href)) return;
+      try {
+        redirect(logic.homeUrl(win.location.hostname));
+      } catch (err) {
+        /* the test double records the call */
+      }
+    }
+
+    function backOrHome(native, args) {
+      if (win.history.length > 1 && typeof native === "function") {
+        return native.apply(win.history, args);
+      }
+      loadHome();
+    }
+
     // Shorts handling waits until the history call has returned. Doing it
     // inside pushState/replaceState makes WebKit drop the new entry, so
     // canGoBack stays false and the feed position is gone.
@@ -188,9 +301,22 @@
       historyHooked = true;
       var nativePush = win.history.pushState;
       var nativeReplace = win.history.replaceState;
+      var nativeBack = win.history.back;
+      var nativeGo = win.history.go;
+
+      function homeNavigation(url) {
+        return arguments.length >= 1 && logic.isHomeHref(url, win.location.href);
+      }
 
       if (typeof nativePush === "function") {
-        win.history.pushState = function () {
+        win.history.pushState = function (state, title, url) {
+          if (consumeTimestamp(url)) return;
+          // The Startseite stays a Startseite. Never rewrite it onto the watch URL.
+          if (homeNavigation(url)) {
+            var homePush = nativePush.apply(win.history, arguments);
+            scheduleNavigate();
+            return homePush;
+          }
           var result = nativePush.apply(win.history, arguments);
           scheduleNavigate();
           return result;
@@ -198,6 +324,12 @@
       }
       if (typeof nativeReplace === "function") {
         win.history.replaceState = function (state, title, url) {
+          if (consumeTimestamp(url)) return;
+          if (homeNavigation(url)) {
+            var homeReplace = nativeReplace.apply(win.history, arguments);
+            scheduleNavigate();
+            return homeReplace;
+          }
           // Opening a watch page must be its own entry. YouTube often
           // replaceState's that URL over the feed, which leaves canGoBack false.
           var openingWatch =
@@ -213,11 +345,35 @@
           return result;
         };
       }
+      if (typeof nativeBack === "function") {
+        win.history.back = function () {
+          return backOrHome(nativeBack, arguments);
+        };
+      }
+      if (typeof nativeGo === "function") {
+        win.history.go = function (delta) {
+          if (typeof delta === "number" && delta < 0) return backOrHome(nativeGo, arguments);
+          return nativeGo.apply(win.history, arguments);
+        };
+      }
+      doc.addEventListener("click", onTimestampClick, true);
       win.addEventListener("popstate", function () {
         scheduleNavigate();
       });
       win.addEventListener("yt-navigate-start", function (event) {
-        onNavigate(event && event.detail);
+        var detail = event && event.detail;
+        var url = logic.extractNavUrl(detail);
+        if (consumeTimestamp(url)) {
+          if (event && event.cancelable && event.preventDefault) event.preventDefault();
+          return;
+        }
+        if (url && logic.isHomeHref(url, win.location.href)) return;
+        var key = destinationKey(detail);
+        if (key) {
+          onNavigate(detail);
+          return;
+        }
+        scheduleNavigate();
       });
       win.addEventListener("yt-navigate-finish", function () {
         onNavigate(null);

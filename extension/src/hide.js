@@ -96,6 +96,79 @@
     return !!overlay && String(overlay).toUpperCase() === "SHORTS";
   }
 
+  function isSearchBox(el) {
+    var tag = el && el.tagName;
+    return tag === "YTM-SEARCHBOX" || tag === "YTD-SEARCHBOX" || tag === "YT-SEARCHBOX";
+  }
+
+  function isSearchForm(el) {
+    if (!el || el.tagName !== "FORM") return false;
+    if (el.getAttribute("role") === "search") return true;
+    var action = String(el.getAttribute("action") || "").toLowerCase();
+    if (action.indexOf("/results") !== -1 || action.indexOf("search") !== -1) return true;
+    var inputs = el.getElementsByTagName ? el.getElementsByTagName("input") : [];
+    for (var i = 0; i < inputs.length; i++) {
+      var name = String(inputs[i].getAttribute("name") || "").toLowerCase();
+      var type = String(inputs[i].getAttribute("type") || "").toLowerCase();
+      if (name === "search_query" || name === "q" || type === "search") return true;
+    }
+    return false;
+  }
+
+  function ownedBySearch(el) {
+    var node = el;
+    var guard = 0;
+    while (node && guard++ < 12) {
+      if (node.nodeType === 1) {
+        if (isSearchForm(node) || isSearchBox(node)) return true;
+        if (node.getAttribute && node.getAttribute("role") === "search") return true;
+      }
+      node = parentAcross(node);
+    }
+    return false;
+  }
+
+  function isSearchControl(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (isSearchForm(el) || isSearchBox(el)) return true;
+    if (el.getAttribute("role") === "search") return true;
+    var tag = el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") {
+      var type = String(el.getAttribute("type") || "").toLowerCase();
+      var name = String(el.getAttribute("name") || "").toLowerCase();
+      if (type === "search" || name === "search_query" || name === "q") return true;
+    }
+    if ((tag === "BUTTON" || tag === "YTM-BUTTON-RENDERER") && ownedBySearch(el)) return true;
+    return false;
+  }
+
+  function isChapterUi(el) {
+    var node = el;
+    var guard = 0;
+    while (node && guard++ < 12) {
+      if (node.nodeType === 1) {
+        var tag = tagNameOf(node);
+        var id = node.id || "";
+        if (
+          tag.indexOf("macro-markers") !== -1 ||
+          tag.indexOf("chapter") !== -1 ||
+          id === "chapters" ||
+          id === "chapter-list" ||
+          id === "segments-container"
+        ) {
+          return true;
+        }
+      }
+      node = parentAcross(node);
+    }
+    return false;
+  }
+
+  function isTimestampAnchor(el, base) {
+    if (!el || el.tagName !== "A" || !el.hasAttribute("href")) return false;
+    return logic().timestampSeconds(el.getAttribute("href"), base) != null;
+  }
+
   function ignoredAnchor(el) {
     var node = el;
     var guard = 0;
@@ -124,8 +197,10 @@
     var guard = 0;
     while (node && guard++ < 50) {
       if (node.nodeType === 1) {
-        if (STOP_TAGS[node.tagName]) break;
-        if (ITEM_TAGS[tagNameOf(node)]) found = node;
+      if (STOP_TAGS[node.tagName]) break;
+      if (isSearchForm(node) || isSearchBox(node) || node.getAttribute("role") === "search") break;
+      if (isChapterUi(node) && node !== el) break;
+      if (ITEM_TAGS[tagNameOf(node)]) found = node;
       }
       node = parentAcross(node);
     }
@@ -172,6 +247,7 @@
   function hideElement(el, doRemove, doomed) {
     if (!el || el.nodeType !== 1) return;
     if (el.tagName === "HTML" || el.tagName === "BODY" || el.tagName === "HEAD") return;
+    if (isSearchControl(el) || isChapterUi(el)) return;
     if (el.getAttribute(MARK) !== "1") {
       el.setAttribute(MARK, "1");
       if (el.classList) el.classList.add(HIDDEN_CLASS);
@@ -242,9 +318,11 @@
       hideWrappingSection(shelves[s], pageBase, doRemove, doomed);
     }
     for (var m = 0; m < marked.length; m++) {
+      if (isChapterUi(marked[m]) || ownedBySearch(marked[m])) continue;
       hideElement(outermostItem(marked[m]) || marked[m], doRemove, doomed);
     }
     for (var c = 0; c < chips.length; c++) {
+      if (isChapterUi(chips[c])) continue;
       if (isShortsChip(chips[c])) hideElement(chips[c], doRemove, doomed);
     }
     for (var t = 0; t < tabs.length; t++) {
@@ -252,6 +330,8 @@
     }
     for (var a = 0; a < anchors.length; a++) {
       if (ignoredAnchor(anchors[a])) continue;
+      if (isTimestampAnchor(anchors[a], pageBase) || isChapterUi(anchors[a])) continue;
+      if (ownedBySearch(anchors[a])) continue;
       if (!logic().isShortsHref(anchors[a].getAttribute("href"), pageBase)) continue;
       hideElement(outermostItem(anchors[a]) || anchors[a], doRemove, doomed);
     }
@@ -356,5 +436,7 @@
     clearMarks: clearMarks,
     hideElement: hideElement,
     pullRemoved: pullRemoved,
+    isSearchControl: isSearchControl,
+    isChapterUi: isChapterUi,
   };
 });

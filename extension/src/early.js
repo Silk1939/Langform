@@ -60,10 +60,23 @@
     });
   }
 
+  var CHAPTER_GUARD =
+    ":not(ytd-macro-markers-list-renderer *)" +
+    ":not(ytm-macro-markers-list-renderer *)" +
+    ":not(ytd-macro-markers-list-item-renderer *)" +
+    ":not(ytm-macro-markers-list-item-renderer *)" +
+    ":not(ytd-chapter-renderer *)" +
+    ":not(ytm-chapter-renderer *)";
+
+  var SEARCH_GUARD =
+    ':not(:has(form[role="search"]))' +
+    ':not(:has(input[name="search_query"]))' +
+    ':not(:has(input[type="search"]))';
+
   function buildCss() {
     var anchors = safeAnchors().join(", ");
     var items = ITEM_TAGS.map(function (tag) {
-      return tag + ":has(" + anchors + ")";
+      return tag + ":has(" + anchors + ")" + SEARCH_GUARD + CHAPTER_GUARD;
     });
     var always = [
       "ytd-reel-shelf-renderer",
@@ -79,14 +92,14 @@
       "ytm-rich-section-renderer:has(ytm-reel-shelf-renderer)",
       "ytm-rich-section-renderer:has(ytm-rich-shelf-renderer[is-shorts])",
       '[overlay-style="SHORTS"]',
-      'yt-chip-cloud-chip-renderer[title="Shorts"]',
-      'yt-chip-cloud-chip-renderer[title="YouTube Shorts"]',
-      'ytm-chip-cloud-chip-renderer[title="Shorts"]',
-      'ytm-chip-cloud-chip-renderer[title="YouTube Shorts"]',
-      'ytm-pivot-bar-item-renderer[aria-label="Shorts"]',
-      'ytm-pivot-bar-item-renderer[aria-label="YouTube Shorts"]',
-      'ytm-pivot-bar-item-renderer:has([aria-label="Shorts"])',
-      'ytm-pivot-bar-item-renderer:has([aria-label="YouTube Shorts"])',
+      'yt-chip-cloud-chip-renderer[title="Shorts"]' + CHAPTER_GUARD,
+      'yt-chip-cloud-chip-renderer[title="YouTube Shorts"]' + CHAPTER_GUARD,
+      'ytm-chip-cloud-chip-renderer[title="Shorts"]' + CHAPTER_GUARD,
+      'ytm-chip-cloud-chip-renderer[title="YouTube Shorts"]' + CHAPTER_GUARD,
+      'ytm-pivot-bar-item-renderer[aria-label="Shorts"]' + SEARCH_GUARD,
+      'ytm-pivot-bar-item-renderer[aria-label="YouTube Shorts"]' + SEARCH_GUARD,
+      'ytm-pivot-bar-item-renderer:has([aria-label="Shorts"])' + SEARCH_GUARD,
+      'ytm-pivot-bar-item-renderer:has([aria-label="YouTube Shorts"])' + SEARCH_GUARD,
       ".shorts-ausblenden-hidden",
     ];
     return always.concat(items).join(",\n") + " {\n  display: none !important;\n}\n";

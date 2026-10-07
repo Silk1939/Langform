@@ -57,6 +57,62 @@
     return classifyHref(href, base) === "shorts";
   }
 
+  function isHomeHref(href, base) {
+    if (href == null || href === "") return false;
+    var url = parseUrl(href, base);
+    if (!url || !isYoutubeHost(url.hostname)) return false;
+    return normalizePath(url.pathname) === "/";
+  }
+
+  function watchVideoId(href, base) {
+    var url = parseUrl(href, base);
+    if (!url || !isYoutubeHost(url.hostname)) return "";
+    if (normalizePath(url.pathname) !== "/watch") return "";
+    return url.searchParams.get("v") || "";
+  }
+
+  // 83, 83s, 1m23s, 1h2m3s, 1:23, 12:04, 1:02:03.
+  function parseTimeToken(raw) {
+    var text = String(raw == null ? "" : raw).trim().toLowerCase();
+    if (!text) return null;
+    var clock = text.match(/^(?:(\d{1,2}):)?(\d{1,2}):(\d{2})$/);
+    if (clock) {
+      var hours = clock[1] ? Number(clock[1]) : 0;
+      var mins = Number(clock[2]);
+      var secs = Number(clock[3]);
+      if (secs > 59 || (clock[1] && mins > 59)) return null;
+      return hours * 3600 + mins * 60 + secs;
+    }
+    if (!/^\d/.test(text)) return null;
+    if (/[hms]$/.test(text)) {
+      var named = text.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/);
+      if (named && (named[1] != null || named[2] != null || named[3] != null)) {
+        return Number(named[1] || 0) * 3600 + Number(named[2] || 0) * 60 + Number(named[3] || 0);
+      }
+      return null;
+    }
+    if (/^\d+(?:\.\d+)?$/.test(text)) {
+      var plain = Number(text);
+      return isFinite(plain) ? plain : null;
+    }
+    return null;
+  }
+
+  function timestampSeconds(href, base) {
+    var url = parseUrl(href, base);
+    if (!url || !isYoutubeHost(url.hostname)) return null;
+    if (normalizePath(url.pathname) !== "/watch") return null;
+    var token = url.searchParams.get("t");
+    if (token == null || token === "") token = url.searchParams.get("start");
+    if (token == null || token === "") {
+      var hash = url.hash ? url.hash.replace(/^#/, "") : "";
+      if (hash.indexOf("t=") === 0) token = decodeURIComponent(hash.slice(2));
+      else if (hash.indexOf("start=") === 0) token = decodeURIComponent(hash.slice(6));
+    }
+    if (token == null || token === "") return null;
+    return parseTimeToken(token);
+  }
+
   function readFastFlag(storage) {
     try {
       var value = storage.getItem(STORAGE_FLAG);
@@ -112,6 +168,10 @@
     isShortsPath: isShortsPath,
     classifyHref: classifyHref,
     isShortsHref: isShortsHref,
+    isHomeHref: isHomeHref,
+    watchVideoId: watchVideoId,
+    parseTimeToken: parseTimeToken,
+    timestampSeconds: timestampSeconds,
     readFastFlag: readFastFlag,
     writeFastFlag: writeFastFlag,
     initialPlan: initialPlan,

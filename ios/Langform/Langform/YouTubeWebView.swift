@@ -9,6 +9,15 @@ struct YouTubeWebView: UIViewRepresentable {
     var goBackToken: Int
 
     static let startURL = URL(string: "https://m.youtube.com/")!
+
+    /// Home feed on the host the page is already using.
+    static func homeURL(for url: URL?) -> URL {
+        let host = url?.host?.lowercased() ?? ""
+        if host == "www.youtube.com" || host == "youtube.com" {
+            return URL(string: "https://www.youtube.com/")!
+        }
+        return startURL
+    }
     /// Fresh YouTube sign-in. Used once, after Google rejects the webview user agent.
     static let signInRetryURL = URL(string: "https://accounts.google.com/ServiceLogin?service=youtube&hl=de&passive=true&continue=https://m.youtube.com/")!
     static let scriptNames = ["early", "logic", "hide", "controller", "summary", "ShortsBootstrap"]
@@ -84,6 +93,8 @@ struct YouTubeWebView: UIViewRepresentable {
             context.coordinator.goBackToken = goBackToken
             if webView.canGoBack {
                 webView.goBack()
+            } else if Self.isWatchPage(webView.url) {
+                webView.load(URLRequest(url: Self.homeURL(for: webView.url)))
             }
         }
         guard context.coordinator.reloadToken != reloadToken else { return }

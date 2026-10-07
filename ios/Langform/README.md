@@ -36,7 +36,9 @@ Die App setzt von Anfang an die Safari-Kennung von oben, damit YouTube die mobil
 
 ## Zurück und der Player
 
-Wischen vom linken Rand geht zurück, solange es einen History-Eintrag gibt. Auf einer Watch-Seite zeigt YouTube selbst den Zurück-Pfeil im Player, dort legt die App keinen eigenen Knopf darüber. Auf anderen Seiten, wenn die Wischgeste nicht reicht, sitzt ein kleiner Knopf **Zurück** unten links, über der Leiste. Ein normales `/watch` ist ein eigener Eintrag, auch wenn YouTube es mit `replaceState` über die Liste legt. Zurück landet wieder auf der vorherigen YouTube-Seite, an der alten Scrollposition.
+Wischen vom linken Rand geht zurück, solange es einen History-Eintrag gibt. Auf einer Watch-Seite zeigt YouTube selbst den Zurück-Pfeil im Player, dort legt die App keinen eigenen Knopf darüber. Auf anderen Seiten, wenn die Wischgeste nicht reicht, sitzt ein kleiner Knopf **Zurück** unten links, über der Leiste. Ein normales `/watch` ist ein eigener Eintrag, auch wenn YouTube es mit `replaceState` über die Liste legt. Zurück landet wieder auf der vorherigen YouTube-Seite, an der alten Scrollposition. Die Startseite in der unteren Leiste bleibt die Navigation von YouTube und wird nicht in einen Watch-Eintrag umgeschrieben. Gibt es keinen History-Eintrag, geht Zurück auf `https://m.youtube.com/` oder `https://www.youtube.com/`, je nach Host.
+
+Zeitstempel in der Beschreibung, Kapitelchips und Links mit `t=` oder `start=` springen im laufenden Video. Sie laden dieselbe Watch-Seite nicht neu. Suche, Vorschläge und das Absenden bleiben das Suchfeld von YouTube.
 
 Die Seite, auch der Player, beginnt unter der Statusleiste, wie in mobilem Safari. Die App zieht die Seite nicht mit `viewport-fit=cover` unter die Uhr. Sie setzt keine Breite, Höhe, Position oder `object-fit` auf das Video. Zeit, Untertitel und der Regler bleiben YouTubes eigene Anordnung.
 

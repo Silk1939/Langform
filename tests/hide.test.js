@@ -153,6 +153,57 @@ test("Sperrseite nennt den blockierten Zustand auf Deutsch", function () {
   assert.equal(doc.documentElement.classList.contains(hide.VEIL_CLASS), false);
 });
 
+test("Kapitel bleiben stehen, der Shorts-Chip nicht", function () {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM(
+    `<!DOCTYPE html><body>
+      <ytd-macro-markers-list-renderer id="chapters">
+        <ytd-macro-markers-list-item-renderer id="row">
+          <a href="/watch?v=abcdefghijk&amp;t=83s">1:23 Intro</a>
+        </ytd-macro-markers-list-item-renderer>
+      </ytd-macro-markers-list-renderer>
+      <yt-chip-cloud-chip-renderer id="zeit" title="1:23 Intro">1:23 Intro</yt-chip-cloud-chip-renderer>
+      <yt-chip-cloud-chip-renderer id="shorts" title="Shorts">Shorts</yt-chip-cloud-chip-renderer>
+    </body>`,
+    { url: "https://www.youtube.com/watch?v=abcdefghijk" }
+  );
+  const doc = dom.window.document;
+  const chapters = doc.getElementById("chapters");
+  const row = doc.getElementById("row");
+  const zeit = doc.getElementById("zeit");
+  const shorts = doc.getElementById("shorts");
+  hide.scan(doc, "https://www.youtube.com/watch?v=abcdefghijk");
+  kept(chapters);
+  kept(row);
+  kept(zeit);
+  gone(shorts);
+});
+
+test("Suchformular ist keine Shorts-Steuerung", function () {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM(
+    `<!DOCTYPE html><body>
+      <ytm-pivot-bar-item-renderer id="suche-tab" aria-label="Suche">
+        <form id="suche" action="/results" method="get" role="search">
+          <input id="feld" name="search_query" type="search" />
+          <button id="los" type="submit" aria-label="Suche">Suche</button>
+          <a href="/shorts/im-suchfeld">Kurz</a>
+        </form>
+      </ytm-pivot-bar-item-renderer>
+    </body>`,
+    { url: "https://m.youtube.com/" }
+  );
+  const doc = dom.window.document;
+  hide.scan(doc, "https://m.youtube.com/");
+  kept(doc.getElementById("suche"));
+  kept(doc.getElementById("feld"));
+  kept(doc.getElementById("los"));
+  kept(doc.getElementById("suche-tab"));
+  assert.equal(hide.isSearchControl(doc.getElementById("suche")), true);
+  assert.equal(hide.isSearchControl(doc.getElementById("feld")), true);
+  assert.equal(hide.isChapterUi(doc.getElementById("suche")), false);
+});
+
 test("CSS trifft Desktop- und Mobil-Hooks", function () {
   const css = hide.cssText();
   assert.match(css, /ytd-reel-shelf-renderer/);
@@ -163,5 +214,7 @@ test("CSS trifft Desktop- und Mobil-Hooks", function () {
   assert.match(css, /m\.youtube\.com\/shorts/);
   assert.doesNotMatch(css, /a\[href\^="\/shorts"\]/);
   assert.match(css, /#description a/);
+  assert.match(css, /macro-markers-list-renderer/);
+  assert.match(css, /input\[name="search_query"\]/);
   assert.doesNotMatch(css, /movie_player|html5-video-player|player-container|object-fit/);
 });

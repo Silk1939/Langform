@@ -53,6 +53,26 @@ test("früher Plan versteckt nur, wenn der Cache an ist", function () {
   assert.deepEqual(logic.initialPlan(null, "/feed/shorts"), { arm: false, veil: true });
 });
 
+test("Zeitstempel und die Startseite", function () {
+  const base = "https://m.youtube.com/watch?v=abcdefghijk";
+  assert.equal(logic.timestampSeconds("/watch?v=abcdefghijk&t=83s", base), 83);
+  assert.equal(logic.timestampSeconds("/watch?v=abcdefghijk&t=1m23s", base), 83);
+  assert.equal(logic.timestampSeconds("/watch?v=abcdefghijk&t=12:04", base), 724);
+  assert.equal(logic.timestampSeconds("/watch?v=abcdefghijk&t=1:02:03", base), 3723);
+  assert.equal(logic.timestampSeconds("/watch?v=abcdefghijk&t=1h2m3s", base), 3723);
+  assert.equal(logic.timestampSeconds("/watch?v=abcdefghijk&start=90", base), 90);
+  assert.equal(logic.timestampSeconds("/watch?v=abcdefghijk#t=15s", base), 15);
+  assert.equal(logic.timestampSeconds("/watch?v=abcdefghijk", base), null);
+  assert.equal(logic.timestampSeconds("/shorts/abc?t=3", base), null);
+  assert.equal(logic.watchVideoId("/watch?v=abcdefghijk&t=1", base), "abcdefghijk");
+  assert.equal(logic.isHomeHref("/", base), true);
+  assert.equal(logic.isHomeHref("https://m.youtube.com/?pbj=1", base), true);
+  assert.equal(logic.isHomeHref("https://www.youtube.com/", base), true);
+  assert.equal(logic.isHomeHref("/watch?v=abcdefghijk", base), false);
+  assert.equal(logic.isHomeHref("/feed/subscriptions", base), false);
+  assert.equal(logic.isHomeHref("", base), false);
+});
+
 test("liest die Navigations-URL aus YouTube-Events", function () {
   assert.equal(logic.extractNavUrl({ url: "/shorts/a" }), "/shorts/a");
   assert.equal(

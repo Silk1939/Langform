@@ -175,6 +175,157 @@ test("eine Watch-Seite ist ein History-Eintrag, Zurück bleibt offen", async fun
   assert.equal(ctx.redirects.length, redirects);
 });
 
+test("Zeitstempel desselben Videos sucht, statt zu navigieren", async function () {
+  const ctx = boot({
+    url: "https://m.youtube.com/watch?v=abcdefghijk",
+    html: `<!DOCTYPE html><body>
+      <div id="movie_player"></div>
+      <div id="description">
+        <a id="stamp" href="/watch?v=abcdefghijk&amp;t=83s">1:23</a>
+      </div>
+      <ytd-macro-markers-list-renderer id="chapters">
+        <ytd-macro-markers-list-item-renderer>
+          <a id="chapter" href="/watch?v=abcdefghijk&amp;t=12:04">12:04</a>
+        </ytd-macro-markers-list-item-renderer>
+      </ytd-macro-markers-list-renderer>
+      <ytm-chip-cloud-chip-renderer id="chip" title="Intro">
+        <a id="chip-link" href="/watch?v=abcdefghijk&amp;start=90">1:30</a>
+      </ytm-chip-cloud-chip-renderer>
+      <button id="plain" type="button">1:23</button>
+      <a id="other" href="/watch?v=bbcdefghijk&amp;t=10">Anderes Video</a>
+    </body>`,
+    enabled: true,
+  });
+  await delay(20);
+  const doc = ctx.win.document;
+  const player = doc.getElementById("movie_player");
+  const sought = [];
+  player.seekTo = function (seconds) {
+    sought.push(seconds);
+  };
+  assert.equal(doc.getElementById("chapters").isConnected, true);
+  assert.equal(doc.getElementById("chip").isConnected, true);
+  assert.equal(marked(doc.getElementById("chapters")), false);
+  const before = ctx.win.history.length;
+  const href = ctx.win.location.href;
+  let heard = 0;
+  doc.body.addEventListener("click", function () {
+    heard += 1;
+  });
+  const click = new ctx.win.MouseEvent("click", { bubbles: true, cancelable: true });
+  doc.getElementById("stamp").dispatchEvent(click);
+  assert.equal(heard, 1);
+  assert.deepEqual(sought, [83]);
+  assert.equal(ctx.win.history.length, before);
+  assert.equal(ctx.win.location.href, href);
+
+  doc.getElementById("chapter").dispatchEvent(new ctx.win.MouseEvent("click", { bubbles: true, cancelable: true }));
+  doc.getElementById("chip-link").dispatchEvent(new ctx.win.MouseEvent("click", { bubbles: true, cancelable: true }));
+  assert.deepEqual(sought, [83, 724, 90]);
+  assert.equal(ctx.win.location.href, href);
+
+  const plain = new ctx.win.MouseEvent("click", { bubbles: true, cancelable: true });
+  doc.getElementById("plain").dispatchEvent(plain);
+  assert.equal(plain.defaultPrevented, false);
+
+  ctx.win.history.pushState({}, "", "/watch?v=abcdefghijk&t=1m23s");
+  assert.equal(ctx.win.history.length, before);
+  assert.equal(ctx.win.location.href, href);
+  assert.deepEqual(sought, [83, 724, 90, 83]);
+
+  ctx.win.history.replaceState({ t: 4 }, "", "/watch?v=abcdefghijk&start=4");
+  assert.equal(ctx.win.history.length, before);
+  assert.equal(ctx.win.location.href, href);
+
+  ctx.win.history.pushState({ next: 1 }, "", "/watch?v=bbcdefghijk&t=10");
+  assert.equal(ctx.win.history.length, before + 1);
+  assert.equal(ctx.win.location.search.includes("bbcdefghijk"), true);
+});
+
+test("Startseiten-Navigation wird nicht in ein Watch-replace umgeschrieben", async function () {
+  const ctx = boot({ url: "https://m.youtube.com/", enabled: true });
+  await delay(20);
+  ctx.win.history.replaceState({ scroll: 20 }, "", "/watch?v=abcdefghijk");
+  assert.equal(ctx.win.location.pathname, "/watch");
+  const onWatch = ctx.win.history.length;
+  ctx.win.history.replaceState({ page: "home" }, "", "/");
+  assert.equal(ctx.win.location.pathname, "/");
+  assert.equal(ctx.win.location.search, "");
+  assert.equal(ctx.win.location.hostname, "m.youtube.com");
+  assert.equal(ctx.win.history.length, onWatch);
+
+  ctx.win.history.pushState({}, "", "/watch?v=abcdefghijk");
+  ctx.win.history.pushState({ page: "home" }, "", "https://m.youtube.com/");
+  assert.equal(ctx.win.location.pathname, "/");
+  assert.equal(ctx.win.location.search, "");
+  assert.equal(ctx.win.location.href, "https://m.youtube.com/");
+});
+
+test("ohne History-Eintrag geht Zurück auf die Startseite desselben Hosts", async function () {
+  const mobile = boot({ url: "https://m.youtube.com/watch?v=abcdefghijk", enabled: true });
+  await delay(20);
+  assert.equal(mobile.win.history.length, 1);
+  mobile.win.history.back();
+  assert.deepEqual(mobile.redirects, ["https://m.youtube.com/"]);
+  assert.equal(mobile.win.document.documentElement.classList.contains(hide.VEIL_CLASS), false);
+
+  const desktop = boot({ url: "https://www.youtube.com/watch?v=abcdefghijk", enabled: true });
+  await delay(20);
+  desktop.win.history.go(-1);
+  assert.deepEqual(desktop.redirects, ["https://www.youtube.com/"]);
+
+  const home = boot({ url: "https://m.youtube.com/", enabled: true });
+  await delay(20);
+  home.win.history.pushState({}, "", "/watch?v=abcdefghijk");
+  home.win.history.back();
+  await delay(20);
+  assert.equal(home.win.location.pathname, "/");
+  assert.deepEqual(home.redirects, []);
+});
+
+test("Suchformular gilt nicht als Shorts-Steuerung", async function () {
+  const ctx = boot({
+    url: "https://m.youtube.com/",
+    html: `<!DOCTYPE html><body>
+      <ytm-pivot-bar-item-renderer id="suche-tab" aria-label="Suche">
+        <form id="suche" action="/results" method="get" role="search">
+          <input id="feld" name="search_query" type="search" value="teig" />
+          <button id="los" type="submit" aria-label="Suche">Suche</button>
+          <a id="im-feld" href="/shorts/suchkurz">Kurzvorschlag</a>
+        </form>
+      </ytm-pivot-bar-item-renderer>
+      <ytm-pivot-bar-item-renderer id="shorts-tab" aria-label="Shorts">
+        <a href="/shorts">Shorts</a>
+      </ytm-pivot-bar-item-renderer>
+    </body>`,
+    enabled: true,
+  });
+  await delay(30);
+  const doc = ctx.win.document;
+  const form = doc.getElementById("suche");
+  const input = doc.getElementById("feld");
+  const button = doc.getElementById("los");
+  assert.equal(form.isConnected, true);
+  assert.equal(input.isConnected, true);
+  assert.equal(button.isConnected, true);
+  assert.equal(doc.getElementById("suche-tab").isConnected, true);
+  assert.equal(marked(form), false);
+  assert.equal(marked(input), false);
+  assert.equal(marked(button), false);
+  assert.equal(marked(doc.getElementById("suche-tab")), false);
+  assert.equal(doc.getElementById("shorts-tab"), null);
+  const heard = [];
+  form.addEventListener("submit", function (event) {
+    heard.push(event.defaultPrevented);
+    event.preventDefault();
+  });
+  form.dispatchEvent(new ctx.win.Event("submit", { bubbles: true, cancelable: true }));
+  assert.deepEqual(heard, [false]);
+  const click = new ctx.win.MouseEvent("click", { bubbles: true, cancelable: true });
+  button.dispatchEvent(click);
+  assert.equal(click.defaultPrevented, false);
+});
+
 test("während des Scrollens bleibt die Karte, danach verschwindet sie", async function () {
   const ctx = boot({
     url: "https://www.youtube.com/",
