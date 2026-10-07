@@ -434,3 +434,122 @@ test("die Startseite startet keine Kapitelarbeit", async function () {
   assert.equal(win.__langformChapterRetry || 0, 0);
   win.close();
 });
+
+function screenshotPlayerDom(extra) {
+  const dom = new JSDOM(
+    `<!DOCTYPE html><body>
+      <ytm-player id="player">
+        <div class="player-controls-top">
+          <button id="cc" aria-label="Untertitel"></button>
+          <button id="gear" aria-label="Einstellungen"></button>
+        </div>
+        <div class="player-controls-bottom" id="row">
+          <div class="ytp-time-display" id="time">0:02 / 17:02</div>
+          ${extra || ""}
+          <button id="fullscreen" aria-label="Vollbild"></button>
+        </div>
+        <div class="progress-bar-line" id="bar"></div>
+        <video id="v"></video>
+      </ytm-player>
+    </body>`,
+    { url: "https://m.youtube.com/watch?v=abcdefghijk" }
+  );
+  const doc = dom.window.document;
+  Object.defineProperty(doc.documentElement, "clientWidth", { value: 471 });
+  placeBox(doc.getElementById("player"), 0, 128, 471, 265);
+  placeBox(doc.getElementById("cc"), 340, 140, 36, 36);
+  placeBox(doc.getElementById("gear"), 396, 140, 36, 36);
+  placeBox(doc.getElementById("time"), 36, 320, 104, 24);
+  placeBox(doc.getElementById("fullscreen"), 396, 314, 36, 36);
+  placeBox(doc.getElementById("bar"), 0, 364, 471, 4);
+  return dom;
+}
+
+test("ein Kapitelchip, einzeilig, endet vor dem Vollbild-Knopf, nichts oben rechts", function () {
+  const dom = screenshotPlayerDom();
+  const doc = dom.window.document;
+  const list = chapters.chaptersFromPlayer(playerWithChapters());
+  list[0].title = "AI ads that feel real and a much longer title that would never fit";
+  list[1].thumbnail = "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg";
+  const ui = chapters.renderChapterUi(doc, list, function () {});
+  assert.equal(ui.drawn, true);
+  const chips = doc.querySelectorAll("#langform-chapter-chip");
+  assert.equal(chips.length, 1);
+  const chip = chips[0];
+  assert.equal(chip.previousElementSibling, doc.getElementById("time"));
+  assert.equal(chip.getAttribute("data-langform-chip-placed"), "1");
+  assert.equal(chip.style.position, "fixed");
+  assert.equal(chip.style.left, "148px");
+  assert.equal(chip.style.top, "332px");
+  // 396 (Vollbild) - 8 Abstand - 148 links = 240
+  assert.equal(chip.style.maxWidth, "240px");
+  assert.equal(chip.style.whiteSpace, "nowrap");
+  assert.equal(chip.style.overflow, "hidden");
+  const label = chip.querySelector("[data-langform-chapter-label]");
+  assert.equal(label.style.whiteSpace, "nowrap");
+  assert.equal(label.style.textOverflow, "ellipsis");
+  assert.equal(chip.querySelectorAll("img").length, 0);
+  assert.equal(chip.textContent.split(list[0].title).length - 1, 1);
+  // Nichts von uns sitzt in der oberen Hälfte des Players (CC, Zahnrad, Cast, AirPlay).
+  const sheet = doc.getElementById("langform-chapter-sheet");
+  assert.equal(sheet.style.display, "none");
+  assert.equal(sheet.style.bottom, "0px");
+  ui.open();
+  const thumb = sheet.querySelector("img");
+  assert.equal(thumb.style.width, "80px");
+  assert.equal(thumb.style.height, "45px");
+  assert.ok(thumb.closest("[data-langform-chapter-row]"));
+  assert.ok(Number.parseInt(sheet.style.top, 10) >= 393);
+  const video = doc.getElementById("v");
+  assert.equal(video.getAttribute("style"), null);
+  dom.window.close();
+});
+
+test("liegt die Zeitzeile oben im Player, bleibt der Chip unsichtbar", function () {
+  const dom = screenshotPlayerDom();
+  const doc = dom.window.document;
+  placeBox(doc.getElementById("time"), 36, 150, 104, 24);
+  placeBox(doc.getElementById("fullscreen"), 396, 144, 36, 36);
+  chapters.renderChapterUi(doc, chapters.chaptersFromPlayer(playerWithChapters()), function () {});
+  const chip = doc.getElementById("langform-chapter-chip");
+  assert.equal(chip.getAttribute("data-langform-chip-placed"), null);
+  assert.equal(chip.style.visibility, "hidden");
+  assert.equal(chip.style.pointerEvents, "none");
+  assert.notEqual(chip.style.position, "fixed");
+  dom.window.close();
+});
+
+test("zeigt YouTube schon seinen Kapitelchip, kommt kein zweiter dazu, auch ohne YouTubes Blatt", function () {
+  const dom = screenshotPlayerDom(
+    `<div class="ytwPlayerTimeDisplayPlayerBarActionContainer" id="native-wrap"><button id="native-chip">AI ads that feel real</button></div>`
+  );
+  const doc = dom.window.document;
+  placeBox(doc.getElementById("native-chip"), 148, 318, 200, 28);
+  const ui = chapters.renderChapterUi(doc, chapters.chaptersFromPlayer(playerWithChapters()), function () {});
+  assert.equal(ui.native, true);
+  assert.equal(doc.getElementById("langform-chapter-chip"), null);
+  assert.equal(doc.getElementById("langform-chapter-sheet"), null);
+  dom.window.close();
+});
+
+test("taucht YouTubes Chip später auf, verschwindet unserer", function () {
+  const dom = screenshotPlayerDom(
+    `<div class="ytwPlayerTimeDisplayPlayerBarActionContainer" id="native-wrap" style="display:none"><button id="native-chip">AI ads that feel real</button></div>`
+  );
+  const win = dom.window;
+  const doc = win.document;
+  placeBox(doc.getElementById("native-chip"), 148, 318, 200, 28);
+  win.ytInitialPlayerResponse = playerWithChapters();
+  chapters.refreshChapters(win);
+  assert.ok(doc.getElementById("langform-chapter-chip"));
+  doc.getElementById("native-wrap").style.display = "";
+  chapters.refreshChapters(win);
+  assert.equal(doc.getElementById("langform-chapter-chip"), null);
+  assert.equal(doc.documentElement.getAttribute("data-langform-chapter-ui"), "native");
+  doc.getElementById("native-wrap").style.display = "none";
+  chapters.refreshChapters(win);
+  assert.equal(doc.getElementById("langform-chapter-chip"), null);
+  assert.ok(doc.getElementById("bar").querySelector("[data-langform-chapters]"));
+  assert.equal(doc.getElementById("v").getAttribute("style"), null);
+  win.close();
+});

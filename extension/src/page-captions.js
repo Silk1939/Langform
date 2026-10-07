@@ -548,8 +548,18 @@
     }
   }
 
+  function textWithoutOurs(el) {
+    var text = String((el && el.textContent) || "");
+    var ours = el && el.querySelector && el.querySelector("#" + CHIP_ID);
+    if (ours) text = text.replace(ours.textContent || "", " ");
+    return text;
+  }
+
   function nativeChipShowsTitle(chip) {
-    var text = String((chip && chip.textContent) || "").replace(/\s+/g, " ").trim();
+    var text = textWithoutOurs(chip)
+      .replace(/\d{1,2}:\d{2}(?::\d{2})?\s*\/\s*\d{1,2}:\d{2}(?::\d{2})?/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
     if (!text) return false;
     return !/^(view chapters|chapters|kapitel|kapitel ansehen|kapitel anzeigen)$/i.test(text);
   }
@@ -561,9 +571,14 @@
       if (cls.indexOf("ytp-chapter-container") !== -1 || cls.indexOf("ytp-chapter-title") !== -1) return true;
       return el.tagName === "YTM-CHAPTER-TITLE-RENDERER" || el.tagName === "YTD-CHAPTER-TITLE-RENDERER";
     });
-    if (found && found.tagName !== "BUTTON" && found.querySelector) {
-      var button = found.querySelector("button");
-      if (button) found = button;
+    if (found && found.tagName !== "BUTTON" && found.querySelectorAll) {
+      var buttons = found.querySelectorAll("button");
+      for (var b = 0; b < buttons.length; b++) {
+        if (buttons[b].id !== CHIP_ID) {
+          found = buttons[b];
+          break;
+        }
+      }
     }
     if (!found) {
       found = queryDeep(doc, function (el) {
@@ -584,12 +599,14 @@
     });
   }
 
+  // YouTube's own chip opens its own sheet, which it often builds only on tap,
+  // so the chip alone is enough to leave the time row to YouTube.
   function nativeChapterChrome(doc) {
     var chip = findNativeChip(doc);
+    if (!chip) return null;
     var sheet = findNativeSheet(doc);
-    if (!chip || !sheet) return null;
     if (hiddenByUs(chip)) unhide(chip);
-    if (hiddenByUs(sheet)) unhide(sheet);
+    if (sheet && hiddenByUs(sheet)) unhide(sheet);
     if (!nativeChipShowsTitle(chip) || !visiblyShown(chip)) return null;
     var time = findTimePill(doc);
     var timeBox = time && boxOf(time);
@@ -636,34 +653,71 @@
     });
   }
 
+  // The first control right of the time in the same row (fullscreen, AirPlay, …).
+  function rowRightLimit(doc, timeBox, width) {
+    var middle = timeBox.top + timeBox.height / 2;
+    var reach = Math.max(22, timeBox.height);
+    var limit = width - 8;
+    queryDeep(doc, function (el) {
+      if (el.tagName !== "BUTTON" && el.getAttribute("role") !== "button") return false;
+      var box = boxOf(el);
+      if (!box || box.width < 4 || box.height < 4 || box.left < timeBox.right) return false;
+      if (Math.abs(box.top + box.height / 2 - middle) > reach) return false;
+      if (!visiblyShown(el)) return false;
+      if (box.left < limit) limit = box.left;
+      return false;
+    });
+    return limit;
+  }
+
+  function timeRowInUpperHalf(doc, timeBox) {
+    var player = playerRoot(doc);
+    var box = player && boxOf(player);
+    if (!box || box.height < 40) return false;
+    return timeBox.top + timeBox.height / 2 < box.top + box.height / 2;
+  }
+
+  function parkChip(chip) {
+    chip.removeAttribute("data-langform-chip-placed");
+    chip.style.visibility = "hidden";
+    chip.style.pointerEvents = "none";
+  }
+
+  // The chip lives only in the time row: one line, cut with an ellipsis before
+  // the first control to its right. Without a time row it is not shown at all.
   function placeChip(doc, chip) {
     chip.style.minHeight = "44px";
     chip.style.minWidth = "44px";
     var time = findTimePill(doc);
-    if (time && time.parentNode) {
-      if (chip.previousElementSibling !== time) time.insertAdjacentElement("afterend", chip);
-      var timeBox = boxOf(time);
-      if (timeBox && timeBox.width > 8 && timeBox.height > 4) {
-        var width = (doc.documentElement && doc.documentElement.clientWidth) || 390;
-        var left = Math.round(timeBox.right + 8);
-        if (left > width - 48) left = Math.max(8, width - 48);
-        chip.style.position = "fixed";
-        chip.style.left = left + "px";
-        chip.style.top = Math.round(timeBox.top + timeBox.height / 2) + "px";
-        chip.style.transform = "translateY(-50%)";
-        chip.style.margin = "0";
-        chip.style.zIndex = "6";
-        chip.setAttribute("data-langform-chip-placed", "1");
-      }
+    if (!time || !time.parentNode) {
+      if (chip.parentNode) chip.parentNode.removeChild(chip);
+      chip.removeAttribute("data-langform-chip-placed");
       return;
     }
-    var bar = findSeekBar(doc);
-    if (bar && bar.parentNode) {
-      if (chip.nextSibling !== bar) bar.parentNode.insertBefore(chip, bar);
+    if (chip.previousElementSibling !== time) time.insertAdjacentElement("afterend", chip);
+    var timeBox = boxOf(time);
+    if (!timeBox || timeBox.width <= 8 || timeBox.height <= 4) return;
+    if (timeRowInUpperHalf(doc, timeBox)) {
+      parkChip(chip);
       return;
     }
-    var parent = doc.body || doc.documentElement;
-    if (parent && chip.parentNode !== parent) parent.appendChild(chip);
+    var width = (doc.documentElement && doc.documentElement.clientWidth) || 390;
+    var left = Math.round(timeBox.right + 8);
+    var room = Math.floor(rowRightLimit(doc, timeBox, width) - 8 - left);
+    if (room < 44) {
+      parkChip(chip);
+      return;
+    }
+    chip.style.position = "fixed";
+    chip.style.left = left + "px";
+    chip.style.top = Math.round(timeBox.top + timeBox.height / 2) + "px";
+    chip.style.maxWidth = room + "px";
+    chip.style.transform = "translateY(-50%)";
+    chip.style.margin = "0";
+    chip.style.zIndex = "6";
+    chip.style.visibility = "";
+    chip.style.pointerEvents = "";
+    chip.setAttribute("data-langform-chip-placed", "1");
   }
 
   function placeSheet(doc, sheet) {
@@ -749,30 +803,47 @@
     chip.style.cssText = [
       "display:inline-flex",
       "align-items:center",
-      "gap:6px",
-      "max-width:48vw",
-      "margin:0 0 0 8px",
-      "padding:5px 8px 5px 10px",
-      "border:0",
-      "border-radius:8px",
-      "background:rgba(20,20,20,.72)",
-      "color:#fff",
-      "font:600 13px/1.2 system-ui,sans-serif",
-      "vertical-align:middle",
+      "box-sizing:border-box",
+      "max-width:40vw",
       "min-height:44px",
       "min-width:44px",
+      "margin:0 0 0 8px",
+      "padding:0",
+      "border:0",
+      "background:transparent",
+      "color:#fff",
+      "overflow:hidden",
+      "white-space:nowrap",
+      "vertical-align:middle",
       "z-index:6",
+    ].join(";");
+    var pill = doc.createElement("span");
+    pill.style.cssText = [
+      "display:inline-flex",
+      "align-items:center",
+      "gap:4px",
+      "box-sizing:border-box",
+      "max-width:100%",
+      "min-width:0",
+      "height:28px",
+      "padding:0 8px 0 10px",
+      "border-radius:14px",
+      "background:rgba(20,20,20,.72)",
+      "font:600 13px/1 system-ui,sans-serif",
+      "overflow:hidden",
+      "white-space:nowrap",
     ].join(";");
     var label = doc.createElement("span");
     label.setAttribute(LABEL_ATTR, "1");
-    label.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;";
+    label.style.cssText = "flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
     label.textContent = chapters[0].title;
     var chevron = doc.createElement("span");
     chevron.setAttribute("aria-hidden", "true");
     chevron.textContent = ">";
     chevron.style.cssText = "flex:none;";
-    chip.appendChild(label);
-    chip.appendChild(chevron);
+    pill.appendChild(label);
+    pill.appendChild(chevron);
+    chip.appendChild(pill);
     chip.addEventListener("click", function (event) {
       if (event.preventDefault) event.preventDefault();
       if (event.stopPropagation) event.stopPropagation();
@@ -836,11 +907,11 @@
         img.src = chapters[i].thumbnail;
         img.alt = "";
         img.setAttribute("decoding", "async");
-        img.style.cssText = "width:112px;height:63px;object-fit:cover;border-radius:8px;background:#222;flex:none;";
+        img.style.cssText = "width:80px;height:45px;max-width:80px;max-height:45px;object-fit:cover;border-radius:6px;background:#222;flex:none;";
         row.appendChild(img);
       } else {
         var blank = doc.createElement("span");
-        blank.style.cssText = "width:112px;height:63px;border-radius:8px;background:#222;flex:none;";
+        blank.style.cssText = "width:80px;height:45px;border-radius:6px;background:#222;flex:none;";
         row.appendChild(blank);
       }
       var text = doc.createElement("span");
@@ -1158,6 +1229,20 @@
     }
   }
 
+  function pageVideoKey(win, player) {
+    if (player && playerMatchesPage(win, player)) return player.videoDetails.videoId;
+    try {
+      return new URL(win.location.href).searchParams.get("v") || "";
+    } catch (err) {
+      return "";
+    }
+  }
+
+  function dropChipForNative(doc) {
+    removeOurChrome(doc);
+    if (doc.documentElement) doc.documentElement.setAttribute("data-langform-chapter-ui", "native");
+  }
+
   function leaveWatchChrome(win) {
     var doc = win.document;
     if (!doc || !doc.documentElement) return;
@@ -1214,7 +1299,13 @@
     var barSig = fractions.map(function (item) { return item.start + ":" + item.title; }).join("|");
     var placed = !!(chip && chip.isConnected && chip.getAttribute("data-langform-chip-placed") === "1");
     var barReady = !!(bar && bar.isConnected && bar.getAttribute("data-langform-chapter-sig") === barSig);
+    var videoKey = pageVideoKey(win, player);
+    if (marked !== "native" && chip && nativeChapterChrome(doc)) {
+      dropChipForNative(doc);
+      marked = "native";
+    }
     if (marked === "native" && nativeChapterChrome(doc)) {
+      win.__langformNativeVideo = videoKey;
       win.__langformNativeHit = true;
       bindChapterPlayback(win, doc);
       stopChapterRetry(win);
@@ -1236,6 +1327,10 @@
     }
     if (marked === uiSig && chip && chip.isConnected) {
       if (chip.getAttribute("data-langform-chip-placed") !== "1") placeChip(doc, chip);
+    } else if (videoKey && win.__langformNativeVideo === videoKey) {
+      // YouTube already showed its own chip for this video. While its row is
+      // faded out we do not slip a second one in.
+      dropChipForNative(doc);
     } else {
       var sheet = doc.getElementById(SHEET_ID);
       var wasOpen = !!(sheet && sheet.style.display !== "none");
@@ -1244,7 +1339,10 @@
         win.__langformNativeHit = player ? nativeChapterChrome(doc) : null;
       }
       var ui = renderChapterUi(doc, fractions, function (seconds) { seekTo(win, seconds); });
-      if (ui && ui.native) win.__langformNativeHit = nativeChapterChrome(doc);
+      if (ui && ui.native) {
+        win.__langformNativeHit = nativeChapterChrome(doc);
+        if (videoKey) win.__langformNativeVideo = videoKey;
+      }
       if (wasOpen && ui && ui.open) ui.open();
       if (video && ui && !ui.native) syncChapterUi(doc, fractions, video.currentTime || 0);
     }
@@ -1344,6 +1442,11 @@
         if (win.__langformChapterScrolling) return;
         try {
           ensureAirPlay(win);
+          // A tap can bring up YouTube's own chapter chip next to ours.
+          if ((followTicks === 1 || followTicks === 4) && win.document.getElementById(CHIP_ID) && nativeChapterChrome(win.document)) {
+            win.__langformNativeVideo = pageVideoKey(win, win.ytInitialPlayerResponse);
+            dropChipForNative(win.document);
+          }
         } catch (err) {
           /* the row can be rebuilt while we read it */
         }
@@ -1495,6 +1598,7 @@
     seekTo: seekTo,
     renderChapterUi: renderChapterUi,
     syncChapterUi: syncChapterUi,
+    refreshChapters: refreshChapters,
     ensureAirPlay: ensureAirPlay,
     armChapters: armChapters,
   };
