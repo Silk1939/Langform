@@ -69,8 +69,41 @@
         else hide.setVeil(doc, true);
         return;
       }
-      remember(hide.scan(doc, pageBase(), { remove: confirmed }));
+      requestFullScan();
     }
+
+    // A whole-document scan is the expensive part. YouTube writes history
+    // and swaps big subtrees many times while the feed is first loading;
+    // the stylesheet already hides Shorts, so removal can wait and coalesce.
+    var FULL_SCAN_GAP = 400;
+    var fullScanTimer = 0;
+    var lastFullScan = 0;
+
+    function requestFullScan() {
+      if (fullScanTimer) return;
+      var wait = Math.max(0, lastFullScan + FULL_SCAN_GAP - Date.now());
+      fullScanTimer = setTimeout(runFullScan, wait);
+    }
+
+    function runFullScan() {
+      fullScanTimer = 0;
+      if (!enabled) return;
+      if (scrolling || scanning) {
+        fullScanPending = true;
+        return;
+      }
+      fullScanPending = false;
+      lastFullScan = Date.now();
+      scanning = true;
+      try {
+        remember(hide.scan(doc, pageBase(), { remove: confirmed }));
+      } finally {
+        scanning = false;
+      }
+      pokeSummary();
+    }
+
+    var fullScanPending = false;
 
     function remember(count) {
       if (typeof count === "number" && count > 0) removedInSession += count;
@@ -125,6 +158,7 @@
       scrollTimer = setTimeout(function () {
         scrolling = false;
         scrollTimer = 0;
+        if (fullScanPending) requestFullScan();
         scheduleFlush();
       }, 140);
     }
@@ -147,8 +181,13 @@
       if (insidePlayer(node)) return;
       if (node.tagName === "INPUT" || node.tagName === "TEXTAREA") return;
       if (hide.isSearchControl && hide.isSearchControl(node)) return;
+      if (fullScanTimer || fullScanPending) return;
       queued.push(node);
-      if (queued.length > 40) queued = [doc.documentElement];
+      if (queued.length > 40) {
+        queued = [];
+        requestFullScan();
+        return;
+      }
       scheduleFlush();
     }
 
@@ -180,6 +219,9 @@
       if (scrollTimer) clearTimeout(scrollTimer);
       scrollTimer = 0;
       scrolling = false;
+      if (fullScanTimer) clearTimeout(fullScanTimer);
+      fullScanTimer = 0;
+      fullScanPending = false;
       doc.removeEventListener("scroll", noteScroll, true);
       if (!observer) return;
       observer.disconnect();
@@ -297,21 +339,13 @@
       }
     }
 
-    function requestMini() {
-      var handlers = win.webkit && win.webkit.messageHandlers;
-      if (!onWatchPage() || !handlers || !handlers.langformMini || typeof handlers.langformMini.postMessage !== "function") {
-        return false;
-      }
-      try {
-        handlers.langformMini.postMessage({ op: "mini" });
-        return true;
-      } catch (err) {
-        return false;
-      }
+    var lastNavActivity = 0;
+    function noteNavActivity() {
+      lastNavActivity = Date.now();
     }
 
     function backOrHome(native, args) {
-      if (requestMini()) return;
+      noteNavActivity();
       if (win.history.length > 1 && typeof native === "function") {
         return native.apply(win.history, args);
       }
@@ -342,6 +376,7 @@
 
       if (typeof nativePush === "function") {
         win.history.pushState = function (state, title, url) {
+          noteNavActivity();
           // The Startseite stays a Startseite. Never rewrite it onto the watch URL.
           if (homeNavigation(url)) {
             var homePush = nativePush.apply(win.history, arguments);
@@ -356,6 +391,7 @@
       if (typeof nativeReplace === "function") {
         win.history.replaceState = function (state, title, url) {
           if (homeNavigation(url)) {
+            noteNavActivity();
             var homeReplace = nativeReplace.apply(win.history, arguments);
             scheduleNavigate();
             return homeReplace;
@@ -393,16 +429,14 @@
         if (target && target.nodeType !== 1) target = target.parentElement;
         if (!target || !isBottomHomeControl(target)) return;
         if (logic.isHomeHref(win.location.href, win.location.href)) return;
-        if (requestMini()) {
-          if (event.preventDefault) event.preventDefault();
-          if (event.stopPropagation) event.stopPropagation();
-          return;
-        }
         var stamp = win.location.href;
+        var clickedAt = Date.now();
         setTimeout(function () {
           if (!enabled) return;
           if (logic.isHomeHref(win.location.href, stamp)) return;
           if (win.location.href !== stamp && !onWatchPage()) return;
+          // YouTube already started its own navigation; a reload now would restart the feed.
+          if (lastNavActivity >= clickedAt) return;
           loadHome();
         }, 350);
       }, true);
@@ -421,9 +455,11 @@
         return false;
       }
       win.addEventListener("popstate", function () {
+        noteNavActivity();
         scheduleNavigate();
       });
       win.addEventListener("yt-navigate-start", function (event) {
+        noteNavActivity();
         var detail = event && event.detail;
         var url = logic.extractNavUrl(detail);
         if (url && logic.isHomeHref(url, win.location.href)) return;

@@ -1182,18 +1182,51 @@
     });
   }
 
+  // decorate walks every link on the page. While the feed streams in, run it
+  // at most this often instead of once per mutation batch.
+  var DECORATE_GAP = 300;
+
   function schedule(win) {
     if (!win || win.__langformKurzTimer) return;
     if (win.__langformKurzScrolling) return;
+    var last = win.__langformKurzLast || 0;
+    var wait = Math.max(0, last + DECORATE_GAP - Date.now());
     win.__langformKurzTimer = setTimeout(function () {
       win.__langformKurzTimer = 0;
       if (win.__langformKurzScrolling || !win.document) return;
+      win.__langformKurzLast = Date.now();
       try {
         decorate(win.document, win.location.href, win);
       } catch (err) {
         /* the page can tear the DOM down mid-walk */
       }
-    }, 0);
+    }, wait);
+  }
+
+  function insidePlayerOrOurs(node) {
+    var guard = 0;
+    while (node && guard++ < 25) {
+      if (node.nodeType === 1) {
+        var tag = node.tagName;
+        if (tag === "VIDEO" || tag === "YTD-PLAYER" || tag === "YTM-PLAYER" || node.id === "movie_player") return true;
+        if (node.id === PANEL_ID || node.id === "langform-chapter-chip" || node.id === "langform-chapter-sheet") return true;
+      }
+      var rootNode = node.getRootNode && node.getRootNode();
+      node = node.parentElement || (rootNode && rootNode.host) || null;
+    }
+    return false;
+  }
+
+  function relevantMutation(records) {
+    for (var i = 0; i < records.length; i++) {
+      var record = records[i];
+      if (insidePlayerOrOurs(record.target)) continue;
+      var added = record.addedNodes || [];
+      for (var j = 0; j < added.length; j++) {
+        if (added[j] && added[j].nodeType === 1) return true;
+      }
+    }
+    return false;
   }
 
   function noteScroll(win) {
@@ -1231,8 +1264,8 @@
       { passive: true, capture: true }
     );
     if (win.MutationObserver && win.document.documentElement) {
-      var observer = new win.MutationObserver(function () {
-        schedule(win);
+      var observer = new win.MutationObserver(function (records) {
+        if (relevantMutation(records)) schedule(win);
       });
       observer.observe(win.document.documentElement, { childList: true, subtree: true });
     }

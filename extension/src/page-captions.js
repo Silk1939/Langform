@@ -26,6 +26,7 @@
   var SHEET_ID = "langform-chapter-sheet";
   var LABEL_ATTR = "data-langform-chapter-label";
   var ROW_ATTR = "data-langform-chapter-row";
+  var AIRPLAY_ID = "langform-airplay";
   var SKIP_PLAYER_KEYS = {
     streamingData: 1,
     captions: 1,
@@ -912,18 +913,196 @@
     win.__langformChapterRetry = 0;
   }
 
+  function playerRoot(doc) {
+    return doc.querySelector("#movie_player, ytm-player, ytd-player, .html5-video-player");
+  }
+
+  function controlText(el) {
+    var parts = [
+      el.getAttribute("aria-label") || "",
+      el.getAttribute("title") || "",
+      el.getAttribute("data-tooltip-target-id") || "",
+      classText(el),
+    ];
+    return parts.join(" ");
+  }
+
+  function isCastControl(el) {
+    var tag = String(el.tagName || "").toLowerCase();
+    if (tag.indexOf("cast") !== -1) return true;
+    return /(^|[^a-z])cast|chromecast|übertragen|auf (dem )?fernseher|streamen/i.test(controlText(el));
+  }
+
+  function isCaptionControl(el) {
+    return /untertitel|caption|subtitle/i.test(controlText(el));
+  }
+
+  function isSettingsControl(el) {
+    return /einstellungen|settings/i.test(controlText(el));
+  }
+
+  // Buttons of YouTube's own player chrome, light and shadow DOM, never the video.
+  function playerControls(root) {
+    var out = { caption: null, settings: null, airplay: null };
+    var stack = [root];
+    var seen = 0;
+    while (stack.length && seen++ < 1500) {
+      var node = stack.pop();
+      if (!node) continue;
+      if (node.nodeType === 1) {
+        if (node.tagName === "VIDEO" || node.id === AIRPLAY_ID) continue;
+        var button = node.tagName === "BUTTON" || node.getAttribute("role") === "button";
+        if (button && !isCastControl(node) && visiblyShown(node)) {
+          if (/airplay/i.test(controlText(node))) out.airplay = out.airplay || node;
+          else if (!out.settings && isSettingsControl(node)) out.settings = node;
+          else if (!out.caption && isCaptionControl(node)) out.caption = node;
+        }
+        if (node.shadowRoot) stack.push(node.shadowRoot);
+      }
+      var kids = node.children;
+      if (kids) {
+        for (var i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+      }
+    }
+    return out;
+  }
+
+  function ancestorsOf(node) {
+    var list = [];
+    var guard = 0;
+    while (node && guard++ < 30) {
+      list.push(node);
+      var rootNode = node.getRootNode && node.getRootNode();
+      node = node.parentNode && node.parentNode.nodeType === 1 ? node.parentNode : (rootNode && rootNode.host) || null;
+    }
+    return list;
+  }
+
+  /** The slot of the control row that holds the gear, and the row itself. */
+  function controlSlot(controls) {
+    var gear = controls.settings;
+    var cc = controls.caption;
+    if (gear && cc) {
+      var gearChain = ancestorsOf(gear);
+      var ccChain = ancestorsOf(cc);
+      for (var i = 1; i < gearChain.length; i++) {
+        if (ccChain.indexOf(gearChain[i]) !== -1) {
+          return { row: gearChain[i], before: gearChain[i - 1] };
+        }
+      }
+    }
+    if (gear && gear.parentNode) return { row: gear.parentNode, before: gear };
+    if (cc && cc.parentNode) return { row: cc.parentNode, before: cc.nextSibling };
+    return null;
+  }
+
+  var AIRPLAY_ICON =
+    '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false" style="pointer-events:none">' +
+    '<path fill="currentColor" d="M6 22h12l-6-6-6 6zM21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h4v-2H3V5h18v12h-4v2h4c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>' +
+    "</svg>";
+
+  function canPickRoute(win, video) {
+    if (video && typeof video.webkitShowPlaybackTargetPicker === "function") return true;
+    return !!(win && win.WebKitPlaybackTargetAvailabilityEvent);
+  }
+
+  function ensureAirPlay(win) {
+    var doc = win && win.document;
+    if (!doc) return null;
+    if (!onWatchPath(win)) {
+      var stale = doc.getElementById(AIRPLAY_ID);
+      if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
+      return null;
+    }
+    var root = playerRoot(doc);
+    var video = root && (root.querySelector("video") || doc.querySelector("video"));
+    var existing = doc.getElementById(AIRPLAY_ID);
+    if (!root || !video || !canPickRoute(win, video)) {
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      return null;
+    }
+    var controls = playerControls(root);
+    if (controls.airplay) {
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      return null;
+    }
+    var slot = controlSlot(controls);
+    if (!slot || !slot.row) return null;
+    var button = existing;
+    if (!button) {
+      button = doc.createElement("button");
+      button.id = AIRPLAY_ID;
+      button.type = "button";
+      button.setAttribute("lang", "de");
+      button.setAttribute("aria-label", "AirPlay");
+      button.setAttribute("title", "AirPlay");
+      button.innerHTML = AIRPLAY_ICON;
+      button.addEventListener("click", function (event) {
+        if (event.preventDefault) event.preventDefault();
+        if (event.stopPropagation) event.stopPropagation();
+        var current = playerRoot(doc);
+        var target = (current && current.querySelector("video")) || doc.querySelector("video");
+        if (target && typeof target.webkitShowPlaybackTargetPicker === "function") {
+          try {
+            target.webkitShowPlaybackTargetPicker();
+          } catch (err) {
+            /* WebKit refuses the picker outside a user gesture */
+          }
+        }
+      });
+    }
+    var gearBox = controls.settings ? boxOf(controls.settings) : null;
+    var side = gearBox && gearBox.width >= 24 && gearBox.width <= 64 ? Math.round(gearBox.width) : 48;
+    var css = "display:inline-flex;align-items:center;justify-content:center;flex:none;width:" + side + "px;height:" + side +
+      "px;margin:0;padding:0;border:0;background:transparent;color:#fff;cursor:pointer;";
+    if (button.getAttribute("data-langform-side") !== String(side)) {
+      button.style.cssText = css;
+      button.setAttribute("data-langform-side", String(side));
+    }
+    var before = slot.before && slot.before.parentNode === slot.row ? slot.before : null;
+    if (button.parentNode !== slot.row || button.nextSibling !== before) {
+      slot.row.insertBefore(button, before);
+    }
+    return button;
+  }
+
+  function playerMatchesPage(win, player) {
+    var id = player && player.videoDetails && player.videoDetails.videoId;
+    if (!id) return false;
+    try {
+      return new URL(win.location.href).searchParams.get("v") === id;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function leaveWatchChrome(win) {
+    var doc = win.document;
+    if (!doc || !doc.documentElement) return;
+    stopChapterRetry(win);
+    var bar = win.__langformSeekBar;
+    if (bar && bar.isConnected) clearChapterBar(bar);
+    win.__langformSeekBar = null;
+    if (doc.getElementById(CHIP_ID) || doc.getElementById(SHEET_ID) || doc.documentElement.hasAttribute("data-langform-chapter-ui")) {
+      removeOurChrome(doc);
+    }
+    var airplay = doc.getElementById(AIRPLAY_ID);
+    if (airplay && airplay.parentNode) airplay.parentNode.removeChild(airplay);
+    rememberChapters(doc, []);
+  }
+
   function refreshChapters(win) {
     var doc = win.document;
     if (!doc || !doc.documentElement) return;
     if (win.__langformChapterScrolling) return;
-    var bar = win.__langformSeekBar;
     if (!onWatchPath(win)) {
-      removeOurChrome(doc);
-      if (bar && bar.isConnected) clearChapterBar(bar);
-      rememberChapters(doc, []);
-      stopChapterRetry(win);
+      leaveWatchChrome(win);
       return;
     }
+    // Nothing to measure until YouTube has built the player.
+    if (!playerRoot(doc)) return;
+    ensureAirPlay(win);
+    var bar = win.__langformSeekBar;
     var player = win.ytInitialPlayerResponse;
     var video = doc.querySelector("#movie_player video, ytm-player video, ytd-player video, video");
     var duration = Number(player && player.videoDetails && player.videoDetails.lengthSeconds);
@@ -939,13 +1118,12 @@
       if (duration > 0) win.__langformChapterCache = { player: player, duration: duration, fractions: fractions };
     }
     if (!fractions || fractions.length < 2) {
-      var foundEmpty = findSeekBar(doc);
-      if (!bar || !bar.isConnected || (foundEmpty && foundEmpty !== bar)) bar = foundEmpty || bar;
-      win.__langformSeekBar = bar;
-      removeOurChrome(doc);
-      if (bar) clearChapterBar(bar);
+      if (duration > 0 && playerMatchesPage(win, player)) stopChapterRetry(win);
+      if (bar && bar.isConnected) clearChapterBar(bar);
+      if (doc.getElementById(CHIP_ID) || doc.getElementById(SHEET_ID) || doc.documentElement.hasAttribute("data-langform-chapter-ui")) {
+        removeOurChrome(doc);
+      }
       rememberChapters(doc, []);
-      stopChapterRetry(win);
       return;
     }
     var uiSig = chapterSig(fractions);
@@ -1000,26 +1178,51 @@
     win.__langformChapters = true;
     var timer = 0;
     var scrollTimer = 0;
+    function run() {
+      try {
+        refreshChapters(win);
+      } catch (err) {
+        /* the player can swap the bar while we measure it */
+      }
+    }
     function schedule() {
-      if (win.__langformChapterScrolling) return;
+      if (!onWatchPath(win) || win.__langformChapterScrolling) return;
       if (timer) win.clearTimeout(timer);
       timer = win.setTimeout(function () {
         timer = 0;
-        try {
-          refreshChapters(win);
-        } catch (err) {
-          /* the player can swap the bar while we measure it */
-        }
+        run();
       }, 240);
     }
-    try {
-      refreshChapters(win);
-    } catch (err2) {
-      /* first paint */
+    // The retry only exists on a watch page. The feed never runs it.
+    function watchRetry() {
+      stopChapterRetry(win);
+      if (!onWatchPath(win)) return;
+      var tries = 0;
+      win.__langformChapterRetry = win.setInterval(function () {
+        tries += 1;
+        // Without a player after a few seconds, a tap or the next navigation starts it again.
+        if (tries > 24 || !onWatchPath(win) || (tries > 6 && !playerRoot(win.document))) stopChapterRetry(win);
+        else schedule();
+      }, 500);
     }
-    win.addEventListener("yt-navigate-finish", schedule);
-    win.addEventListener("popstate", schedule);
+    function onPageChange() {
+      if (!onWatchPath(win)) {
+        if (timer) win.clearTimeout(timer);
+        timer = 0;
+        leaveWatchChrome(win);
+        return;
+      }
+      schedule();
+      watchRetry();
+    }
+    if (onWatchPath(win)) {
+      run();
+      watchRetry();
+    }
+    win.addEventListener("yt-navigate-finish", onPageChange);
+    win.addEventListener("popstate", onPageChange);
     win.document.addEventListener("scroll", function () {
+      if (!onWatchPath(win)) return;
       win.__langformChapterScrolling = true;
       if (scrollTimer) win.clearTimeout(scrollTimer);
       scrollTimer = win.setTimeout(function () {
@@ -1029,24 +1232,28 @@
       }, 180);
     }, { capture: true, passive: true });
     win.document.addEventListener("pointerdown", function (event) {
+      if (!onWatchPath(win)) return;
       var sheet = win.document.getElementById(SHEET_ID);
       if (sheet && sheet.style.display !== "none" && event.target && !sheet.contains(event.target)) {
         var chip = win.document.getElementById(CHIP_ID);
         if (!chip || (event.target !== chip && !chip.contains(event.target))) setSheetOpen(win.document, false);
       }
-      if (!onWatchPath(win)) return;
       var root = win.document.documentElement;
       var shown = root && root.getAttribute("data-langform-chapter-ui");
       var placedChip = win.document.getElementById(CHIP_ID);
       var placed = shown === "native" || (placedChip && placedChip.getAttribute("data-langform-chip-placed") === "1");
+      var airplay = win.document.getElementById(AIRPLAY_ID);
+      // YouTube builds the control row on the first tap; place AirPlay then.
+      if (!airplay || !airplay.isConnected) {
+        [150, 450].forEach(function (ms) {
+          win.setTimeout(function () {
+            var placedAirPlay = win.document.getElementById(AIRPLAY_ID);
+            if (!placedAirPlay || !placedAirPlay.isConnected) ensureAirPlay(win);
+          }, ms);
+        });
+      }
       if (!shown || !placed) schedule();
     }, { capture: true, passive: true });
-    var tries = 0;
-    win.__langformChapterRetry = win.setInterval(function () {
-      tries += 1;
-      if (tries > 24) stopChapterRetry(win);
-      else schedule();
-    }, 500);
   }
 
   function install(win) {
@@ -1193,5 +1400,7 @@
     seekTo: seekTo,
     renderChapterUi: renderChapterUi,
     syncChapterUi: syncChapterUi,
+    ensureAirPlay: ensureAirPlay,
+    armChapters: armChapters,
   };
 });

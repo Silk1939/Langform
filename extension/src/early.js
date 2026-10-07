@@ -77,10 +77,17 @@
     ':not(:has(input[name="search_query"]))' +
     ':not(:has(input[type="search"]))';
 
+  // Only the bar, guide and chip containers can hold YouTube's search box.
+  // Feed cards skip the extra :has() tests, which WebKit re-evaluates on every
+  // mutation while the feed streams in.
+  function mayHoldSearch(tag) {
+    return tag.indexOf("pivot") !== -1 || tag.indexOf("guide") !== -1 || tag.indexOf("chip") !== -1;
+  }
+
   function buildCss() {
     var anchors = safeAnchors().join(", ");
     var items = ITEM_TAGS.map(function (tag) {
-      return tag + ":has(" + anchors + ")" + SEARCH_GUARD + CHAPTER_GUARD;
+      return tag + ":has(" + anchors + ")" + (mayHoldSearch(tag) ? SEARCH_GUARD : "") + CHAPTER_GUARD;
     });
     var always = [
       "ytd-reel-shelf-renderer",

@@ -285,3 +285,80 @@ test("Kapitellabel wechselt nur mit dem Kapitelindex", function () {
   chapters.syncChapterUi(doc, list, 800);
   assert.equal(label.textContent, "Schluss");
 });
+
+test("AirPlay sitzt in der Steuerzeile neben Untertiteln und Zahnrad, Cast bleibt unberührt", function () {
+  const dom = new JSDOM(
+    `<!DOCTYPE html><body>
+      <ytm-player id="player">
+        <div class="player-controls-top" id="row">
+          <div class="slot" id="cast-slot"><button id="cast" class="ytm-cast-button" aria-label="Auf Fernseher wiedergeben"></button></div>
+          <div class="slot" id="cc-slot"><button id="cc" aria-label="Untertitel"></button></div>
+          <div class="slot" id="gear-slot"><button id="gear" aria-label="Einstellungen"></button></div>
+        </div>
+        <video id="v"></video>
+      </ytm-player>
+    </body>`,
+    { url: "https://m.youtube.com/watch?v=abcdefghijk" }
+  );
+  const doc = dom.window.document;
+  const video = doc.getElementById("v");
+  let picked = 0;
+  video.webkitShowPlaybackTargetPicker = function () { picked += 1; };
+  const castBefore = doc.getElementById("cast-slot").outerHTML;
+  const button = chapters.ensureAirPlay(dom.window);
+  assert.ok(button);
+  assert.equal(button.getAttribute("aria-label"), "AirPlay");
+  assert.equal(button.parentNode, doc.getElementById("row"));
+  assert.equal(button.nextElementSibling, doc.getElementById("gear-slot"));
+  assert.equal(button.previousElementSibling, doc.getElementById("cc-slot"));
+  assert.equal(doc.getElementById("cast-slot").outerHTML, castBefore);
+  assert.equal(chapters.ensureAirPlay(dom.window), button);
+  assert.equal(doc.querySelectorAll("#langform-airplay").length, 1);
+  button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  assert.equal(picked, 1);
+  assert.equal(video.getAttribute("style"), null);
+
+  dom.reconfigure({ url: "https://m.youtube.com/" });
+  assert.equal(chapters.ensureAirPlay(dom.window), null);
+  assert.equal(doc.getElementById("langform-airplay"), null);
+});
+
+test("ohne Steuerzeile liegt kein loser AirPlay-Knopf auf der Seite", function () {
+  const dom = new JSDOM(
+    `<!DOCTYPE html><body><ytm-player><video id="v"></video></ytm-player></body>`,
+    { url: "https://m.youtube.com/watch?v=abcdefghijk" }
+  );
+  const doc = dom.window.document;
+  doc.getElementById("v").webkitShowPlaybackTargetPicker = function () {};
+  assert.equal(chapters.ensureAirPlay(dom.window), null);
+  assert.equal(doc.getElementById("langform-airplay"), null);
+});
+
+test("die Startseite startet keine Kapitelarbeit", async function () {
+  const dom = new JSDOM(
+    `<!DOCTYPE html><body><ytm-rich-item-renderer><a href="/watch?v=abcdefghijk">Video</a></ytm-rich-item-renderer></body>`,
+    { url: "https://m.youtube.com/" }
+  );
+  const win = dom.window;
+  let intervals = 0;
+  const nativeInterval = win.setInterval.bind(win);
+  win.setInterval = function () {
+    intervals += 1;
+    return nativeInterval.apply(null, arguments);
+  };
+  let walked = 0;
+  const nativeQuery = win.document.querySelector.bind(win.document);
+  win.document.querySelector = function () {
+    walked += 1;
+    return nativeQuery.apply(null, arguments);
+  };
+  chapters.armChapters(win);
+  win.document.dispatchEvent(new win.Event("scroll"));
+  win.document.dispatchEvent(new win.Event("pointerdown"));
+  win.dispatchEvent(new win.Event("yt-navigate-finish"));
+  await new Promise(function (resolve) { setTimeout(resolve, 300); });
+  assert.equal(intervals, 0);
+  assert.equal(walked, 0);
+  assert.equal(win.__langformChapterRetry || 0, 0);
+  win.close();
+});

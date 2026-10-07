@@ -368,7 +368,7 @@ test("Startseite unten lädt die Home-URL, wenn der Knopf nichts tut", async fun
   assert.deepEqual(ctx.redirects, ["https://m.youtube.com/"]);
 });
 
-test("Startseite auf der Watch-Seite hält die Wiedergabe, wenn die App zuhört", async function () {
+test("Startseite lädt nicht neu, wenn YouTube schon selbst navigiert", async function () {
   const ctx = boot({
     url: "https://m.youtube.com/watch?v=abcdefghijk",
     html: `<!DOCTYPE html><body>
@@ -381,20 +381,55 @@ test("Startseite auf der Watch-Seite hält die Wiedergabe, wenn die App zuhört"
     enabled: true,
   });
   await delay(20);
-  const posted = [];
-  ctx.win.webkit = {
-    messageHandlers: {
-      langformMini: {
-        postMessage(body) { posted.push(body); },
-      },
-    },
-  };
   const click = new ctx.win.MouseEvent("click", { bubbles: true, cancelable: true });
   ctx.win.document.getElementById("home-label").dispatchEvent(click);
-  assert.equal(click.defaultPrevented, true);
-  assert.deepEqual(posted, [{ op: "mini" }]);
+  assert.equal(click.defaultPrevented, false);
+  ctx.win.dispatchEvent(new ctx.win.CustomEvent("yt-navigate-start", { detail: { url: "/" } }));
   await delay(400);
   assert.deepEqual(ctx.redirects, []);
+});
+
+test("Zurück auf der Watch-Seite ist ein echtes history.back, auch in der App", async function () {
+  const ctx = boot({ url: "https://m.youtube.com/", enabled: true });
+  await delay(20);
+  ctx.win.webkit = { messageHandlers: { langformMini: { postMessage() { throw new Error("kein Miniplayer"); } } } };
+  ctx.win.history.pushState({}, "", "/watch?v=abcdefghijk");
+  assert.equal(ctx.win.location.pathname, "/watch");
+  ctx.win.history.back();
+  await delay(20);
+  assert.equal(ctx.win.location.pathname, "/");
+  assert.deepEqual(ctx.redirects, []);
+});
+
+test("viele neue Knoten beim ersten Laden ergeben einen gebündelten Scan", async function () {
+  const ctx = boot({ url: "https://m.youtube.com/", enabled: true });
+  await delay(20);
+  const doc = ctx.win.document;
+  const original = hide.scan;
+  let wholeDocument = 0;
+  hide.scan = function (rootNode) {
+    if (rootNode === doc || rootNode === doc.documentElement) wholeDocument += 1;
+    return original.apply(this, arguments);
+  };
+  try {
+    for (let round = 0; round < 5; round++) {
+      for (let i = 0; i < 60; i++) {
+        const item = doc.createElement("ytm-rich-item-renderer");
+        const link = doc.createElement("a");
+        link.setAttribute("href", i === 7 ? "/shorts/viele" + round : "/watch?v=aaaaaaaaa" + (i % 10) + round);
+        item.appendChild(link);
+        doc.body.appendChild(item);
+      }
+      ctx.win.history.replaceState({ round: round }, "", "/");
+      await delay(5);
+    }
+    await delay(500);
+    assert.ok(wholeDocument >= 1);
+    assert.ok(wholeDocument <= 2, "ganzes Dokument " + wholeDocument + " mal");
+    assert.equal(doc.querySelectorAll('a[href^="/shorts/"]').length, 0);
+  } finally {
+    hide.scan = original;
+  }
 });
 
 test("während des Scrollens bleibt die Karte, danach verschwindet sie", async function () {

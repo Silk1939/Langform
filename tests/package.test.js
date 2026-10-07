@@ -61,10 +61,18 @@ test("die App setzt kein eigenes Layout auf den YouTube-Player", function () {
   assert.match(app, /bottomLeading/);
   assert.match(app, /Color\.black\.ignoresSafeArea/);
   assert.doesNotMatch(app, /YouTubeWebView[\s\S]{0,280}ignoresSafeArea/);
+  // One WKWebView cannot show the feed behind a card: no mini player, no loose AirPlay button.
+  assert.doesNotMatch(app, /\.mask|scaleEffect|AVRoutePickerView|miniPlayer/);
   const web = fs.readFileSync(path.join(root, "ios/Langform/Langform/YouTubeWebView.swift"), "utf8");
   assert.match(web, /allowsBackForwardNavigationGestures = true/);
+  assert.match(web, /allowsAirPlayForMediaPlayback = true/);
+  assert.match(web, /allowsInlineMediaPlayback = true/);
+  assert.match(web, /UISwipeGestureRecognizer/);
+  assert.match(web, /direction = \.down/);
+  assert.match(web, /shouldRecognizeSimultaneouslyWith/);
+  assert.match(web, /guard YouTubeWebView\.isAccountPage\(webView\.url\)/);
   assert.match(web, /isWatchPage/);
-  assert.doesNotMatch(web, /PlayerFrame|viewport-fit/);
+  assert.doesNotMatch(web, /PlayerFrame|viewport-fit|langformMini|\.cancel\)\s*\n\s*beginMini/);
   const model = fs.readFileSync(path.join(root, "ios/Langform/Langform/OnDeviceSummary.swift"), "utf8");
   assert.match(model, /FoundationModels/);
   assert.match(model, /Die Kurzfassung geht nur mit dem Modell auf dem Gerät/);
