@@ -66,7 +66,11 @@
     ":not(ytd-macro-markers-list-item-renderer *)" +
     ":not(ytm-macro-markers-list-item-renderer *)" +
     ":not(ytd-chapter-renderer *)" +
-    ":not(ytm-chapter-renderer *)";
+    ":not(ytm-chapter-renderer *)" +
+    ":not(.ytwPlayerTimeDisplayPlayerBarActionContainer)" +
+    ":not(.ytwPlayerTimeDisplayPlayerBarActionContainer *)" +
+    ":not(.engagement-panel-macro-markers-description-chapters)" +
+    ":not(.engagement-panel-macro-markers-description-chapters *)";
 
   var SEARCH_GUARD =
     ':not(:has(form[role="search"]))' +

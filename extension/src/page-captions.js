@@ -22,7 +22,10 @@
   var WAIT_MS = 50;
   var CHAPTER_LAYER = "data-langform-chapters";
   var CHAPTER_MARK = "data-langform-chapter";
-  var TITLE_ID = "langform-chapter-title";
+  var CHIP_ID = "langform-chapter-chip";
+  var SHEET_ID = "langform-chapter-sheet";
+  var LABEL_ATTR = "data-langform-chapter-label";
+  var ROW_ATTR = "data-langform-chapter-row";
   var SKIP_PLAYER_KEYS = {
     streamingData: 1,
     captions: 1,
@@ -55,7 +58,27 @@
     return Number(match[1]) * 60 + Number(match[2]);
   }
 
-  function addChapter(list, title, start) {
+  function bestThumb(node) {
+    var thumbs = node && node.thumbnail && node.thumbnail.thumbnails;
+    if (!thumbs || !thumbs.length) return "";
+    var best = "";
+    var bestArea = -1;
+    for (var i = 0; i < thumbs.length; i++) {
+      var item = thumbs[i];
+      if (!item || !item.url || String(item.url).indexOf("googlevideo") !== -1) continue;
+      var w = Number(item.width) || 0;
+      if (w > 640) continue;
+      var h = Number(item.height) || 0;
+      var area = (w || 160) * (h || 90);
+      if (area >= bestArea) {
+        bestArea = area;
+        best = String(item.url);
+      }
+    }
+    return best;
+  }
+
+  function addChapter(list, title, start, thumb) {
     start = Number(start);
     if (!isFinite(start) || start < 0) return;
     title = String(title || "").replace(/\s+/g, " ").trim();
@@ -64,10 +87,15 @@
       var secs = Math.floor(start % 60);
       title = mins + ":" + (secs < 10 ? "0" : "") + secs;
     }
+    if (thumb && String(thumb).indexOf("googlevideo") !== -1) thumb = "";
+    thumb = thumb ? String(thumb) : "";
     for (var i = 0; i < list.length; i++) {
-      if (Math.abs(list[i].start - start) < 0.4) return;
+      if (Math.abs(list[i].start - start) < 0.4) {
+        if (!list[i].thumbnail && thumb) list[i].thumbnail = thumb;
+        return;
+      }
     }
-    list.push({ title: title, start: start });
+    list.push({ title: title, start: start, thumbnail: thumb });
   }
 
   function addChapterRenderer(renderer, list) {
@@ -76,7 +104,7 @@
     if (millis == null && renderer.timeRangeStartMillis === 0) millis = 0;
     var start = Number(millis);
     if (!isFinite(start)) return;
-    addChapter(list, textOf(renderer.title), start / 1000);
+    addChapter(list, textOf(renderer.title), start / 1000, bestThumb(renderer));
   }
 
   function addMacro(renderer, list) {
@@ -84,7 +112,7 @@
     var endpoint = renderer.onTap && renderer.onTap.watchEndpoint;
     var start = endpoint && endpoint.startTimeSeconds;
     if (start == null) start = parseClock(textOf(renderer.timeDescription));
-    addChapter(list, textOf(renderer.title), start);
+    addChapter(list, textOf(renderer.title), start, bestThumb(renderer));
   }
 
   function walkPlayer(node, renderers, macros, depth) {
@@ -171,6 +199,7 @@
         title: chapters[i].title,
         start: start,
         fraction: start / duration,
+        thumbnail: chapters[i].thumbnail || "",
       });
     }
     return out.length >= 2 ? out : [];
@@ -179,7 +208,7 @@
   function chapterAtTime(fractions, seconds) {
     var found = null;
     for (var i = 0; i < fractions.length; i++) {
-      if (fractions[i].start <= Number(seconds) + 0.05) found = fractions[i];
+      if (fractions[i].start <= Number(seconds) + 0.001) found = fractions[i];
       else break;
     }
     return found;
@@ -263,50 +292,18 @@
     return false;
   }
 
-  function hideTitle(doc) {
-    if (!doc) return;
-    var title = doc.getElementById(TITLE_ID);
-    if (title) title.style.display = "none";
+  function formatClock(seconds) {
+    seconds = Math.max(0, Math.floor(Number(seconds) || 0));
+    var h = Math.floor(seconds / 3600);
+    var m = Math.floor((seconds % 3600) / 60);
+    var s = seconds % 60;
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    if (h > 0) return h + ":" + pad(m) + ":" + pad(s);
+    return m + ":" + pad(s);
   }
 
-  function ensureTitle(doc) {
-    var title = doc.getElementById(TITLE_ID);
-    if (title) return title;
-    title = doc.createElement("div");
-    title.id = TITLE_ID;
-    title.setAttribute("lang", "de");
-    title.style.cssText = [
-      "position:fixed",
-      "z-index:30",
-      "transform:translateX(-50%)",
-      "max-width:70vw",
-      "padding:4px 8px",
-      "border-radius:8px",
-      "background:rgba(0,0,0,.82)",
-      "color:#fff",
-      "font:600 12px/1.3 system-ui,sans-serif",
-      "white-space:nowrap",
-      "overflow:hidden",
-      "text-overflow:ellipsis",
-      "pointer-events:none",
-      "display:none",
-    ].join(";");
-    (doc.body || doc.documentElement).appendChild(title);
-    return title;
-  }
-
-  function showTitle(doc, bar, label, ratio) {
-    if (!doc || !bar || !label) return;
-    var title = ensureTitle(doc);
-    title.textContent = label;
-    var rect = bar.getBoundingClientRect();
-    var width = doc.documentElement.clientWidth || 320;
-    var x = rect.left + rect.width * (ratio == null ? 0.5 : ratio);
-    if (x < 56) x = 56;
-    if (x > width - 56) x = width - 56;
-    title.style.left = x + "px";
-    title.style.top = Math.max(8, rect.top - 34) + "px";
-    title.style.display = "block";
+  function rememberChapters(doc, chapters) {
+    if (doc && doc.documentElement) doc.documentElement.__langformChapterList = chapters || [];
   }
 
   function clearChapterBar(bar) {
@@ -320,10 +317,7 @@
     if (!bar || bar.tagName === "VIDEO") return null;
     var doc = bar.ownerDocument;
     clearChapterBar(bar);
-    if (!fractions || fractions.length < 2) {
-      hideTitle(doc);
-      return null;
-    }
+    if (!fractions || fractions.length < 2 || barHasNativeGaps(bar)) return null;
     var view = doc.defaultView;
     try {
       if (view && view.getComputedStyle(bar).position === "static") bar.style.position = "relative";
@@ -332,7 +326,7 @@
     }
     var layer = doc.createElement("div");
     layer.setAttribute(CHAPTER_LAYER, "1");
-    layer.style.cssText = "position:absolute;left:0;right:0;top:0;bottom:0;pointer-events:none;z-index:4;";
+    layer.style.cssText = "position:absolute;left:0;right:0;top:0;bottom:0;pointer-events:none;z-index:8;";
     for (var i = 0; i < fractions.length; i++) {
       if (!(fractions[i].fraction > 0.004)) continue;
       var gap = doc.createElement("div");
@@ -342,7 +336,7 @@
       gap.setAttribute("role", "button");
       gap.setAttribute("aria-label", fractions[i].title);
       var left = (fractions[i].fraction * 100).toFixed(4) + "%";
-      gap.style.cssText = "position:absolute;top:-6px;bottom:-6px;width:14px;margin-left:-7px;left:" + left + ";pointer-events:auto;background:transparent;";
+      gap.style.cssText = "position:absolute;top:0;bottom:0;width:14px;margin-left:-7px;left:" + left + ";pointer-events:auto;background:transparent;";
       var tick = doc.createElement("div");
       tick.style.cssText = "position:absolute;top:0;bottom:0;left:6px;width:2px;background:#000;pointer-events:none;";
       gap.appendChild(tick);
@@ -350,11 +344,8 @@
         if (event.preventDefault) event.preventDefault();
         if (event.stopPropagation) event.stopPropagation();
         var seconds = Number(event.currentTarget.getAttribute("data-start"));
-        var name = event.currentTarget.getAttribute("data-title") || "";
-        var ratio = Number(event.currentTarget.style.left.replace("%", "")) / 100;
         if (seek) seek(seconds);
-        showTitle(doc, bar, name, isFinite(ratio) ? ratio : 0.5);
-        armTitleHide(doc, bar);
+        if (typeof bar.__langformOnPreview === "function") bar.__langformOnPreview(seconds);
       });
       layer.appendChild(gap);
     }
@@ -367,14 +358,9 @@
     return layer;
   }
 
-  function armTitleHide(doc, bar) {
-    var win = doc.defaultView;
-    if (!win) return;
-    if (bar.__langformTitleTimer) win.clearTimeout(bar.__langformTitleTimer);
-    bar.__langformTitleTimer = win.setTimeout(function () {
-      bar.__langformTitleTimer = 0;
-      if (!bar.__langformScrubbing) hideTitle(doc);
-    }, 1600);
+  function barHasNativeGaps(bar) {
+    if (!bar || !bar.querySelector) return false;
+    return !!bar.querySelector(".ytp-chapter-hover-container, .ytp-chapters-container");
   }
 
   function bindScrub(bar, doc) {
@@ -398,8 +384,8 @@
       var last = fractions[fractions.length - 1].fraction;
       var span = last > 0 ? duration / last : 0;
       var chapter = chapterAtTime(fractions, ratio * span);
-      if (!chapter) return;
-      showTitle(doc, bar, chapter.title, ratio);
+      if (!chapter || typeof bar.__langformOnPreview !== "function") return;
+      bar.__langformOnPreview(chapter.start);
     }
     bar.addEventListener("pointerdown", function () {
       bar.__langformScrubbing = true;
@@ -411,16 +397,342 @@
     bar.addEventListener("pointerup", function (event) {
       bar.__langformScrubbing = false;
       reveal(event);
-      armTitleHide(doc, bar);
     });
     bar.addEventListener("pointercancel", function () {
       bar.__langformScrubbing = false;
-      armTitleHide(doc, bar);
     });
     bar.addEventListener("touchmove", function (event) {
       bar.__langformScrubbing = true;
       reveal(event);
     }, { passive: true });
+  }
+
+  function queryDeep(doc, match) {
+    var root = (doc && (doc.body || doc.documentElement)) || null;
+    if (!root) return null;
+    var stack = [root];
+    var seen = new Set();
+    while (stack.length) {
+      var node = stack.pop();
+      if (!node || seen.has(node)) continue;
+      seen.add(node);
+      if (node.nodeType !== 1 || node.tagName === "VIDEO") continue;
+      if (node.id === CHIP_ID || node.id === SHEET_ID) continue;
+      if (match(node)) return node;
+      if (node.shadowRoot) stack.push(node.shadowRoot);
+      var kids = node.children;
+      if (kids) {
+        for (var i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+      }
+    }
+    return null;
+  }
+
+  function hiddenByUs(el) {
+    var node = el;
+    var guard = 0;
+    while (node && guard++ < 10) {
+      if (node.classList && node.classList.contains("shorts-ausblenden-hidden")) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function unhide(el) {
+    var node = el;
+    var guard = 0;
+    while (node && guard++ < 10) {
+      if (node.classList && node.classList.contains("shorts-ausblenden-hidden")) {
+        node.classList.remove("shorts-ausblenden-hidden");
+      }
+      node = node.parentElement;
+    }
+  }
+
+  function nativeChipShowsTitle(chip) {
+    var text = String((chip && chip.textContent) || "").replace(/\s+/g, " ").trim();
+    if (!text) return false;
+    return !/^(view chapters|chapters|kapitel|kapitel ansehen|kapitel anzeigen)$/i.test(text);
+  }
+
+  function findNativeChip(doc) {
+    var found = queryDeep(doc, function (el) {
+      var cls = classText(el);
+      if (cls.indexOf("ytwPlayerTimeDisplayPlayerBarActionContainer") !== -1) return true;
+      if (cls.indexOf("ytp-chapter-container") !== -1 || cls.indexOf("ytp-chapter-title") !== -1) return true;
+      return el.tagName === "YTM-CHAPTER-TITLE-RENDERER" || el.tagName === "YTD-CHAPTER-TITLE-RENDERER";
+    });
+    if (found && found.tagName !== "BUTTON" && found.querySelector) {
+      var button = found.querySelector("button");
+      if (button) found = button;
+    }
+    if (!found) {
+      found = queryDeep(doc, function (el) {
+        if (el.tagName !== "BUTTON") return false;
+        return /view chapters|kapitel ansehen|kapitel anzeigen/i.test(el.getAttribute("aria-label") || "");
+      });
+    }
+    return found;
+  }
+
+  function findNativeSheet(doc) {
+    return queryDeep(doc, function (el) {
+      var tag = el.tagName || "";
+      if (tag === "YTM-MACRO-MARKERS-LIST-RENDERER" || tag === "YTD-MACRO-MARKERS-LIST-RENDERER") return true;
+      if (classText(el).indexOf("engagement-panel-macro-markers-description-chapters") !== -1) return true;
+      var target = (el.getAttribute && el.getAttribute("target-id")) || "";
+      return target.indexOf("macro-markers") !== -1;
+    });
+  }
+
+  function nativeChapterChrome(doc) {
+    var chip = findNativeChip(doc);
+    var sheet = findNativeSheet(doc);
+    if (!chip || !sheet) return null;
+    if (hiddenByUs(chip)) unhide(chip);
+    if (hiddenByUs(sheet)) unhide(sheet);
+    if (!nativeChipShowsTitle(chip)) return null;
+    return { chip: chip, sheet: sheet };
+  }
+
+  function removeOurChrome(doc) {
+    if (!doc) return;
+    [CHIP_ID, SHEET_ID].forEach(function (id) {
+      var el = doc.getElementById(id);
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    });
+    if (doc.documentElement) doc.documentElement.removeAttribute("data-langform-chapter-ui");
+  }
+
+  function findTimePill(doc) {
+    var best = null;
+    var bestChildren = Infinity;
+    queryDeep(doc, function (el) {
+      var text = String(el.textContent || "").replace(/\s+/g, " ").trim();
+      if (!/^\d{1,2}:\d{2}(?::\d{2})?\s*\/\s*\d{1,2}:\d{2}/.test(text) || text.length > 48) return false;
+      var kids = el.children ? el.children.length : 0;
+      if (kids < bestChildren) {
+        best = el;
+        bestChildren = kids;
+      }
+      return false;
+    });
+    if (best) return best;
+    return queryDeep(doc, function (el) {
+      var cls = classText(el);
+      return cls.indexOf("ytp-time-display") !== -1 || cls.indexOf("ytwPlayerTimeDisplay") !== -1 || cls.indexOf("time-display") !== -1;
+    });
+  }
+
+  function placeChip(doc, chip) {
+    var time = findTimePill(doc);
+    if (time && time.parentNode) {
+      if (chip.previousElementSibling !== time) time.insertAdjacentElement("afterend", chip);
+      return;
+    }
+    var bar = findSeekBar(doc);
+    if (bar && bar.parentNode) {
+      if (chip.nextSibling !== bar) bar.parentNode.insertBefore(chip, bar);
+      return;
+    }
+    var parent = doc.body || doc.documentElement;
+    if (parent && chip.parentNode !== parent) parent.appendChild(chip);
+  }
+
+  function placeSheet(doc, sheet) {
+    var player = doc.querySelector("ytm-player, #movie_player, ytd-player, #player");
+    var height = (doc.documentElement && doc.documentElement.clientHeight) || 0;
+    var top = height ? Math.round(height * 0.34) : 220;
+    if (player && player.getBoundingClientRect) {
+      var rect = player.getBoundingClientRect();
+      if (rect && rect.bottom > 80 && (!height || rect.bottom < height - 80)) top = Math.round(rect.bottom);
+    }
+    sheet.style.top = top + "px";
+  }
+
+  function setSheetOpen(doc, open) {
+    var sheet = doc.getElementById(SHEET_ID);
+    if (!sheet) return;
+    if (open) placeSheet(doc, sheet);
+    sheet.style.display = open ? "flex" : "none";
+    sheet.setAttribute("aria-hidden", open ? "false" : "true");
+  }
+
+  function syncChapterUi(doc, chapters, seconds) {
+    if (!doc) return null;
+    var current = chapterAtTime(chapters || [], seconds);
+    var chip = doc.getElementById(CHIP_ID);
+    if (chip) {
+      var label = chip.querySelector("[" + LABEL_ATTR + "]");
+      var title = current ? current.title : "";
+      if (label) label.textContent = title;
+      chip.setAttribute("aria-label", title ? title + ", Kapitel" : "Kapitel");
+    }
+    var rows = doc.querySelectorAll("[" + ROW_ATTR + "]");
+    var currentStart = current ? Number(current.start) : NaN;
+    for (var i = 0; i < rows.length; i++) {
+      var start = Number(rows[i].getAttribute("data-start"));
+      var on = isFinite(currentStart) && Math.abs(start - currentStart) < 0.4;
+      if (on) rows[i].setAttribute("aria-current", "true");
+      else rows[i].removeAttribute("aria-current");
+      rows[i].style.boxShadow = on ? "inset 3px 0 0 #ff2a2a" : "none";
+    }
+    return current;
+  }
+
+  function chapterSig(chapters) {
+    if (!chapters || chapters.length < 2) return "";
+    return chapters.map(function (item) {
+      return item.start + "\t" + item.title + "\t" + (item.thumbnail || "");
+    }).join("\n");
+  }
+
+  function renderChapterUi(doc, chapters, seek) {
+    if (!doc || !doc.documentElement) return { native: false, drawn: false };
+    rememberChapters(doc, chapters || []);
+    if (!chapters || chapters.length < 2) {
+      removeOurChrome(doc);
+      return { native: false, drawn: false };
+    }
+    if (nativeChapterChrome(doc)) {
+      removeOurChrome(doc);
+      doc.documentElement.setAttribute("data-langform-chapter-ui", "native");
+      return { native: true, drawn: false };
+    }
+    removeOurChrome(doc);
+    var chip = doc.createElement("button");
+    chip.id = CHIP_ID;
+    chip.type = "button";
+    chip.setAttribute("lang", "de");
+    chip.style.cssText = [
+      "display:inline-flex",
+      "align-items:center",
+      "gap:6px",
+      "max-width:48vw",
+      "margin:0 0 0 8px",
+      "padding:5px 8px 5px 10px",
+      "border:0",
+      "border-radius:8px",
+      "background:rgba(20,20,20,.72)",
+      "color:#fff",
+      "font:600 13px/1.2 system-ui,sans-serif",
+      "vertical-align:middle",
+      "z-index:2",
+    ].join(";");
+    var label = doc.createElement("span");
+    label.setAttribute(LABEL_ATTR, "1");
+    label.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;";
+    label.textContent = chapters[0].title;
+    var chevron = doc.createElement("span");
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.textContent = ">";
+    chevron.style.cssText = "flex:none;";
+    chip.appendChild(label);
+    chip.appendChild(chevron);
+    chip.addEventListener("click", function (event) {
+      if (event.preventDefault) event.preventDefault();
+      if (event.stopPropagation) event.stopPropagation();
+      var sheet = doc.getElementById(SHEET_ID);
+      var open = sheet && sheet.style.display !== "none";
+      setSheetOpen(doc, !open);
+      if (!open) {
+        var video = doc.querySelector("video");
+        syncChapterUi(doc, doc.documentElement.__langformChapterList || chapters, video ? video.currentTime : 0);
+      }
+    });
+
+    var sheet = doc.createElement("section");
+    sheet.id = SHEET_ID;
+    sheet.setAttribute("lang", "de");
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-labelledby", "langform-chapter-heading");
+    sheet.style.cssText = [
+      "position:fixed",
+      "left:0",
+      "right:0",
+      "bottom:0",
+      "z-index:80",
+      "display:none",
+      "flex-direction:column",
+      "background:#0f0f0f",
+      "color:#fff",
+      "border-radius:12px 12px 0 0",
+      "box-shadow:0 -8px 24px rgba(0,0,0,.45)",
+      "font:16px/1.3 system-ui,sans-serif",
+      "overflow:hidden",
+    ].join(";");
+    var header = doc.createElement("header");
+    header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 8px 8px 16px;flex:none;";
+    var heading = doc.createElement("h2");
+    heading.id = "langform-chapter-heading";
+    heading.textContent = "Kapitel";
+    heading.style.cssText = "margin:0;font:700 18px/1.2 system-ui,sans-serif;";
+    var close = doc.createElement("button");
+    close.type = "button";
+    close.setAttribute("aria-label", "Schließen");
+    close.textContent = "×";
+    close.style.cssText = "width:44px;height:44px;border:0;background:transparent;color:#fff;font:400 28px/1 system-ui,sans-serif;";
+    close.addEventListener("click", function (event) {
+      if (event.preventDefault) event.preventDefault();
+      if (event.stopPropagation) event.stopPropagation();
+      setSheetOpen(doc, false);
+    });
+    header.appendChild(heading);
+    header.appendChild(close);
+    var list = doc.createElement("div");
+    list.style.cssText = "overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:0 0 calc(20px + env(safe-area-inset-bottom, 0px));";
+    for (var i = 0; i < chapters.length; i++) {
+      var row = doc.createElement("button");
+      row.type = "button";
+      row.setAttribute(ROW_ATTR, String(i));
+      row.setAttribute("data-start", String(chapters[i].start));
+      row.style.cssText = "display:flex;align-items:center;gap:12px;width:100%;margin:0;padding:8px 16px;border:0;background:transparent;color:#fff;text-align:left;font:inherit;";
+      if (chapters[i].thumbnail) {
+        var img = doc.createElement("img");
+        img.src = chapters[i].thumbnail;
+        img.alt = "";
+        img.setAttribute("decoding", "async");
+        img.style.cssText = "width:112px;height:63px;object-fit:cover;border-radius:8px;background:#222;flex:none;";
+        row.appendChild(img);
+      } else {
+        var blank = doc.createElement("span");
+        blank.style.cssText = "width:112px;height:63px;border-radius:8px;background:#222;flex:none;";
+        row.appendChild(blank);
+      }
+      var text = doc.createElement("span");
+      text.style.cssText = "display:flex;flex-direction:column;gap:4px;min-width:0;";
+      var name = doc.createElement("span");
+      name.textContent = chapters[i].title;
+      name.style.cssText = "font:600 15px/1.25 system-ui,sans-serif;";
+      var time = doc.createElement("span");
+      time.textContent = formatClock(chapters[i].start);
+      time.style.cssText = "color:#aaa;font:400 13px/1.2 system-ui,sans-serif;";
+      text.appendChild(name);
+      text.appendChild(time);
+      row.appendChild(text);
+      row.addEventListener("click", function (event) {
+        if (event.preventDefault) event.preventDefault();
+        if (event.stopPropagation) event.stopPropagation();
+        var seconds = Number(event.currentTarget.getAttribute("data-start"));
+        if (seek) seek(seconds);
+        syncChapterUi(doc, doc.documentElement.__langformChapterList || chapters, seconds);
+        setSheetOpen(doc, false);
+      });
+      list.appendChild(row);
+    }
+    sheet.appendChild(header);
+    sheet.appendChild(list);
+    placeChip(doc, chip);
+    (doc.body || doc.documentElement).appendChild(sheet);
+    setSheetOpen(doc, false);
+    syncChapterUi(doc, chapters, 0);
+    doc.documentElement.setAttribute("data-langform-chapter-ui", chapterSig(chapters));
+    return {
+      native: false,
+      drawn: true,
+      open: function () { setSheetOpen(doc, true); },
+      close: function () { setSheetOpen(doc, false); },
+    };
   }
 
   function onWatchPath(win) {
@@ -435,9 +747,12 @@
 
   function refreshChapters(win) {
     var doc = win.document;
-    if (!doc) return;
+    if (!doc || !doc.documentElement) return;
+    var bar = win.__langformSeekBar;
     if (!onWatchPath(win)) {
-      hideTitle(doc);
+      removeOurChrome(doc);
+      if (bar && bar.isConnected) clearChapterBar(bar);
+      rememberChapters(doc, []);
       return;
     }
     var player = win.ytInitialPlayerResponse;
@@ -454,28 +769,52 @@
       fractions = barFractions(chaptersFromPlayer(player), duration);
       if (duration > 0) win.__langformChapterCache = { player: player, duration: duration, fractions: fractions };
     }
-    var bar = win.__langformSeekBar;
     if (!bar || !bar.isConnected) bar = findSeekBar(doc);
     win.__langformSeekBar = bar;
-    if (!bar) return;
-    var sig = fractions.map(function (item) { return item.start + ":" + item.title; }).join("|");
-    if (bar.getAttribute("data-langform-chapter-sig") === sig && bar.querySelector("[" + CHAPTER_LAYER + "]")) return;
-    drawChapterBar(bar, fractions, function (seconds) {
-      seekTo(win, seconds);
-    });
+    if (!fractions || fractions.length < 2) {
+      removeOurChrome(doc);
+      if (bar) clearChapterBar(bar);
+      rememberChapters(doc, []);
+      return;
+    }
+    rememberChapters(doc, fractions);
+    if (bar) {
+      bar.__langformOnPreview = function (seconds) { syncChapterUi(doc, fractions, seconds); };
+      var barSig = fractions.map(function (item) { return item.start + ":" + item.title; }).join("|");
+      var drawn = bar.getAttribute("data-langform-chapter-sig") === barSig && (bar.querySelector("[" + CHAPTER_LAYER + "]") || barHasNativeGaps(bar));
+      if (!drawn) drawChapterBar(bar, fractions, function (seconds) { seekTo(win, seconds); });
+    }
+    var uiSig = chapterSig(fractions);
+    var chip = doc.getElementById(CHIP_ID);
+    var marked = doc.documentElement.getAttribute("data-langform-chapter-ui") || "";
+    if (marked === uiSig && chip && chip.isConnected) {
+      if (video) syncChapterUi(doc, fractions, video.currentTime || 0);
+    } else if (marked === "native" && win.__langformNativeHit && win.__langformNativeHit.chip && win.__langformNativeHit.chip.isConnected && nativeChipShowsTitle(win.__langformNativeHit.chip)) {
+      /* YouTube's own chip and sheet stay */
+    } else {
+      var sheet = doc.getElementById(SHEET_ID);
+      var wasOpen = !!(sheet && sheet.style.display !== "none");
+      if (!(win.__langformNativeChecked === player && player)) {
+        win.__langformNativeChecked = player || null;
+        win.__langformNativeHit = player ? nativeChapterChrome(doc) : null;
+      }
+      var ui = renderChapterUi(doc, fractions, function (seconds) { seekTo(win, seconds); });
+      if (ui && ui.native) win.__langformNativeHit = nativeChapterChrome(doc);
+      if (wasOpen && ui && ui.open) ui.open();
+      if (video && ui && !ui.native) syncChapterUi(doc, fractions, video.currentTime || 0);
+    }
     if (video && !video.__langformChapterBound) {
       video.__langformChapterBound = true;
+      video.addEventListener("timeupdate", function () {
+        var list = doc.documentElement.__langformChapterList || [];
+        if (list.length < 2) return;
+        if (doc.documentElement.getAttribute("data-langform-chapter-ui") === "native") return;
+        syncChapterUi(doc, list, video.currentTime || 0);
+      });
       video.addEventListener("seeked", function () {
-        var liveBar = (win.__langformSeekBar && win.__langformSeekBar.isConnected && win.__langformSeekBar) || findSeekBar(doc);
-        if (!liveBar) return;
-        var live = liveBar.__langformFractions || [];
-        var chapter = chapterAtTime(live, video.currentTime);
-        if (!chapter) return;
-        var span = live.length ? live[live.length - 1] : null;
-        var full = span && span.fraction > 0 ? span.start / span.fraction : 0;
-        var ratio = full ? video.currentTime / full : chapter.fraction;
-        showTitle(doc, liveBar, chapter.title, ratio);
-        armTitleHide(doc, liveBar);
+        var list = doc.documentElement.__langformChapterList || [];
+        if (doc.documentElement.getAttribute("data-langform-chapter-ui") === "native") return;
+        syncChapterUi(doc, list, video.currentTime || 0);
       });
     }
   }
@@ -502,7 +841,12 @@
     }
     win.addEventListener("yt-navigate-finish", schedule);
     win.addEventListener("popstate", schedule);
-    win.document.addEventListener("pointerdown", function () {
+    win.document.addEventListener("pointerdown", function (event) {
+      var sheet = win.document.getElementById(SHEET_ID);
+      if (sheet && sheet.style.display !== "none" && event.target && !sheet.contains(event.target)) {
+        var chip = win.document.getElementById(CHIP_ID);
+        if (!chip || (event.target !== chip && !chip.contains(event.target))) setSheetOpen(win.document, false);
+      }
       if (onWatchPath(win)) schedule();
     }, { capture: true, passive: true });
     var tries = 0;
@@ -655,5 +999,7 @@
     drawChapterBar: drawChapterBar,
     findSeekBar: findSeekBar,
     seekTo: seekTo,
+    renderChapterUi: renderChapterUi,
+    syncChapterUi: syncChapterUi,
   };
 });
