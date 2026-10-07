@@ -13,7 +13,8 @@ Die iPhone-App liegt in `ios/Langform`. Sie zeigt die echte YouTube-Seite und bl
 - Wer `/shorts`, `/shorts/…` oder `/feed/shorts` öffnet, landet auf der Startseite desselben Hosts. Während die Umleitung läuft, steht dort: „Shorts sind blockiert. Weiter zur Startseite …“.
 - Das Symbol in der Symbolleiste öffnet einen Schalter, **Shorts blockieren**. Standard ist an. Aus heißt: nichts verstecken und nicht umleiten. Waren Shorts schon aus dem DOM entfernt, lädt die Seite neu, damit sie wiederkommen. Die Wahl bleibt auf dem Gerät, ohne Konto.
 - Lange Videos bekommen eine **Kurzfassung** auf Deutsch. Die Untertitel holt die Seite von YouTube. In Safari liest ein Skript in der Seite den Player, sobald er gefüllt ist, und die signierte Untertitelspur. Den Text schreibt das Modell auf dem Gerät, in der iPhone-App direkt und in Safari über die App „Shorts ausblenden“. Das Blatt heißt **Das Wichtigste** und zeigt drei bis sechs Merksätze. Ohne Modell steht ein Satz. Das Video wird nicht heruntergeladen. Der Knopf sitzt unter dem Titel. Das Blatt lässt sich scrollen und schließen.
-- Kein Server, keine Auswertung, keine weiteren Dienste. Kein Werbeblocker, kein Download, kein Auslesen von Stream-Adressen.
+- Blendet Werbung aus (`src/ads.js`): Banner, Begleitanzeigen, Masthead und Werbeplätze im Feed verschwinden per Stylesheet. Eine Videowerbung wird mit YouTubes eigenem Knopf **Überspringen** übersprungen, sobald es ihn gibt. Ohne Knopf wird sie stummgeschaltet und läuft an ihr Ende, danach kommt der Ton zurück. Das Hauptvideo wird dabei nie angehalten oder verschoben.
+- Kein Server, keine Auswertung, keine weiteren Dienste. Kein Download, kein Auslesen von Stream-Adressen.
 
 ## Was sie nicht tut
 

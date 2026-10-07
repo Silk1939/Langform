@@ -85,6 +85,16 @@ Das Stylesheet blendet Shorts aus, bevor sie sichtbar werden. Die Skripte nehmen
 
 `/shorts`, `/shorts/…` und `/feed/shorts` gehen auf die Startseite desselben Hosts. Während der Umleitung steht dort: „Shorts sind blockiert. Weiter zur Startseite …“. Ein normales `/watch`-Video bleibt.
 
+## Werbung
+
+`ads.js` läuft in beiden Webansichten, auf `www.youtube.com` und `m.youtube.com`, und in der Erweiterung.
+
+- Banner, Begleitanzeigen, Masthead und Werbeplätze im Feed blendet ein Stylesheet aus. Es nennt nur Elemente, die schon nach Tag oder ID Werbung sind. Player, Kapitelchip, Cast, AirPlay und Suchfeld trifft es nicht, auch nicht YouTubes Werbebereich im Player mit dem Knopf **Überspringen**.
+- Als Videowerbung zählt nur, was der Player selbst so markiert: die Klasse `ad-showing` oder `ad-interrupting` am Player oder sein Werbe-Overlay auf dem Bildschirm. Zeit, Länge oder geplante Werbung in der Player-Antwort zählen nie. Der Anfang des Hauptvideos ist also nie Werbung.
+- Gibt es YouTubes Knopf **Überspringen** sichtbar, tippt das Skript ihn an. Gibt es ihn noch nicht und ist die Länge der Werbung bekannt, wird sie stummgeschaltet und auf ihrem eigenen Medienelement an ihr Ende gesetzt. Endet die Werbung, kommt der vorige Ton zurück.
+- Ist nicht sicher, dass das Medium schon die Werbung trägt, wird die Werbung nur stummgeschaltet. Das gilt, wenn das Medium so lang ist wie das Hauptvideo, noch dieselbe Quelle hat oder länger als drei Minuten ist. `movie_player.seekTo` ruft das Skript nie auf, `pause()` auch nicht.
+- Kein Timer. Geprüft wird, wenn der Player seine Klasse wechselt, wenn sich YouTubes Werbebereich ändert und wenn ein neues Medium Metadaten, Länge oder Wiedergabe meldet. Läuft das Hauptvideo, schreibt das Skript nichts.
+
 ## Kurzfassung
 
 Auf der Watch-Seite, auf der Startseite und in Playlists hat jedes lange Video einen Knopf **Kurzfassung** unter dem Titel. Er startet die Wiedergabe nicht und sitzt nicht in der Kopfzeile neben „Alle abspielen“ oder „Zufallsmix“. Die Untertitel kommen von YouTube, über den Player-Endpunkt der Seite (`ytcfg`, auf dem Desktop der Client WEB), als json3, srv3 oder XML. Deutsch hat Vorrang, auch `de-DE`, eine von Hand geschriebene Spur vor der automatischen. Sonst bittet die Seite YouTube um die Übersetzung nach Deutsch. Ein leerer Body wird mit `fmt=json3` auf derselben URL noch einmal geholt. Das Video wird nicht heruntergeladen. Ohne Untertitel steht: „Für dieses Video gibt es keine Untertitel.“
@@ -93,4 +103,4 @@ Den Text schreibt das Modell auf dem Gerät, ohne Schlüssel und ohne Konto. Das
 
 ## Was die App nicht tut
 
-Kein eigener Player, kein Download, kein Auslesen von Stream-Adressen, kein Werbeblocker, keine Umgehung einer Altersabfrage. Die Wiedergabe ist der Player der YouTube-Seite.
+Kein eigener Player, kein Download, kein Auslesen von Stream-Adressen, keine Umgehung einer Altersabfrage. Die Wiedergabe ist der Player der YouTube-Seite.
