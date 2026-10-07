@@ -215,13 +215,15 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         addSubview(backButton)
 
         // A pan only begins after the finger has moved, so a tap on play never starts it.
+        // It sits on the card, not on the web view: WebKit defers and fails gestures
+        // inside its own view tree while the page handles the touch.
         drag = UIPanGestureRecognizer(target: self, action: #selector(dragPlayer(_:)))
         drag.cancelsTouchesInView = false
         drag.delaysTouchesBegan = false
         drag.delaysTouchesEnded = false
         drag.maximumNumberOfTouches = 1
         drag.delegate = self
-        playerView.addGestureRecognizer(drag)
+        card.addGestureRecognizer(drag)
 
         cardTap = UITapGestureRecognizer(target: self, action: #selector(expandCard))
         cardTap.delegate = self
@@ -272,16 +274,17 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         videoRect.width > 8 && videoRect.height > 8
     }
 
-    /// Most of the picture is on screen. A rect scrolled away does not make a card.
-    private var videoVisible: Bool {
-        guard hasVideoRect else { return false }
-        let shown = videoRect.intersection(CGRect(origin: .zero, size: bounds.size))
-        guard !shown.isNull else { return false }
-        return shown.width * shown.height >= videoRect.width * videoRect.height * 0.6
+    /// The video picture in the player view. Without a reported rect it is the
+    /// top 16:9 of the view, where m.youtube.com puts the player, so the card
+    /// never crops to nothing.
+    private var pictureRect: CGRect {
+        if hasVideoRect { return videoRect }
+        return CGRect(x: 0, y: 0, width: bounds.width, height: bounds.width * 9 / 16)
     }
 
     private func miniFrame() -> CGRect {
-        let aspect = hasVideoRect ? videoRect.height / videoRect.width : 9.0 / 16.0
+        let picture = pictureRect
+        let aspect = picture.width > 0 ? picture.height / picture.width : 9.0 / 16.0
         var width = min(bounds.width * 0.48, 230)
         var height = width * aspect
         if height > 160 {
@@ -305,7 +308,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private func apply(_ t: CGFloat) {
         let full = bounds
         guard full.width > 0, full.height > 0 else { return }
-        let source = hasVideoRect ? videoRect : full
+        let source = pictureRect
         let target = miniFrame()
         let box = Self.mix(full, target, t)
         let picture = Self.mix(source, target, t)
@@ -367,7 +370,6 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
 
     private func settle(_ target: Mode, speed: CGFloat = 0, travel: CGFloat = 1) {
         guard target != .closed else { return }
-        if target == .mini && !hasVideoRect { return }
         mode = target
         let end: CGFloat = target == .mini ? 1 : 0
         let remaining = abs(end - progress) * travel
@@ -392,7 +394,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     @objc private func closePlayer() {
         guard mode != .closed else { return }
         mode = .closed
-        dragging = false
+        endDrag()
         videoPlaying = false
         player.isUserInteractionEnabled = true
         cardTap.isEnabled = false
@@ -425,13 +427,14 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             closePlayer()
             return
         }
-        if videoVisible {
+        if pictureOnScreen {
             settle(.mini)
             return
         }
+        // Scrolled down to the comments: bring the picture back first.
         player.scrollView.setContentOffset(.zero, animated: true)
         measureVideo(after: 0.35) { [weak self] in
-            guard let self, self.mode == .expanded, self.videoVisible else { return }
+            guard let self, self.mode == .expanded else { return }
             self.settle(.mini)
         }
     }
@@ -457,40 +460,64 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
 
     // MARK: Swipe down
 
+    /// Some of the picture is in the viewport, at least a strip a finger can hit.
+    private var pictureOnScreen: Bool {
+        let shown = pictureRect.intersection(CGRect(origin: .zero, size: bounds.size))
+        return !shown.isNull && shown.height > 40
+    }
+
+    private var dragTravel: CGFloat {
+        max(80, miniFrame().minY - pictureRect.minY)
+    }
+
     @objc private func dragPlayer(_ pan: UIPanGestureRecognizer) {
-        let travel = max(80, miniFrame().minY - videoRect.minY)
         switch pan.state {
         case .began:
             dragging = true
             card.layer.removeAllAnimations()
             player.layer.removeAllAnimations()
-            // The page itself must not bounce under the finger while the player follows it.
-            let scroll = player.scrollView.panGestureRecognizer
-            scroll.isEnabled = false
-            scroll.isEnabled = true
+            // The scroll pan has already failed; this keeps the page still until the finger lifts.
+            player.scrollView.isScrollEnabled = false
+            follow(pan)
         case .changed:
-            let t = min(1, max(0, pan.translation(in: self).y / travel))
-            progress = t
-            apply(t)
+            follow(pan)
         case .ended, .cancelled, .failed:
-            dragging = false
+            let travel = dragTravel
             let speed = pan.velocity(in: self).y
-            let toMini = pan.state == .ended && videoVisible && speed > -200 && (progress > 0.3 || speed > 600)
+            endDrag()
+            let toMini = pan.state == .ended && speed > -200 && (progress > 0.3 || speed > 600)
             settle(toMini ? .mini : .expanded, speed: speed, travel: travel)
         default:
             break
         }
     }
 
+    /// The card follows the finger: progress is the downward translation over the way to the card.
+    private func follow(_ pan: UIPanGestureRecognizer) {
+        let t = min(1, max(0, pan.translation(in: self).y / dragTravel))
+        progress = t
+        apply(t)
+    }
+
+    private func endDrag() {
+        dragging = false
+        drag.cancelsTouchesInView = false
+        player.scrollView.isScrollEnabled = true
+    }
+
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === drag else { return super.gestureRecognizerShouldBegin(gestureRecognizer) }
-        guard mode == .expanded, videoVisible, YouTubeWebView.isWatchPage(player.url) else { return false }
+        guard mode == .expanded, YouTubeWebView.isWatchPage(player.url) else { return false }
         // Only a clear downward swipe. A tap, a scrub or a sideways move stays YouTube's.
         let move = drag.translation(in: self)
         let speed = drag.velocity(in: self)
         let downward = move.y > 6 && move.y > abs(move.x) * 2
         let flick = move.y > 0 && speed.y > 250 && speed.y > abs(speed.x) * 2
-        return downward || flick
+        let begins = downward || flick
+        // From here on the page gets touchcancel, so YouTube does not also act on
+        // the drag. A tap never reaches this point and still plays.
+        drag.cancelsTouchesInView = begins
+        return begins
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
@@ -499,18 +526,32 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             return !view.isDescendant(of: closeButton)
         }
         guard gestureRecognizer === drag else { return true }
-        guard mode == .expanded, videoVisible else { return false }
-        // The bottom strip of the picture is YouTube's scrubber.
-        var band = videoRect
-        band.size.height = max(0, band.height - 32)
+        guard mode == .expanded, YouTubeWebView.isWatchPage(player.url) else { return false }
+        // The visible part of the picture, without its bottom strip, which is YouTube's scrubber.
+        var band = pictureRect.intersection(CGRect(origin: .zero, size: bounds.size))
+        guard !band.isNull, band.height > 40 else { return false }
+        band.size.height -= 32
         return band.contains(touch.location(in: player))
+    }
+
+    /// The web view's scroll pan waits for the drag. A touch on the picture that
+    /// goes down becomes the drag and the scroll pan fails; anything else fails the
+    /// drag within a few points and the page scrolls as before.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        gestureRecognizer === drag && otherGestureRecognizer === player?.scrollView.panGestureRecognizer
     }
 
     func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
     ) -> Bool {
-        true
+        let scrollPan = player?.scrollView.panGestureRecognizer
+        if gestureRecognizer === drag && otherGestureRecognizer === scrollPan { return false }
+        if otherGestureRecognizer === drag && gestureRecognizer === scrollPan { return false }
+        return true
     }
 
     // MARK: Where each view goes
@@ -602,7 +643,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                   let url = URL(string: href) else { return }
             showInFeed(url)
             // The video keeps playing in the card while the feed shows the page.
-            if mode == .expanded && videoVisible {
+            if mode == .expanded {
                 settle(.mini)
             } else {
                 closePlayer()
@@ -644,7 +685,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             openWatch(url)
         } else {
             feed.load(navigationAction.request)
-            if webView === player && mode == .expanded && videoVisible {
+            if webView === player && mode == .expanded {
                 settle(.mini)
             }
         }

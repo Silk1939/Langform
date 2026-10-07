@@ -93,16 +93,28 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   assert.match(web, /shouldRecognizeSimultaneouslyWith/);
   const begin = swiftFunction(web, "gestureRecognizerShouldBegin");
   assert.match(begin, /move\.y > abs\(move\.x\) \* 2/);
-  assert.match(begin, /videoVisible/);
+  // Touches are cancelled only once the downward drag is recognized.
+  assert.match(begin, /drag\.cancelsTouchesInView = begins/);
+  assert.doesNotMatch(web, /0\.6\b|videoVisible/);
+  // The drag sits outside WebKit's view tree and the page scroll waits for it.
+  assert.match(web, /card\.addGestureRecognizer\(drag\)/);
+  assert.doesNotMatch(web, /playerView\.addGestureRecognizer\(drag\)|player\.addGestureRecognizer\(drag\)/);
+  assert.match(
+    web,
+    /shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer\s*\) -> Bool \{\s*gestureRecognizer === drag && otherGestureRecognizer === player\?\.scrollView\.panGestureRecognizer/
+  );
+  assert.match(web, /isScrollEnabled = false/);
+  // The card follows the finger.
+  assert.match(swiftFunction(web, "follow"), /pan\.translation\(in: self\)\.y \/ dragTravel/);
+  // Without a rect the card crops the top 16:9, never an empty mask.
+  assert.match(web, /CGRect\(x: 0, y: 0, width: bounds\.width, height: bounds\.width \* 9 \/ 16\)/);
   const dragged = swiftFunction(web, "dragPlayer");
   assert.doesNotMatch(dragged, /goBack|history|load\(|evaluateJavaScript/);
   assert.match(dragged, /settle\(toMini \? \.mini : \.expanded/);
 
-  // The card crops to the video's rect and only exists with one.
-  const settle = swiftFunction(web, "settle");
-  assert.match(settle, /target == \.mini && !hasVideoRect/);
+  // The card crops to the picture.
   const apply = swiftFunction(web, "apply");
-  assert.match(apply, /videoRect/);
+  assert.match(apply, /let source = pictureRect/);
   assert.match(apply, /player\.transform = CGAffineTransform\(scaleX: scale, y: scale\)/);
   assert.doesNotMatch(apply, /player\.bounds|player\.frame|evaluateJavaScript/);
 
