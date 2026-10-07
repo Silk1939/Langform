@@ -85,9 +85,32 @@
       fullScanTimer = setTimeout(runFullScan, wait);
     }
 
+    // While a watch video plays the stylesheet alone keeps Shorts hidden. The
+    // DOM is left alone and the scan runs once playback pauses or ends.
+    function watchPlaying() {
+      if (!onWatchPage()) return false;
+      var videos = doc.getElementsByTagName("video");
+      for (var i = 0; i < videos.length; i++) {
+        if (!videos[i].paused && !videos[i].ended) return true;
+      }
+      return false;
+    }
+
+    var playbackDeferred = false;
+
+    function afterPlayback() {
+      if (!playbackDeferred || !enabled) return;
+      playbackDeferred = false;
+      requestFullScan();
+    }
+
     function runFullScan() {
       fullScanTimer = 0;
       if (!enabled) return;
+      if (watchPlaying()) {
+        playbackDeferred = true;
+        return;
+      }
       if (scrolling || scanning) {
         fullScanPending = true;
         return;
@@ -119,6 +142,11 @@
       if (scrolling || scanning) return;
       if (!enabled) {
         queued = [];
+        return;
+      }
+      if (watchPlaying()) {
+        queued = [];
+        playbackDeferred = true;
         return;
       }
       scanning = true;
@@ -195,6 +223,10 @@
       if (observer || !win.MutationObserver || !doc.documentElement) return;
       observer = new win.MutationObserver(function (records) {
         if (!enabled || scanning) return;
+        if (watchPlaying()) {
+          playbackDeferred = true;
+          return;
+        }
         for (var i = 0; i < records.length; i++) {
           var record = records[i];
           if (record.target && insidePlayer(record.target)) continue;
@@ -213,6 +245,8 @@
         attributeFilter: ["href", "is-shorts", "overlay-style"],
       });
       doc.addEventListener("scroll", noteScroll, { passive: true, capture: true });
+      doc.addEventListener("pause", afterPlayback, true);
+      doc.addEventListener("ended", afterPlayback, true);
     }
 
     function stopObserver() {
@@ -223,6 +257,9 @@
       fullScanTimer = 0;
       fullScanPending = false;
       doc.removeEventListener("scroll", noteScroll, true);
+      doc.removeEventListener("pause", afterPlayback, true);
+      doc.removeEventListener("ended", afterPlayback, true);
+      playbackDeferred = false;
       if (!observer) return;
       observer.disconnect();
       observer = null;

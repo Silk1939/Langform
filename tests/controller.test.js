@@ -454,3 +454,49 @@ test("während des Scrollens bleibt die Karte, danach verschwindet sie", async f
   assert.equal(item.isConnected, false);
   assert.equal(marked(item), true);
 });
+
+test("während ein Watch-Video läuft, fasst der Shorts-Scan das DOM nicht an, das Stylesheet bleibt", async function () {
+  const ctx = boot({
+    url: "https://m.youtube.com/watch?v=abcdefghijk",
+    html: `<!DOCTYPE html><html><body><ytm-player><video id="v"></video></ytm-player><div id="related"></div></body></html>`,
+    enabled: true,
+  });
+  await delay(20);
+  const win = ctx.win;
+  const doc = win.document;
+  const video = doc.getElementById("v");
+  let paused = true;
+  Object.defineProperty(video, "paused", { configurable: true, get: function () { return paused; } });
+  paused = false;
+  const hide = ns.hide;
+  const original = hide.scan;
+  let scans = 0;
+  hide.scan = function () {
+    scans += 1;
+    return original.apply(this, arguments);
+  };
+  try {
+    const item = doc.createElement("ytm-compact-video-renderer");
+    const link = doc.createElement("a");
+    link.setAttribute("href", "/shorts/beim-abspielen");
+    item.appendChild(link);
+    doc.getElementById("related").appendChild(item);
+    win.dispatchEvent(new win.Event("yt-navigate-finish"));
+    await delay(600);
+    assert.equal(scans, 0);
+    assert.equal(item.isConnected, true);
+    assert.equal(marked(item), false);
+    assert.ok(doc.getElementById(hide.STYLE_ID), "das Stylesheet versteckt Shorts weiter");
+    assert.match(doc.getElementById(hide.STYLE_ID).textContent, /ytm-compact-video-renderer:has\([^{]*a\[href\^="\/shorts\/"\]/);
+
+    paused = true;
+    video.dispatchEvent(new win.Event("pause"));
+    await delay(600);
+    assert.ok(scans >= 1);
+    assert.equal(item.isConnected, false);
+    assert.equal(video.isConnected, true);
+    assert.equal(video.getAttribute("style"), null);
+  } finally {
+    hide.scan = original;
+  }
+});
