@@ -256,6 +256,8 @@
     if (el.tagName === "HTML" || el.tagName === "BODY" || el.tagName === "HEAD") return;
     if (isPlayerChrome(el) || isSearchControl(el) || isChapterUi(el)) return;
     if (el.getAttribute(MARK) !== "1") {
+      // Taking a playing video out of the document pauses it.
+      if (el.querySelector && el.querySelector("video, #movie_player, ytm-player, ytd-player")) return;
       el.setAttribute(MARK, "1");
       if (el.classList) el.classList.add(HIDDEN_CLASS);
       if (el.style && el.style.setProperty) el.style.setProperty("display", "none", "important");

@@ -286,7 +286,13 @@ test("Kapitellabel wechselt nur mit dem Kapitelindex", function () {
   assert.equal(label.textContent, "Schluss");
 });
 
-test("AirPlay sitzt in der Steuerzeile neben Untertiteln und Zahnrad, Cast bleibt unberührt", function () {
+function placeBox(el, left, top, width, height) {
+  el.getBoundingClientRect = function () {
+    return { left: left, top: top, width: width, height: height, right: left + width, bottom: top + height };
+  };
+}
+
+function controlRowDom() {
   const dom = new JSDOM(
     `<!DOCTYPE html><body>
       <ytm-player id="player">
@@ -301,26 +307,92 @@ test("AirPlay sitzt in der Steuerzeile neben Untertiteln und Zahnrad, Cast bleib
     { url: "https://m.youtube.com/watch?v=abcdefghijk" }
   );
   const doc = dom.window.document;
+  placeBox(doc.getElementById("cast"), 246, 8, 48, 48);
+  placeBox(doc.getElementById("cc"), 294, 8, 48, 48);
+  placeBox(doc.getElementById("gear"), 342, 8, 48, 48);
+  return dom;
+}
+
+test("AirPlay liegt auf YouTubes Steuerzeile, ohne einen Knoten in die Zeile zu setzen", function () {
+  const dom = controlRowDom();
+  const doc = dom.window.document;
   const video = doc.getElementById("v");
   let picked = 0;
   video.webkitShowPlaybackTargetPicker = function () { picked += 1; };
-  const castBefore = doc.getElementById("cast-slot").outerHTML;
+  const rowBefore = doc.getElementById("row").outerHTML;
   const button = chapters.ensureAirPlay(dom.window);
   assert.ok(button);
   assert.equal(button.getAttribute("aria-label"), "AirPlay");
-  assert.equal(button.parentNode, doc.getElementById("row"));
-  assert.equal(button.nextElementSibling, doc.getElementById("gear-slot"));
-  assert.equal(button.previousElementSibling, doc.getElementById("cc-slot"));
-  assert.equal(doc.getElementById("cast-slot").outerHTML, castBefore);
+  assert.equal(button.parentNode, doc.body);
+  assert.equal(doc.getElementById("row").outerHTML, rowBefore);
+  assert.equal(doc.getElementById("player").contains(button), false);
+  // Same line as CC, left of the group that starts with Cast.
+  assert.equal(button.style.position, "fixed");
+  assert.equal(button.style.top, "8px");
+  assert.equal(button.style.left, 246 - 48 - 4 + "px");
   assert.equal(chapters.ensureAirPlay(dom.window), button);
   assert.equal(doc.querySelectorAll("#langform-airplay").length, 1);
   button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
   assert.equal(picked, 1);
   assert.equal(video.getAttribute("style"), null);
+  assert.equal(doc.getElementById("row").outerHTML, rowBefore);
 
   dom.reconfigure({ url: "https://m.youtube.com/" });
   assert.equal(chapters.ensureAirPlay(dom.window), null);
   assert.equal(doc.getElementById("langform-airplay"), null);
+});
+
+test("AirPlay nimmt den Picker des Players und verschwindet mit YouTubes Leiste", function () {
+  const dom = controlRowDom();
+  const doc = dom.window.document;
+  const player = doc.getElementById("player");
+  player.id = "movie_player";
+  let fromPlayer = 0;
+  let fromVideo = 0;
+  player.showAirplayPicker = function () { fromPlayer += 1; };
+  doc.getElementById("v").webkitShowPlaybackTargetPicker = function () { fromVideo += 1; };
+  const button = chapters.ensureAirPlay(dom.window);
+  button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  assert.equal(fromPlayer, 1);
+  assert.equal(fromVideo, 0);
+
+  doc.getElementById("row").style.opacity = "0";
+  assert.equal(chapters.ensureAirPlay(dom.window), button);
+  assert.equal(button.style.visibility, "hidden");
+  assert.equal(button.style.pointerEvents, "none");
+  doc.getElementById("row").style.opacity = "1";
+  chapters.ensureAirPlay(dom.window);
+  assert.equal(button.style.visibility, "");
+  assert.equal(doc.getElementById("cast").isConnected, true);
+});
+
+test("YouTubes Cast-Knopf im Player wird weder versteckt noch entfernt", function () {
+  const hide = require("./helpers").ns.hide;
+  const dom = controlRowDom();
+  const doc = dom.window.document;
+  doc.body.insertAdjacentHTML(
+    "beforeend",
+    '<ytm-rich-item-renderer id="short"><a href="/shorts/abc">Kurz</a></ytm-rich-item-renderer>'
+  );
+  hide.scan(doc, "https://m.youtube.com/watch?v=abcdefghijk", { remove: true });
+  assert.equal(doc.getElementById("short"), null);
+  const cast = doc.getElementById("cast");
+  assert.equal(cast.isConnected, true);
+  assert.equal(cast.hasAttribute(hide.MARK), false);
+  assert.equal(cast.closest(".shorts-ausblenden-hidden"), null);
+  assert.doesNotMatch(hide.cssText(), /cast|mdx|Fernseher|Übertragen/i);
+});
+
+test("ein Shorts-Eintrag, der den Player enthält, bleibt im DOM", function () {
+  const hide = require("./helpers").ns.hide;
+  const dom = new JSDOM(
+    `<!DOCTYPE html><body><ytm-rich-item-renderer id="item"><a href="/shorts/abc">Kurz</a><ytm-player><video></video></ytm-player></ytm-rich-item-renderer></body>`,
+    { url: "https://m.youtube.com/watch?v=abcdefghijk" }
+  );
+  const doc = dom.window.document;
+  hide.scan(doc, "https://m.youtube.com/watch?v=abcdefghijk", { remove: true });
+  assert.ok(doc.getElementById("item"));
+  assert.equal(doc.querySelectorAll("video").length, 1);
 });
 
 test("ohne Steuerzeile liegt kein loser AirPlay-Knopf auf der Seite", function () {

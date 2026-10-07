@@ -978,22 +978,98 @@
     return list;
   }
 
-  /** The slot of the control row that holds the gear, and the row itself. */
-  function controlSlot(controls) {
+  /** The element that holds both CC and the gear. Only read, never written. */
+  function controlRow(controls) {
     var gear = controls.settings;
     var cc = controls.caption;
     if (gear && cc) {
       var gearChain = ancestorsOf(gear);
       var ccChain = ancestorsOf(cc);
       for (var i = 1; i < gearChain.length; i++) {
-        if (ccChain.indexOf(gearChain[i]) !== -1) {
-          return { row: gearChain[i], before: gearChain[i - 1] };
-        }
+        if (ccChain.indexOf(gearChain[i]) !== -1) return gearChain[i];
       }
     }
-    if (gear && gear.parentNode) return { row: gear.parentNode, before: gear };
-    if (cc && cc.parentNode) return { row: cc.parentNode, before: cc.nextSibling };
-    return null;
+    var one = cc || gear;
+    return one ? ancestorsOf(one)[1] || null : null;
+  }
+
+  // YouTube fades its chrome with opacity on an ancestor, not on the button.
+  function chromeShown(el) {
+    var node = el;
+    var guard = 0;
+    while (node && guard++ < 30) {
+      if (node.nodeType === 1) {
+        if (elementHidden(node)) return false;
+        var view = node.ownerDocument && node.ownerDocument.defaultView;
+        try {
+          var opacity = parseFloat(view.getComputedStyle(node).opacity);
+          if (isFinite(opacity) && opacity < 0.35) return false;
+        } catch (err) {
+          /* a detached node */
+        }
+      }
+      var rootNode = node.getRootNode && node.getRootNode();
+      node = node.parentNode && node.parentNode.nodeType === 1 ? node.parentNode : (rootNode && rootNode.host) || null;
+    }
+    return true;
+  }
+
+  /** Left edge and line of the control group around CC, measured from YouTube's buttons. */
+  function controlLine(controls) {
+    var anchor = controls.caption || controls.settings;
+    var box = anchor && boxOf(anchor);
+    if (!box || box.width < 8 || box.height < 8 || !chromeShown(anchor)) return null;
+    var left = box.left;
+    var middle = box.top + box.height / 2;
+    var row = controlRow(controls);
+    var stack = row ? [row] : [];
+    var seen = 0;
+    while (stack.length && seen++ < 400) {
+      var node = stack.pop();
+      if (!node) continue;
+      if (node.nodeType === 1) {
+        if (node.tagName === "VIDEO" || node.id === AIRPLAY_ID) continue;
+        if (node.tagName === "BUTTON" || node.getAttribute("role") === "button") {
+          var other = boxOf(node);
+          if (other && other.width > 4 && other.height > 4 && Math.abs(other.top + other.height / 2 - middle) < box.height / 2) {
+            left = Math.min(left, other.left);
+          }
+        }
+        if (node.shadowRoot) stack.push(node.shadowRoot);
+      }
+      var kids = node.children;
+      if (kids) {
+        for (var i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+      }
+    }
+    return { left: left, middle: middle, side: box.height >= 24 && box.height <= 64 ? Math.round(box.height) : 48 };
+  }
+
+  function hideAirPlay(button) {
+    if (!button) return;
+    if (button.style.visibility !== "hidden") button.style.visibility = "hidden";
+    if (button.style.pointerEvents !== "none") button.style.pointerEvents = "none";
+  }
+
+  function openRoutePicker(doc) {
+    var movie = doc.getElementById("movie_player");
+    if (movie && typeof movie.showAirplayPicker === "function") {
+      try {
+        movie.showAirplayPicker();
+        return;
+      } catch (err) {
+        /* fall back to the element */
+      }
+    }
+    var current = playerRoot(doc);
+    var target = (current && current.querySelector("video")) || doc.querySelector("video");
+    if (target && typeof target.webkitShowPlaybackTargetPicker === "function") {
+      try {
+        target.webkitShowPlaybackTargetPicker();
+      } catch (err2) {
+        /* WebKit refuses the picker outside a user gesture */
+      }
+    }
   }
 
   var AIRPLAY_ICON =
@@ -1026,8 +1102,20 @@
       if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
       return null;
     }
-    var slot = controlSlot(controls);
-    if (!slot || !slot.row) return null;
+    // YouTube's control row is rendered reactively. A foreign node inside it
+    // broke the row and took the Cast button with it, so AirPlay is a layer
+    // of its own in body, lined up with the row and only shown with it.
+    var line = controlLine(controls);
+    if (!line) {
+      hideAirPlay(existing);
+      return existing || null;
+    }
+    var side = line.side;
+    var left = Math.round(line.left - side - 4);
+    if (left < 8) {
+      hideAirPlay(existing);
+      return existing || null;
+    }
     var button = existing;
     if (!button) {
       button = doc.createElement("button");
@@ -1040,29 +1128,23 @@
       button.addEventListener("click", function (event) {
         if (event.preventDefault) event.preventDefault();
         if (event.stopPropagation) event.stopPropagation();
-        var current = playerRoot(doc);
-        var target = (current && current.querySelector("video")) || doc.querySelector("video");
-        if (target && typeof target.webkitShowPlaybackTargetPicker === "function") {
-          try {
-            target.webkitShowPlaybackTargetPicker();
-          } catch (err) {
-            /* WebKit refuses the picker outside a user gesture */
-          }
-        }
+        openRoutePicker(doc);
       });
     }
-    var gearBox = controls.settings ? boxOf(controls.settings) : null;
-    var side = gearBox && gearBox.width >= 24 && gearBox.width <= 64 ? Math.round(gearBox.width) : 48;
-    var css = "display:inline-flex;align-items:center;justify-content:center;flex:none;width:" + side + "px;height:" + side +
-      "px;margin:0;padding:0;border:0;background:transparent;color:#fff;cursor:pointer;";
-    if (button.getAttribute("data-langform-side") !== String(side)) {
-      button.style.cssText = css;
-      button.setAttribute("data-langform-side", String(side));
+    var top = Math.round(line.middle - side / 2);
+    var place = side + "|" + left + "|" + top;
+    if (button.getAttribute("data-langform-place") !== place) {
+      button.style.cssText =
+        "position:fixed;left:" + left + "px;top:" + top + "px;width:" + side + "px;height:" + side +
+        "px;display:flex;align-items:center;justify-content:center;margin:0;padding:0;border:0;" +
+        "background:transparent;color:#fff;cursor:pointer;z-index:2147483000;";
+      button.setAttribute("data-langform-place", place);
+    } else {
+      if (button.style.visibility === "hidden") button.style.visibility = "";
+      if (button.style.pointerEvents === "none") button.style.pointerEvents = "";
     }
-    var before = slot.before && slot.before.parentNode === slot.row ? slot.before : null;
-    if (button.parentNode !== slot.row || button.nextSibling !== before) {
-      slot.row.insertBefore(button, before);
-    }
+    var host = doc.body || doc.documentElement;
+    if (button.parentNode !== host) host.appendChild(button);
     return button;
   }
 
@@ -1223,6 +1305,7 @@
     win.addEventListener("popstate", onPageChange);
     win.document.addEventListener("scroll", function () {
       if (!onWatchPath(win)) return;
+      if (!win.__langformChapterScrolling) hideAirPlay(win.document.getElementById(AIRPLAY_ID));
       win.__langformChapterScrolling = true;
       if (scrollTimer) win.clearTimeout(scrollTimer);
       scrollTimer = win.setTimeout(function () {
@@ -1242,18 +1325,30 @@
       var shown = root && root.getAttribute("data-langform-chapter-ui");
       var placedChip = win.document.getElementById(CHIP_ID);
       var placed = shown === "native" || (placedChip && placedChip.getAttribute("data-langform-chip-placed") === "1");
-      var airplay = win.document.getElementById(AIRPLAY_ID);
-      // YouTube builds the control row on the first tap; place AirPlay then.
-      if (!airplay || !airplay.isConnected) {
-        [150, 450].forEach(function (ms) {
-          win.setTimeout(function () {
-            var placedAirPlay = win.document.getElementById(AIRPLAY_ID);
-            if (!placedAirPlay || !placedAirPlay.isConnected) ensureAirPlay(win);
-          }, ms);
-        });
-      }
+      followControls();
       if (!shown || !placed) schedule();
     }, { capture: true, passive: true });
+    // A tap shows YouTube's chrome and it fades out a few seconds later.
+    // AirPlay follows it for that long, reading the row and writing only our button.
+    var followTimer = 0;
+    var followTicks = 0;
+    function followControls() {
+      followTicks = 0;
+      if (followTimer) return;
+      followTimer = win.setInterval(function () {
+        followTicks += 1;
+        if (followTicks > 16 || !onWatchPath(win)) {
+          win.clearInterval(followTimer);
+          followTimer = 0;
+        }
+        if (win.__langformChapterScrolling) return;
+        try {
+          ensureAirPlay(win);
+        } catch (err) {
+          /* the row can be rebuilt while we read it */
+        }
+      }, 350);
+    }
   }
 
   function install(win) {
