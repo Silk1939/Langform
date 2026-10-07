@@ -229,17 +229,37 @@ test("Zeitstempel desselben Videos sucht, statt zu navigieren", async function (
   assert.equal(plain.defaultPrevented, false);
 
   ctx.win.history.pushState({}, "", "/watch?v=abcdefghijk&t=1m23s");
-  assert.equal(ctx.win.history.length, before);
-  assert.equal(ctx.win.location.href, href);
-  assert.deepEqual(sought, [83, 724, 90, 83]);
+  assert.equal(ctx.win.history.length, before + 1);
+  assert.equal(ctx.win.location.search.includes("t=1m23s"), true);
+  assert.deepEqual(sought, [83, 724, 90]);
 
   ctx.win.history.replaceState({ t: 4 }, "", "/watch?v=abcdefghijk&start=4");
-  assert.equal(ctx.win.history.length, before);
-  assert.equal(ctx.win.location.href, href);
+  assert.equal(ctx.win.history.length, before + 1);
+  assert.equal(ctx.win.location.search.includes("start=4"), true);
+  assert.deepEqual(sought, [83, 724, 90]);
 
   ctx.win.history.pushState({ next: 1 }, "", "/watch?v=bbcdefghijk&t=10");
-  assert.equal(ctx.win.history.length, before + 1);
+  assert.equal(ctx.win.history.length, before + 2);
   assert.equal(ctx.win.location.search.includes("bbcdefghijk"), true);
+  assert.deepEqual(sought, [83, 724, 90]);
+});
+
+test("replaceState derselben Watch-URL mit t=1 sucht nicht", async function () {
+  const ctx = boot({
+    url: "https://m.youtube.com/watch?v=abcdefghijk",
+    html: `<!DOCTYPE html><body><div id="movie_player"></div><video id="v"></video></body>`,
+    enabled: true,
+  });
+  await delay(20);
+  const player = ctx.win.document.getElementById("movie_player");
+  const sought = [];
+  player.seekTo = function (seconds) { sought.push(seconds); };
+  const before = ctx.win.history.length;
+  ctx.win.history.replaceState({}, "", "/watch?v=abcdefghijk&t=1");
+  assert.deepEqual(sought, []);
+  assert.equal(ctx.win.history.length, before);
+  assert.equal(ctx.win.location.pathname, "/watch");
+  assert.equal(ctx.win.location.search.includes("t=1"), true);
 });
 
 test("Startseiten-Navigation wird nicht in ein Watch-replace umgeschrieben", async function () {

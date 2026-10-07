@@ -321,9 +321,21 @@
     return picked;
   }
 
+  function playbackJustOpened(doc) {
+    if (!doc || !doc.getElementsByTagName) return true;
+    var videos = doc.getElementsByTagName("video");
+    if (!videos.length) return true;
+    for (var i = 0; i < videos.length; i++) {
+      var time = Number(videos[i].currentTime);
+      if (isFinite(time) && time >= 1) return false;
+    }
+    return true;
+  }
+
   function seekTo(win, seconds) {
     var doc = win && win.document;
-    if (!doc || seconds == null || !isFinite(seconds) || seconds < 0) return false;
+    if (!doc || seconds == null || !isFinite(seconds) || seconds <= 0) return false;
+    if (seconds <= 1 && playbackJustOpened(doc)) return false;
     var movie = doc.getElementById("movie_player");
     if (movie && movie.tagName !== "VIDEO" && typeof movie.seekTo === "function") {
       try {
@@ -376,11 +388,21 @@
     bar.removeAttribute("data-langform-chapter-sig");
   }
 
+  function barTooTall(bar) {
+    if (!bar || typeof bar.getBoundingClientRect !== "function") return false;
+    try {
+      var rect = bar.getBoundingClientRect();
+      return !!(rect && rect.height > 24);
+    } catch (err) {
+      return false;
+    }
+  }
+
   function drawChapterBar(bar, fractions, seek) {
     if (!bar || bar.tagName === "VIDEO") return null;
     var doc = bar.ownerDocument;
     clearChapterBar(bar);
-    if (!fractions || fractions.length < 2 || barHasNativeGaps(bar)) return null;
+    if (!fractions || fractions.length < 2 || barHasNativeGaps(bar) || barTooTall(bar)) return null;
     var view = doc.defaultView;
     try {
       if (view && view.getComputedStyle(bar).position === "static") bar.style.position = "relative";
@@ -399,10 +421,7 @@
       gap.setAttribute("role", "button");
       gap.setAttribute("aria-label", fractions[i].title);
       var left = (fractions[i].fraction * 100).toFixed(4) + "%";
-      gap.style.cssText = "position:absolute;top:0;bottom:0;width:14px;margin-left:-7px;left:" + left + ";pointer-events:auto;background:transparent;";
-      var tick = doc.createElement("div");
-      tick.style.cssText = "position:absolute;top:0;bottom:0;left:6px;width:2px;background:#000;pointer-events:none;";
-      gap.appendChild(tick);
+      gap.style.cssText = "position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;left:" + left + ";pointer-events:auto;background:#000;";
       gap.addEventListener("click", function (event) {
         if (event.preventDefault) event.preventDefault();
         if (event.stopPropagation) event.stopPropagation();
@@ -427,7 +446,7 @@
   }
 
   function bindScrub(bar, doc) {
-    if (bar.getAttribute("data-langform-scrub") === "1") return;
+    if (!bar || bar.getAttribute("data-langform-scrub") === "1" || barTooTall(bar)) return;
     bar.setAttribute("data-langform-scrub", "1");
     function ratioFrom(event) {
       var rect = bar.getBoundingClientRect();

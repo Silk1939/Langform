@@ -209,8 +209,20 @@
       return seconds;
     }
 
+    function playbackJustOpened() {
+      var videos = doc.getElementsByTagName("video");
+      if (!videos.length) return true;
+      for (var i = 0; i < videos.length; i++) {
+        var time = Number(videos[i].currentTime);
+        if (isFinite(time) && time >= 1) return false;
+      }
+      return true;
+    }
+
     function seekPlayer(seconds) {
-      if (seconds == null || !isFinite(seconds) || seconds < 0) return false;
+      if (seconds == null || !isFinite(seconds) || seconds <= 0) return false;
+      // A t=0 or t=1 written as playback starts is not a chapter the user chose.
+      if (seconds <= 1 && playbackJustOpened()) return false;
       var movie = doc.getElementById("movie_player");
       var players = [];
       if (movie) players.push(movie);
@@ -235,14 +247,6 @@
         }
       }
       return false;
-    }
-
-    function consumeTimestamp(url) {
-      if (!enabled) return false;
-      var seconds = sameVideoTimestamp(url);
-      if (seconds == null) return false;
-      seekPlayer(seconds);
-      return true;
     }
 
     function anchorFromEvent(event) {
@@ -324,7 +328,6 @@
 
       if (typeof nativePush === "function") {
         win.history.pushState = function (state, title, url) {
-          if (consumeTimestamp(url)) return;
           // The Startseite stays a Startseite. Never rewrite it onto the watch URL.
           if (homeNavigation(url)) {
             var homePush = nativePush.apply(win.history, arguments);
@@ -338,7 +341,6 @@
       }
       if (typeof nativeReplace === "function") {
         win.history.replaceState = function (state, title, url) {
-          if (consumeTimestamp(url)) return;
           if (homeNavigation(url)) {
             var homeReplace = nativeReplace.apply(win.history, arguments);
             scheduleNavigate();
@@ -405,10 +407,6 @@
       win.addEventListener("yt-navigate-start", function (event) {
         var detail = event && event.detail;
         var url = logic.extractNavUrl(detail);
-        if (consumeTimestamp(url)) {
-          if (event && event.cancelable && event.preventDefault) event.preventDefault();
-          return;
-        }
         if (url && logic.isHomeHref(url, win.location.href)) return;
         var key = destinationKey(detail);
         if (key) {
