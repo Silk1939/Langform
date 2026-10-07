@@ -26,6 +26,23 @@ struct LangformRoot: View {
                 reloadToken: reloadToken,
                 goBackToken: goBackToken
             )
+            .overlay(alignment: .topLeading) {
+                if watchPage && !unreachable {
+                    Button {
+                        goBackToken += 1
+                    } label: {
+                        Image(systemName: "chevron.backward")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(Color.white)
+                            .frame(width: 44, height: 44)
+                            .background(Color.black.opacity(0.55), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 10)
+                    .padding(.top, 10)
+                    .accessibilityLabel("Zurück")
+                }
+            }
             if canGoBack && !watchPage && !unreachable {
                 Button {
                     goBackToken += 1

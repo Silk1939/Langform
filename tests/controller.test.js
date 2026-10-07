@@ -326,6 +326,28 @@ test("Suchformular gilt nicht als Shorts-Steuerung", async function () {
   assert.equal(click.defaultPrevented, false);
 });
 
+test("Startseite unten lädt die Home-URL, wenn der Knopf nichts tut", async function () {
+  const ctx = boot({
+    url: "https://m.youtube.com/watch?v=abcdefghijk",
+    html: `<!DOCTYPE html><body>
+      <ytm-pivot-bar-renderer>
+        <ytm-pivot-bar-item-renderer id="home" aria-label="Startseite">
+          <span id="home-label">Startseite</span>
+        </ytm-pivot-bar-item-renderer>
+      </ytm-pivot-bar-renderer>
+    </body>`,
+    enabled: true,
+  });
+  await delay(20);
+  assert.deepEqual(ctx.redirects, []);
+  ctx.win.document.getElementById("home-label").dispatchEvent(
+    new ctx.win.MouseEvent("click", { bubbles: true, cancelable: true })
+  );
+  assert.deepEqual(ctx.redirects, []);
+  await delay(400);
+  assert.deepEqual(ctx.redirects, ["https://m.youtube.com/"]);
+});
+
 test("während des Scrollens bleibt die Karte, danach verschwindet sie", async function () {
   const ctx = boot({
     url: "https://www.youtube.com/",

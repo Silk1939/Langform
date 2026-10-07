@@ -55,8 +55,9 @@ test("Popup und README sprechen Deutsch und nennen die Grenzen", function () {
 test("die App setzt kein eigenes Layout auf den YouTube-Player", function () {
   assert.equal(fs.existsSync(path.join(root, "ios/Langform/Langform/PlayerFrame.js")), false);
   const app = fs.readFileSync(path.join(root, "ios/Langform/Langform/LangformApp.swift"), "utf8");
-  assert.match(app, /watchPage/);
-  assert.doesNotMatch(app, /topLeading/);
+  assert.match(app, /watchPage && !unreachable/);
+  assert.match(app, /overlay\(alignment: \.topLeading\)/);
+  assert.match(app, /canGoBack && !watchPage/);
   assert.match(app, /bottomLeading/);
   assert.match(app, /Color\.black\.ignoresSafeArea/);
   assert.doesNotMatch(app, /YouTubeWebView[\s\S]{0,280}ignoresSafeArea/);

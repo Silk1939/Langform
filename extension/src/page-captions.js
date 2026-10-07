@@ -219,6 +219,52 @@
     return String(el.getAttribute("class") || "");
   }
 
+  function boxOf(el) {
+    if (!el || typeof el.getBoundingClientRect !== "function") return null;
+    var rect;
+    try {
+      rect = el.getBoundingClientRect();
+    } catch (err) {
+      return null;
+    }
+    if (!rect) return null;
+    var top = Number(rect.top) || 0;
+    var left = Number(rect.left) || 0;
+    var width = Number(rect.width) || 0;
+    var height = Number(rect.height) || 0;
+    return {
+      top: top,
+      left: left,
+      width: width,
+      height: height,
+      bottom: Number(rect.bottom) || top + height,
+      right: Number(rect.right) || left + width,
+    };
+  }
+
+  function elementHidden(el) {
+    if (!el || el.nodeType !== 1 || el.hidden) return true;
+    var view = el.ownerDocument && el.ownerDocument.defaultView;
+    if (!view || typeof view.getComputedStyle !== "function") return false;
+    try {
+      var css = view.getComputedStyle(el);
+      if (css && (css.display === "none" || css.visibility === "hidden")) return true;
+    } catch (err) {
+      /* a detached node */
+    }
+    return false;
+  }
+
+  function visiblyShown(el) {
+    var node = el;
+    var guard = 0;
+    while (node && node.nodeType === 1 && guard++ < 14) {
+      if (elementHidden(node)) return false;
+      node = node.parentElement;
+    }
+    return true;
+  }
+
   function seekBarScore(el) {
     if (!el || el.nodeType !== 1 || el.tagName === "VIDEO") return 0;
     var tag = el.tagName;
@@ -232,30 +278,47 @@
 
   function findSeekBar(doc) {
     if (!doc) return null;
-    var root = doc.querySelector("ytm-watch, ytd-watch-flexy, #movie_player, ytm-player, ytd-player, #player") || doc.body;
-    if (!root) return null;
-    var best = null;
-    var bestScore = 99;
-    var stack = [root];
-    var seen = new Set();
-    while (stack.length) {
-      var node = stack.pop();
-      if (!node || seen.has(node)) continue;
-      seen.add(node);
-      if (node.nodeType === 1 && node.tagName !== "VIDEO") {
-        var score = seekBarScore(node);
-        if (score && score < bestScore) {
-          best = node;
-          bestScore = score;
+    var time = findTimePill(doc);
+    var timeBox = time && boxOf(time);
+    var live = !!(timeBox && timeBox.width > 8 && timeBox.height > 4);
+    if (live) {
+      var best = null;
+      var bestDist = Infinity;
+      var bestWidth = -1;
+      var bestHeight = Infinity;
+      queryDeep(doc, function (el) {
+        if (el.getAttribute && el.getAttribute(CHAPTER_LAYER)) return false;
+        if (!visiblyShown(el)) return false;
+        var box = boxOf(el);
+        if (!box || box.width < 80 || box.height < 1 || box.height > 14) return false;
+        if (box.top < timeBox.bottom - 8) return false;
+        if (box.top > timeBox.bottom + 36) return false;
+        if (box.width < timeBox.width + 24) return false;
+        var dist = Math.abs(box.top - timeBox.bottom);
+        var nearer = dist + 0.5 < bestDist;
+        var sameBand = Math.abs(dist - bestDist) <= 0.5;
+        if (nearer || (sameBand && (box.width > bestWidth || (box.width === bestWidth && box.height < bestHeight)))) {
+          best = el;
+          bestDist = dist;
+          bestWidth = box.width;
+          bestHeight = box.height;
         }
-        if (node.shadowRoot) stack.push(node.shadowRoot);
-        var children = node.children;
-        if (children) {
-          for (var i = children.length - 1; i >= 0; i--) stack.push(children[i]);
-        }
-      }
+        return false;
+      });
+      if (best) return best;
     }
-    return best;
+    var picked = null;
+    var pickedScore = 99;
+    queryDeep(doc, function (el) {
+      if (!visiblyShown(el)) return false;
+      var score = seekBarScore(el);
+      if (score && score < pickedScore) {
+        picked = el;
+        pickedScore = score;
+      }
+      return false;
+    });
+    return picked;
   }
 
   function seekTo(win, seconds) {
@@ -416,7 +479,14 @@
       var node = stack.pop();
       if (!node || seen.has(node)) continue;
       seen.add(node);
-      if (node.nodeType !== 1 || node.tagName === "VIDEO") continue;
+      if (node.nodeType !== 1) {
+        var fragmentKids = node.children;
+        if (fragmentKids) {
+          for (var f = fragmentKids.length - 1; f >= 0; f--) stack.push(fragmentKids[f]);
+        }
+        continue;
+      }
+      if (node.tagName === "VIDEO" || node.tagName === "SCRIPT" || node.tagName === "STYLE") continue;
       if (node.id === CHIP_ID || node.id === SHEET_ID) continue;
       if (match(node)) return node;
       if (node.shadowRoot) stack.push(node.shadowRoot);
@@ -491,7 +561,16 @@
     if (!chip || !sheet) return null;
     if (hiddenByUs(chip)) unhide(chip);
     if (hiddenByUs(sheet)) unhide(sheet);
-    if (!nativeChipShowsTitle(chip)) return null;
+    if (!nativeChipShowsTitle(chip) || !visiblyShown(chip)) return null;
+    var time = findTimePill(doc);
+    var timeBox = time && boxOf(time);
+    if (timeBox && timeBox.width > 8 && timeBox.height > 4) {
+      var chipBox = boxOf(chip);
+      if (!chipBox || chipBox.width < 8 || chipBox.height < 8) return null;
+      var midTime = timeBox.top + timeBox.height / 2;
+      var midChip = chipBox.top + chipBox.height / 2;
+      if (Math.abs(midTime - midChip) > 40) return null;
+    }
     return { chip: chip, sheet: sheet };
   }
 
@@ -506,14 +585,18 @@
 
   function findTimePill(doc) {
     var best = null;
-    var bestChildren = Infinity;
+    var bestRank = Infinity;
     queryDeep(doc, function (el) {
       var text = String(el.textContent || "").replace(/\s+/g, " ").trim();
-      if (!/^\d{1,2}:\d{2}(?::\d{2})?\s*\/\s*\d{1,2}:\d{2}/.test(text) || text.length > 48) return false;
+      if (!/^\d{1,2}:\d{2}(?::\d{2})?\s*\/\s*\d{1,2}:\d{2}/.test(text) || text.length > 40) return false;
+      if (!visiblyShown(el)) return false;
       var kids = el.children ? el.children.length : 0;
-      if (kids < bestChildren) {
+      var box = boxOf(el);
+      var shown = box && box.width > 8 && box.height > 4;
+      var rank = (shown ? 0 : 1000) + kids * 10 + text.length;
+      if (rank < bestRank) {
         best = el;
-        bestChildren = kids;
+        bestRank = rank;
       }
       return false;
     });
@@ -525,9 +608,23 @@
   }
 
   function placeChip(doc, chip) {
+    chip.style.minHeight = "44px";
+    chip.style.minWidth = "44px";
     var time = findTimePill(doc);
     if (time && time.parentNode) {
       if (chip.previousElementSibling !== time) time.insertAdjacentElement("afterend", chip);
+      var timeBox = boxOf(time);
+      if (timeBox && timeBox.width > 8 && timeBox.height > 4) {
+        var width = (doc.documentElement && doc.documentElement.clientWidth) || 390;
+        var left = Math.round(timeBox.right + 8);
+        if (left > width - 48) left = Math.max(8, width - 48);
+        chip.style.position = "fixed";
+        chip.style.left = left + "px";
+        chip.style.top = Math.round(timeBox.top + timeBox.height / 2) + "px";
+        chip.style.transform = "translateY(-50%)";
+        chip.style.margin = "0";
+        chip.style.zIndex = "6";
+      }
       return;
     }
     var bar = findSeekBar(doc);
@@ -617,7 +714,9 @@
       "color:#fff",
       "font:600 13px/1.2 system-ui,sans-serif",
       "vertical-align:middle",
-      "z-index:2",
+      "min-height:44px",
+      "min-width:44px",
+      "z-index:6",
     ].join(";");
     var label = doc.createElement("span");
     label.setAttribute(LABEL_ATTR, "1");
@@ -769,7 +868,8 @@
       fractions = barFractions(chaptersFromPlayer(player), duration);
       if (duration > 0) win.__langformChapterCache = { player: player, duration: duration, fractions: fractions };
     }
-    if (!bar || !bar.isConnected) bar = findSeekBar(doc);
+    var found = findSeekBar(doc);
+    if (!bar || !bar.isConnected || (found && found !== bar)) bar = found || bar;
     win.__langformSeekBar = bar;
     if (!fractions || fractions.length < 2) {
       removeOurChrome(doc);
@@ -787,10 +887,12 @@
     var uiSig = chapterSig(fractions);
     var chip = doc.getElementById(CHIP_ID);
     var marked = doc.documentElement.getAttribute("data-langform-chapter-ui") || "";
-    if (marked === uiSig && chip && chip.isConnected) {
+    var keepNative = marked === "native" && nativeChapterChrome(doc);
+    if (keepNative) {
+      win.__langformNativeHit = keepNative;
+    } else if (marked === uiSig && chip && chip.isConnected) {
+      placeChip(doc, chip);
       if (video) syncChapterUi(doc, fractions, video.currentTime || 0);
-    } else if (marked === "native" && win.__langformNativeHit && win.__langformNativeHit.chip && win.__langformNativeHit.chip.isConnected && nativeChipShowsTitle(win.__langformNativeHit.chip)) {
-      /* YouTube's own chip and sheet stay */
     } else {
       var sheet = doc.getElementById(SHEET_ID);
       var wasOpen = !!(sheet && sheet.style.display !== "none");

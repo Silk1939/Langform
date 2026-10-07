@@ -206,3 +206,61 @@ test("YouTubes eigenes Kapitelblatt bleibt, statt ein zweites zu zeichnen", func
   assert.equal(doc.getElementById("native-chip").classList.contains("shorts-ausblenden-hidden"), false);
   assert.equal(doc.getElementById("native-sheet").isConnected, true);
 });
+
+function setRect(el, box) {
+  const rect = {
+    x: box.left,
+    y: box.top,
+    left: box.left,
+    top: box.top,
+    width: box.width,
+    height: box.height,
+    right: box.left + box.width,
+    bottom: box.top + box.height,
+  };
+  el.getBoundingClientRect = function () { return rect; };
+}
+
+test("die sichtbare mobile Leiste gewinnt gegen die versteckte Desktop-Leiste", function () {
+  const dom = new JSDOM(
+    `<!DOCTYPE html><body>
+      <div class="html5-video-player">
+        <div class="ytp-progress-bar progress-bar-line" id="desktop" style="display:none"></div>
+      </div>
+      <div id="time">17:26 / 24:20</div>
+      <div id="mobile"></div>
+      <video id="v"></video>
+    </body>`,
+    { url: "https://m.youtube.com/watch?v=abcdefghijk" }
+  );
+  const doc = dom.window.document;
+  const time = doc.getElementById("time");
+  const mobile = doc.getElementById("mobile");
+  const desktop = doc.getElementById("desktop");
+  const video = doc.getElementById("v");
+  setRect(time, { left: 12, top: 180, width: 108, height: 22 });
+  setRect(mobile, { left: 0, top: 210, width: 390, height: 3 });
+  setRect(desktop, { left: 0, top: 210, width: 390, height: 3 });
+  assert.equal(chapters.findSeekBar(doc), mobile);
+
+  const list = chapters.chaptersFromPlayer(playerWithChapters());
+  const ui = chapters.renderChapterUi(doc, list, function () {});
+  assert.equal(ui.drawn, true);
+  const chip = doc.getElementById("langform-chapter-chip");
+  assert.equal(chip.previousElementSibling, time);
+  assert.equal(chip.style.minHeight, "44px");
+  assert.equal(chip.style.position, "fixed");
+  assert.equal(chip.style.left, "128px");
+  ui.open();
+  assert.equal(doc.getElementById("langform-chapter-sheet").style.display, "flex");
+  assert.equal(doc.getElementById("langform-chapter-sheet").querySelector("h2").textContent, "Kapitel");
+  const layer = chapters.drawChapterBar(mobile, chapters.barFractions(list, DURATION), function () {});
+  assert.ok(layer);
+  assert.equal(mobile.querySelector("[data-langform-chapters]"), layer);
+  assert.equal(desktop.querySelector("[data-langform-chapters]"), null);
+  assert.equal(video.style.width, "");
+  assert.equal(video.style.height, "");
+  assert.equal(video.style.objectFit, "");
+  assert.equal(video.style.display, "");
+  assert.equal(video.getAttribute("style"), null);
+});

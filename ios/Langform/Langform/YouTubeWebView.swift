@@ -94,7 +94,7 @@ struct YouTubeWebView: UIViewRepresentable {
             if webView.canGoBack {
                 webView.goBack()
             } else if Self.isWatchPage(webView.url) {
-                webView.load(URLRequest(url: Self.homeURL(for: webView.url)))
+                webView.load(URLRequest(url: Self.startURL))
             }
         }
         guard context.coordinator.reloadToken != reloadToken else { return }

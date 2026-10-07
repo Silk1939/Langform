@@ -371,6 +371,34 @@
         };
       }
       doc.addEventListener("click", onTimestampClick, true);
+      doc.addEventListener("click", function (event) {
+        if (!enabled) return;
+        var target = event && event.target;
+        if (target && target.nodeType !== 1) target = target.parentElement;
+        if (!target || !isBottomHomeControl(target)) return;
+        if (logic.isHomeHref(win.location.href, win.location.href)) return;
+        var stamp = win.location.href;
+        setTimeout(function () {
+          if (!enabled) return;
+          if (logic.isHomeHref(win.location.href, stamp)) return;
+          if (win.location.href !== stamp && !onWatchPage()) return;
+          loadHome();
+        }, 350);
+      }, true);
+
+      function isBottomHomeControl(node) {
+        var el = node;
+        var guard = 0;
+        while (el && guard++ < 8) {
+          if (el.nodeType === 1) {
+            var tag = String(el.tagName || "").toLowerCase();
+            var label = String((el.getAttribute && (el.getAttribute("aria-label") || el.getAttribute("title"))) || "").trim();
+            if (/^(startseite|home)$/i.test(label) && tag.indexOf("pivot") !== -1) return true;
+          }
+          el = el.parentElement;
+        }
+        return false;
+      }
       win.addEventListener("popstate", function () {
         scheduleNavigate();
       });
