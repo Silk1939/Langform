@@ -368,6 +368,35 @@ test("Startseite unten lädt die Home-URL, wenn der Knopf nichts tut", async fun
   assert.deepEqual(ctx.redirects, ["https://m.youtube.com/"]);
 });
 
+test("Startseite auf der Watch-Seite hält die Wiedergabe, wenn die App zuhört", async function () {
+  const ctx = boot({
+    url: "https://m.youtube.com/watch?v=abcdefghijk",
+    html: `<!DOCTYPE html><body>
+      <ytm-pivot-bar-renderer>
+        <ytm-pivot-bar-item-renderer id="home" aria-label="Startseite">
+          <span id="home-label">Startseite</span>
+        </ytm-pivot-bar-item-renderer>
+      </ytm-pivot-bar-renderer>
+    </body>`,
+    enabled: true,
+  });
+  await delay(20);
+  const posted = [];
+  ctx.win.webkit = {
+    messageHandlers: {
+      langformMini: {
+        postMessage(body) { posted.push(body); },
+      },
+    },
+  };
+  const click = new ctx.win.MouseEvent("click", { bubbles: true, cancelable: true });
+  ctx.win.document.getElementById("home-label").dispatchEvent(click);
+  assert.equal(click.defaultPrevented, true);
+  assert.deepEqual(posted, [{ op: "mini" }]);
+  await delay(400);
+  assert.deepEqual(ctx.redirects, []);
+});
+
 test("während des Scrollens bleibt die Karte, danach verschwindet sie", async function () {
   const ctx = boot({
     url: "https://www.youtube.com/",

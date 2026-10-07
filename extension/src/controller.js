@@ -297,7 +297,21 @@
       }
     }
 
+    function requestMini() {
+      var handlers = win.webkit && win.webkit.messageHandlers;
+      if (!onWatchPage() || !handlers || !handlers.langformMini || typeof handlers.langformMini.postMessage !== "function") {
+        return false;
+      }
+      try {
+        handlers.langformMini.postMessage({ op: "mini" });
+        return true;
+      } catch (err) {
+        return false;
+      }
+    }
+
     function backOrHome(native, args) {
+      if (requestMini()) return;
       if (win.history.length > 1 && typeof native === "function") {
         return native.apply(win.history, args);
       }
@@ -379,6 +393,11 @@
         if (target && target.nodeType !== 1) target = target.parentElement;
         if (!target || !isBottomHomeControl(target)) return;
         if (logic.isHomeHref(win.location.href, win.location.href)) return;
+        if (requestMini()) {
+          if (event.preventDefault) event.preventDefault();
+          if (event.stopPropagation) event.stopPropagation();
+          return;
+        }
         var stamp = win.location.href;
         setTimeout(function () {
           if (!enabled) return;

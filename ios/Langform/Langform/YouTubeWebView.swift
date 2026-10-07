@@ -5,8 +5,12 @@ struct YouTubeWebView: UIViewRepresentable {
     @Binding var unreachable: Bool
     @Binding var canGoBack: Bool
     @Binding var watchPage: Bool
+    @Binding var miniPlayer: Bool
+    @Binding var videoCrop: CGRect
     var reloadToken: Int
     var goBackToken: Int
+    var enterMiniToken: Int
+    var leaveMiniToken: Int
 
     static let startURL = URL(string: "https://m.youtube.com/")!
 
@@ -43,11 +47,13 @@ struct YouTubeWebView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.allowsInlineMediaPlayback = true
+        configuration.allowsAirPlayForMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         let pagePreferences = WKWebpagePreferences()
         pagePreferences.preferredContentMode = .mobile
         configuration.defaultWebpagePreferences = pagePreferences
         configuration.userContentController.add(context.coordinator, contentWorld: .page, name: "langformSummary")
+        configuration.userContentController.add(context.coordinator, contentWorld: .page, name: "langformMini")
         let source = Self.concatenatedScripts()
         if !source.isEmpty {
             configuration.userContentController.addUserScript(
@@ -76,6 +82,8 @@ struct YouTubeWebView: UIViewRepresentable {
         context.coordinator.onUnreachable = { unreachable = $0 }
         context.coordinator.onCanGoBack = { canGoBack = $0 }
         context.coordinator.onWatchPage = { watchPage = $0 }
+        context.coordinator.onMiniPlayer = { miniPlayer = $0 }
+        context.coordinator.onVideoCrop = { videoCrop = $0 }
         context.coordinator.attach(webView)
         webView.load(URLRequest(url: Self.startURL))
         return webView
@@ -85,6 +93,11 @@ struct YouTubeWebView: UIViewRepresentable {
         context.coordinator.onUnreachable = { unreachable = $0 }
         context.coordinator.onCanGoBack = { canGoBack = $0 }
         context.coordinator.onWatchPage = { watchPage = $0 }
+        context.coordinator.onMiniPlayer = { miniPlayer = $0 }
+        context.coordinator.onVideoCrop = { videoCrop = $0 }
+        if !miniPlayer && context.coordinator.appliedTicket == context.coordinator.pendingTicket {
+            context.coordinator.isMini = false
+        }
         webView.allowsBackForwardNavigationGestures = true
         if webView.customUserAgent != Self.safariUserAgent {
             webView.customUserAgent = Self.safariUserAgent
@@ -96,6 +109,14 @@ struct YouTubeWebView: UIViewRepresentable {
             } else if Self.isWatchPage(webView.url) {
                 webView.load(URLRequest(url: Self.startURL))
             }
+        }
+        if context.coordinator.enterMiniToken != enterMiniToken {
+            context.coordinator.enterMiniToken = enterMiniToken
+            context.coordinator.beginMini(webView)
+        }
+        if context.coordinator.leaveMiniToken != leaveMiniToken {
+            context.coordinator.leaveMiniToken = leaveMiniToken
+            context.coordinator.leavePlayback(webView)
         }
         guard context.coordinator.reloadToken != reloadToken else { return }
         context.coordinator.reloadToken = reloadToken
@@ -113,9 +134,18 @@ struct YouTubeWebView: UIViewRepresentable {
         var onUnreachable: ((Bool) -> Void)?
         var onCanGoBack: ((Bool) -> Void)?
         var onWatchPage: ((Bool) -> Void)?
+        var onMiniPlayer: ((Bool) -> Void)?
+        var onVideoCrop: ((CGRect) -> Void)?
         var reloadToken = 0
         var goBackToken = 0
+        var enterMiniToken = 0
+        var leaveMiniToken = 0
+        var isMini = false
+        var pendingTicket = 0
+        var appliedTicket = 0
         private var triedFallback = false
+        private var allowLeave = false
+        private var leaving = false
         private var switchingAgent = false
         private var canGoBackObservation: NSKeyValueObservation?
         private var urlObservation: NSKeyValueObservation?
@@ -131,11 +161,75 @@ struct YouTubeWebView: UIViewRepresentable {
                 let watch = YouTubeWebView.isWatchPage(webView.url)
                 DispatchQueue.main.async {
                     self?.onWatchPage?(watch)
+                    if !watch {
+                        self?.pendingTicket += 1
+                        self?.isMini = false
+                        self?.leaving = false
+                        self?.onMiniPlayer?(false)
+                    }
                 }
             }
         }
 
+        /// Reads the video element’s box. Does not write width, height, object-fit, or display.
+        func beginMini(_ webView: WKWebView) {
+            guard YouTubeWebView.isWatchPage(webView.url), !isMini else { return }
+            pendingTicket += 1
+            let ticket = pendingTicket
+            let script = """
+            (function () {
+              var v = document.querySelector("#movie_player video, ytm-player video, ytd-player video, video");
+              if (!v || !v.getBoundingClientRect) return null;
+              var r = v.getBoundingClientRect();
+              if (!r || !(r.width > 8) || !(r.height > 8)) return null;
+              return { x: r.x, y: r.y, w: r.width, h: r.height };
+            })()
+            """
+            webView.evaluateJavaScript(script) { [weak self] result, _ in
+                DispatchQueue.main.async {
+                    guard let self, self.pendingTicket == ticket else { return }
+                    self.publishCrop(result)
+                    self.appliedTicket = ticket
+                    self.isMini = true
+                    self.onMiniPlayer?(true)
+                }
+            }
+        }
+
+        func leavePlayback(_ webView: WKWebView) {
+            if leaving { return }
+            leaving = true
+            pendingTicket += 1
+            allowLeave = true
+            isMini = false
+            if webView.canGoBack {
+                webView.goBack()
+            } else if YouTubeWebView.isWatchPage(webView.url) {
+                webView.load(URLRequest(url: YouTubeWebView.startURL))
+            } else {
+                allowLeave = false
+                leaving = false
+            }
+        }
+
+        private func publishCrop(_ result: Any?) {
+            guard let dict = result as? [String: Any] else { return }
+            func length(_ key: String) -> CGFloat? {
+                guard let value = dict[key] as? NSNumber else { return nil }
+                return CGFloat(truncating: value)
+            }
+            guard let x = length("x"), let y = length("y"), let w = length("w"), let h = length("h"),
+                  w > 8, h > 8 else { return }
+            onVideoCrop?(CGRect(x: x, y: y, width: w, height: h))
+        }
+
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "langformMini", let webView = message.webView {
+                Task { @MainActor in
+                    self.beginMini(webView)
+                }
+                return
+            }
             guard message.name == "langformSummary",
                   let body = message.body as? [String: Any],
                   let id = body["id"] as? String,
@@ -177,11 +271,22 @@ struct YouTubeWebView: UIViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            let mainFrame = navigationAction.targetFrame?.isMainFrame ?? (navigationAction.navigationType == .backForward)
+            if mainFrame && navigationAction.navigationType == .backForward && !allowLeave && YouTubeWebView.isWatchPage(webView.url) {
+                decisionHandler(.cancel)
+                beginMini(webView)
+                return
+            }
+            if allowLeave {
+                allowLeave = false
+            }
             decisionHandler(.allow)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             switchingAgent = false
+            allowLeave = false
+            leaving = false
             onUnreachable?(false)
             onCanGoBack?(webView.canGoBack)
             onWatchPage?(YouTubeWebView.isWatchPage(webView.url))
@@ -198,7 +303,12 @@ struct YouTubeWebView: UIViewRepresentable {
 
         private func handleFailure(_ error: Error) {
             let nsError = error as NSError
-            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled { return }
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                allowLeave = false
+                leaving = false
+                return
+            }
+            leaving = false
             switchingAgent = false
             onUnreachable?(true)
         }

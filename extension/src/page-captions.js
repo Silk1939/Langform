@@ -214,6 +214,15 @@
     return found;
   }
 
+  function chapterMark(chapters, seconds) {
+    var current = chapterAtTime(chapters || [], seconds);
+    if (!current || !chapters) return -1;
+    for (var i = 0; i < chapters.length; i++) {
+      if (Math.abs(Number(chapters[i].start) - Number(current.start)) < 0.001) return i;
+    }
+    return -1;
+  }
+
   function classText(el) {
     if (!el || !el.getAttribute) return "";
     return String(el.getAttribute("class") || "");
@@ -643,6 +652,7 @@
         chip.style.transform = "translateY(-50%)";
         chip.style.margin = "0";
         chip.style.zIndex = "6";
+        chip.setAttribute("data-langform-chip-placed", "1");
       }
       return;
     }
@@ -676,22 +686,37 @@
 
   function syncChapterUi(doc, chapters, seconds) {
     if (!doc) return null;
-    var current = chapterAtTime(chapters || [], seconds);
+    var list = chapters || [];
+    var current = chapterAtTime(list, seconds);
+    var mark = chapterMark(list, seconds);
+    var root = doc.documentElement;
+    if (root && root.__langformChapterShown === mark && root.__langformChapterListShown === list) {
+      return current;
+    }
+    if (root) {
+      root.__langformChapterShown = mark;
+      root.__langformChapterListShown = list;
+    }
     var chip = doc.getElementById(CHIP_ID);
     if (chip) {
       var label = chip.querySelector("[" + LABEL_ATTR + "]");
       var title = current ? current.title : "";
-      if (label) label.textContent = title;
-      chip.setAttribute("aria-label", title ? title + ", Kapitel" : "Kapitel");
+      if (label && label.textContent !== title) label.textContent = title;
+      var aria = title ? title + ", Kapitel" : "Kapitel";
+      if (chip.getAttribute("aria-label") !== aria) chip.setAttribute("aria-label", aria);
     }
     var rows = doc.querySelectorAll("[" + ROW_ATTR + "]");
     var currentStart = current ? Number(current.start) : NaN;
     for (var i = 0; i < rows.length; i++) {
       var start = Number(rows[i].getAttribute("data-start"));
       var on = isFinite(currentStart) && Math.abs(start - currentStart) < 0.4;
-      if (on) rows[i].setAttribute("aria-current", "true");
-      else rows[i].removeAttribute("aria-current");
-      rows[i].style.boxShadow = on ? "inset 3px 0 0 #ff2a2a" : "none";
+      if (on) {
+        if (rows[i].getAttribute("aria-current") !== "true") rows[i].setAttribute("aria-current", "true");
+      } else if (rows[i].hasAttribute("aria-current")) {
+        rows[i].removeAttribute("aria-current");
+      }
+      var shadow = on ? "inset 3px 0 0 #ff2a2a" : "none";
+      if (rows[i].style.boxShadow !== shadow) rows[i].style.boxShadow = shadow;
     }
     return current;
   }
@@ -863,14 +888,40 @@
     return path === "/watch" || path.indexOf("/watch/") === 0;
   }
 
+  function bindChapterPlayback(win, doc) {
+    var video = doc.querySelector("#movie_player video, ytm-player video, ytd-player video, video");
+    if (!video || video.__langformChapterBound) return;
+    video.__langformChapterBound = true;
+    function onMove() {
+      if (win.__langformChapterScrolling) return;
+      var root = doc.documentElement;
+      var list = (root && root.__langformChapterList) || [];
+      if (list.length < 2) return;
+      if (root.getAttribute("data-langform-chapter-ui") === "native") return;
+      var mark = chapterMark(list, video.currentTime || 0);
+      if (mark === root.__langformChapterShown && root.__langformChapterListShown === list) return;
+      syncChapterUi(doc, list, video.currentTime || 0);
+    }
+    video.addEventListener("timeupdate", onMove);
+    video.addEventListener("seeked", onMove);
+  }
+
+  function stopChapterRetry(win) {
+    if (!win.__langformChapterRetry) return;
+    win.clearInterval(win.__langformChapterRetry);
+    win.__langformChapterRetry = 0;
+  }
+
   function refreshChapters(win) {
     var doc = win.document;
     if (!doc || !doc.documentElement) return;
+    if (win.__langformChapterScrolling) return;
     var bar = win.__langformSeekBar;
     if (!onWatchPath(win)) {
       removeOurChrome(doc);
       if (bar && bar.isConnected) clearChapterBar(bar);
       rememberChapters(doc, []);
+      stopChapterRetry(win);
       return;
     }
     var player = win.ytInitialPlayerResponse;
@@ -887,31 +938,44 @@
       fractions = barFractions(chaptersFromPlayer(player), duration);
       if (duration > 0) win.__langformChapterCache = { player: player, duration: duration, fractions: fractions };
     }
-    var found = findSeekBar(doc);
-    if (!bar || !bar.isConnected || (found && found !== bar)) bar = found || bar;
-    win.__langformSeekBar = bar;
     if (!fractions || fractions.length < 2) {
+      var foundEmpty = findSeekBar(doc);
+      if (!bar || !bar.isConnected || (foundEmpty && foundEmpty !== bar)) bar = foundEmpty || bar;
+      win.__langformSeekBar = bar;
       removeOurChrome(doc);
       if (bar) clearChapterBar(bar);
       rememberChapters(doc, []);
+      stopChapterRetry(win);
       return;
-    }
-    rememberChapters(doc, fractions);
-    if (bar) {
-      bar.__langformOnPreview = function (seconds) { syncChapterUi(doc, fractions, seconds); };
-      var barSig = fractions.map(function (item) { return item.start + ":" + item.title; }).join("|");
-      var drawn = bar.getAttribute("data-langform-chapter-sig") === barSig && (bar.querySelector("[" + CHAPTER_LAYER + "]") || barHasNativeGaps(bar));
-      if (!drawn) drawChapterBar(bar, fractions, function (seconds) { seekTo(win, seconds); });
     }
     var uiSig = chapterSig(fractions);
     var chip = doc.getElementById(CHIP_ID);
     var marked = doc.documentElement.getAttribute("data-langform-chapter-ui") || "";
-    var keepNative = marked === "native" && nativeChapterChrome(doc);
-    if (keepNative) {
-      win.__langformNativeHit = keepNative;
-    } else if (marked === uiSig && chip && chip.isConnected) {
-      placeChip(doc, chip);
-      if (video) syncChapterUi(doc, fractions, video.currentTime || 0);
+    var barSig = fractions.map(function (item) { return item.start + ":" + item.title; }).join("|");
+    var placed = !!(chip && chip.isConnected && chip.getAttribute("data-langform-chip-placed") === "1");
+    var barReady = !!(bar && bar.isConnected && bar.getAttribute("data-langform-chapter-sig") === barSig);
+    if (marked === "native" && nativeChapterChrome(doc)) {
+      win.__langformNativeHit = true;
+      bindChapterPlayback(win, doc);
+      stopChapterRetry(win);
+      return;
+    }
+    if (marked === uiSig && placed && barReady) {
+      bindChapterPlayback(win, doc);
+      stopChapterRetry(win);
+      return;
+    }
+    var found = findSeekBar(doc);
+    if (!bar || !bar.isConnected || (found && found !== bar)) bar = found || bar;
+    win.__langformSeekBar = bar;
+    rememberChapters(doc, fractions);
+    if (bar) {
+      bar.__langformOnPreview = function (seconds) { syncChapterUi(doc, fractions, seconds); };
+      var drawn = bar.getAttribute("data-langform-chapter-sig") === barSig && (bar.querySelector("[" + CHAPTER_LAYER + "]") || barHasNativeGaps(bar));
+      if (!drawn) drawChapterBar(bar, fractions, function (seconds) { seekTo(win, seconds); });
+    }
+    if (marked === uiSig && chip && chip.isConnected) {
+      if (chip.getAttribute("data-langform-chip-placed") !== "1") placeChip(doc, chip);
     } else {
       var sheet = doc.getElementById(SHEET_ID);
       var wasOpen = !!(sheet && sheet.style.display !== "none");
@@ -924,19 +988,10 @@
       if (wasOpen && ui && ui.open) ui.open();
       if (video && ui && !ui.native) syncChapterUi(doc, fractions, video.currentTime || 0);
     }
-    if (video && !video.__langformChapterBound) {
-      video.__langformChapterBound = true;
-      video.addEventListener("timeupdate", function () {
-        var list = doc.documentElement.__langformChapterList || [];
-        if (list.length < 2) return;
-        if (doc.documentElement.getAttribute("data-langform-chapter-ui") === "native") return;
-        syncChapterUi(doc, list, video.currentTime || 0);
-      });
-      video.addEventListener("seeked", function () {
-        var list = doc.documentElement.__langformChapterList || [];
-        if (doc.documentElement.getAttribute("data-langform-chapter-ui") === "native") return;
-        syncChapterUi(doc, list, video.currentTime || 0);
-      });
+    bindChapterPlayback(win, doc);
+    chip = doc.getElementById(CHIP_ID);
+    if ((marked === "native" && nativeChapterChrome(doc)) || (chip && chip.getAttribute("data-langform-chip-placed") === "1" && bar && bar.getAttribute("data-langform-chapter-sig") === barSig)) {
+      stopChapterRetry(win);
     }
   }
 
@@ -944,7 +999,9 @@
     if (!win || !win.document || win.__langformChapters) return;
     win.__langformChapters = true;
     var timer = 0;
+    var scrollTimer = 0;
     function schedule() {
+      if (win.__langformChapterScrolling) return;
       if (timer) win.clearTimeout(timer);
       timer = win.setTimeout(function () {
         timer = 0;
@@ -962,19 +1019,33 @@
     }
     win.addEventListener("yt-navigate-finish", schedule);
     win.addEventListener("popstate", schedule);
+    win.document.addEventListener("scroll", function () {
+      win.__langformChapterScrolling = true;
+      if (scrollTimer) win.clearTimeout(scrollTimer);
+      scrollTimer = win.setTimeout(function () {
+        scrollTimer = 0;
+        win.__langformChapterScrolling = false;
+        schedule();
+      }, 180);
+    }, { capture: true, passive: true });
     win.document.addEventListener("pointerdown", function (event) {
       var sheet = win.document.getElementById(SHEET_ID);
       if (sheet && sheet.style.display !== "none" && event.target && !sheet.contains(event.target)) {
         var chip = win.document.getElementById(CHIP_ID);
         if (!chip || (event.target !== chip && !chip.contains(event.target))) setSheetOpen(win.document, false);
       }
-      if (onWatchPath(win)) schedule();
+      if (!onWatchPath(win)) return;
+      var root = win.document.documentElement;
+      var shown = root && root.getAttribute("data-langform-chapter-ui");
+      var placedChip = win.document.getElementById(CHIP_ID);
+      var placed = shown === "native" || (placedChip && placedChip.getAttribute("data-langform-chip-placed") === "1");
+      if (!shown || !placed) schedule();
     }, { capture: true, passive: true });
     var tries = 0;
-    var retry = win.setInterval(function () {
+    win.__langformChapterRetry = win.setInterval(function () {
       tries += 1;
-      schedule();
-      if (tries > 24) win.clearInterval(retry);
+      if (tries > 24) stopChapterRetry(win);
+      else schedule();
     }, 500);
   }
 

@@ -264,3 +264,24 @@ test("die sichtbare mobile Leiste gewinnt gegen die versteckte Desktop-Leiste", 
   assert.equal(video.style.display, "");
   assert.equal(video.getAttribute("style"), null);
 });
+
+test("Kapitellabel wechselt nur mit dem Kapitelindex", function () {
+  const list = chapters.chaptersFromPlayer(playerWithChapters());
+  const dom = new JSDOM(
+    `<!DOCTYPE html><body>
+      <div class="ytp-time-display" id="time">1:40 / 24:20</div>
+      <video id="v"></video>
+    </body>`,
+    { url: "https://m.youtube.com/watch?v=abcdefghijk" }
+  );
+  const doc = dom.window.document;
+  chapters.renderChapterUi(doc, list, function () {});
+  chapters.syncChapterUi(doc, list, 100);
+  const label = doc.querySelector("[data-langform-chapter-label]");
+  assert.equal(label.textContent, "Gespräch");
+  label.textContent = "verändert";
+  chapters.syncChapterUi(doc, list, 110);
+  assert.equal(label.textContent, "verändert");
+  chapters.syncChapterUi(doc, list, 800);
+  assert.equal(label.textContent, "Schluss");
+});
