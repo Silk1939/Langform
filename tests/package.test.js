@@ -52,27 +52,81 @@ test("Popup und README sprechen Deutsch und nennen die Grenzen", function () {
   assert.match(readme, /Nicht signierte Erweiterungen erlauben/);
 });
 
-test("die App setzt kein eigenes Layout auf den YouTube-Player", function () {
+function swiftFunction(source, name) {
+  const start = source.indexOf("func " + name + "(");
+  assert.notEqual(start, -1, name);
+  const next = source.indexOf("\n    func ", start + 1);
+  const nextPrivate = source.indexOf("\n    private func ", start + 1);
+  const nextOverride = source.indexOf("\n    override func ", start + 1);
+  const nextObjc = source.indexOf("\n    @objc ", start + 1);
+  const ends = [next, nextPrivate, nextOverride, nextObjc, source.length].filter(function (i) { return i > start; });
+  return source.slice(start, Math.min.apply(null, ends));
+}
+
+test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über den Feed", function () {
   assert.equal(fs.existsSync(path.join(root, "ios/Langform/Langform/PlayerFrame.js")), false);
   const app = fs.readFileSync(path.join(root, "ios/Langform/Langform/LangformApp.swift"), "utf8");
-  assert.match(app, /watchPage && !unreachable/);
-  assert.match(app, /overlay\(alignment: \.topLeading\)/);
-  assert.match(app, /canGoBack && !watchPage/);
-  assert.match(app, /bottomLeading/);
   assert.match(app, /Color\.black\.ignoresSafeArea/);
   assert.doesNotMatch(app, /YouTubeWebView[\s\S]{0,280}ignoresSafeArea/);
-  // One WKWebView cannot show the feed behind a card: no mini player, no loose AirPlay button.
-  assert.doesNotMatch(app, /\.mask|scaleEffect|AVRoutePickerView|miniPlayer/);
+  assert.doesNotMatch(app, /AVRoutePickerView|AVPlayer/);
   const web = fs.readFileSync(path.join(root, "ios/Langform/Langform/YouTubeWebView.swift"), "utf8");
   assert.match(web, /allowsBackForwardNavigationGestures = true/);
   assert.match(web, /allowsAirPlayForMediaPlayback = true/);
   assert.match(web, /allowsInlineMediaPlayback = true/);
-  assert.match(web, /UISwipeGestureRecognizer/);
-  assert.match(web, /direction = \.down/);
-  assert.match(web, /shouldRecognizeSimultaneouslyWith/);
   assert.match(web, /guard YouTubeWebView\.isAccountPage\(webView\.url\)/);
-  assert.match(web, /isWatchPage/);
-  assert.doesNotMatch(web, /PlayerFrame|viewport-fit|langformMini|\.cancel\)\s*\n\s*beginMini/);
+  assert.doesNotMatch(web, /PlayerFrame|viewport-fit|AVPlayer|googlevideo|GCKCastContext/);
+
+  // Two web views on the same data store.
+  assert.equal((web.match(/YouTubeWebView\.makeWebView\(/g) || []).length, 2);
+  assert.match(web, /websiteDataStore = \.default\(\)/);
+  assert.match(web, /"langformOpenWatch"/);
+  assert.match(web, /"langformOpenFeed"/);
+  assert.match(web, /"langformPlayer"/);
+  assert.match(web, /"WebViewLinks"/);
+  assert.match(web, /playerScriptNames = \["PlayerRect"\]/);
+
+  // The swipe is a pan that never cancels the tap on play and never navigates.
+  assert.doesNotMatch(web, /UISwipeGestureRecognizer/);
+  assert.match(web, /UIPanGestureRecognizer/);
+  assert.match(web, /drag\.cancelsTouchesInView = false/);
+  assert.match(web, /drag\.delaysTouchesBegan = false/);
+  assert.match(web, /shouldRecognizeSimultaneouslyWith/);
+  const begin = swiftFunction(web, "gestureRecognizerShouldBegin");
+  assert.match(begin, /move\.y > abs\(move\.x\) \* 2/);
+  assert.match(begin, /videoVisible/);
+  const dragged = swiftFunction(web, "dragPlayer");
+  assert.doesNotMatch(dragged, /goBack|history|load\(|evaluateJavaScript/);
+  assert.match(dragged, /settle\(toMini \? \.mini : \.expanded/);
+
+  // The card crops to the video's rect and only exists with one.
+  const settle = swiftFunction(web, "settle");
+  assert.match(settle, /target == \.mini && !hasVideoRect/);
+  const apply = swiftFunction(web, "apply");
+  assert.match(apply, /videoRect/);
+  assert.match(apply, /player\.transform = CGAffineTransform\(scaleX: scale, y: scale\)/);
+  assert.doesNotMatch(apply, /player\.bounds|player\.frame|evaluateJavaScript/);
+
+  // Close leaves the watch page; tapping the card expands it.
+  const close = swiftFunction(web, "closePlayer");
+  assert.match(close, /about:blank|blankURL/);
+  assert.match(swiftFunction(web, "expandCard"), /settle\(\.expanded\)/);
+  const collapse = swiftFunction(web, "collapseTapped");
+  assert.match(collapse, /videoPlaying/);
+  assert.match(collapse, /closePlayer\(\)/);
+
+  // Neither Swift nor the page scripts pause the video or style it.
+  const sources = [web, app].concat(
+    ["early", "logic", "hide", "controller", "summary", "page-captions"].map(function (name) {
+      return fs.readFileSync(path.join(root, "extension/src", name + ".js"), "utf8");
+    }),
+    ["WebViewLinks", "PlayerRect", "ShortsBootstrap"].map(function (name) {
+      return fs.readFileSync(path.join(root, "ios/Langform/Langform", name + ".js"), "utf8");
+    })
+  );
+  sources.forEach(function (text) {
+    assert.doesNotMatch(text, /\.pause\(\)|pauseVideo|stopVideo/);
+    assert.doesNotMatch(text, /video[\w.]*\.style\.(width|height|objectFit|display)\s*=/);
+  });
   const model = fs.readFileSync(path.join(root, "ios/Langform/Langform/OnDeviceSummary.swift"), "utf8");
   assert.match(model, /FoundationModels/);
   assert.match(model, /Die Kurzfassung geht nur mit dem Modell auf dem Gerät/);
