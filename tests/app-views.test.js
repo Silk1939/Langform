@@ -173,3 +173,44 @@ test("der Player meldet den ersten gezeichneten Inhalt, damit die App ihn erst d
   assert.equal(last.hasVideo, false);
   assert.equal(last.href, "https://m.youtube.com/watch?v=abcdefghijk");
 });
+
+test("der Player misst nicht im Takt und nicht während des Scrollens", async function (t) {
+  const { dom, posts } = page(
+    `<!DOCTYPE html><body><div id="movie_player"><video id="v"></video></div></body>`,
+    "https://m.youtube.com/watch?v=abcdefghijk",
+    ["langformPlayer"]
+  );
+  t.after(function () { dom.window.close(); });
+  const win = dom.window;
+  const doc = win.document;
+  let intervals = 0;
+  win.setInterval = function () { intervals += 1; return 0; };
+  let lookups = 0;
+  const query = doc.querySelector.bind(doc);
+  doc.querySelector = function () { lookups += 1; return query.apply(null, arguments); };
+  const video = doc.getElementById("v");
+  let measured = 0;
+  let top = 0;
+  video.getBoundingClientRect = function () {
+    measured += 1;
+    return { left: 0, top: top, width: 390, height: 219, right: 390, bottom: top + 219 };
+  };
+  win.eval(RECT);
+  video.dispatchEvent(new win.Event("playing"));
+  await new Promise(function (resolve) { setTimeout(resolve, 200); });
+  assert.equal(intervals, 0);
+  assert.equal(posts.length, 1);
+  const before = measured;
+  for (let i = 0; i < 6; i++) {
+    top -= 40;
+    doc.dispatchEvent(new win.Event("scroll"));
+    video.dispatchEvent(new win.Event("resize"));
+    await new Promise(function (resolve) { setTimeout(resolve, 60); });
+  }
+  assert.equal(measured, before, "während des Scrollens wird nichts gemessen");
+  await new Promise(function (resolve) { setTimeout(resolve, 400); });
+  assert.equal(posts.length, 2);
+  assert.equal(posts[1].body.y, -240);
+  assert.equal(lookups, 1, "das Video wird einmal gesucht");
+  assert.equal(video.getAttribute("style"), null);
+});

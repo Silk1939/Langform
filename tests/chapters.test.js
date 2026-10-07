@@ -553,3 +553,69 @@ test("taucht YouTubes Chip später auf, verschwindet unserer", function () {
   assert.equal(doc.getElementById("v").getAttribute("style"), null);
   win.close();
 });
+
+test("beim Scrollen und Abspielen ändert sich das DOM nur, wenn das Kapitel wechselt", async function () {
+  const dom = screenshotPlayerDom();
+  const win = dom.window;
+  const doc = win.document;
+  const video = doc.getElementById("v");
+  let time = 5;
+  Object.defineProperty(video, "paused", { configurable: true, get: function () { return false; } });
+  Object.defineProperty(video, "currentTime", { configurable: true, get: function () { return time; }, set: function (v) { time = v; } });
+  const player = playerWithChapters();
+  let reads = 0;
+  Object.defineProperty(win, "ytInitialPlayerResponse", { configurable: true, get: function () { reads += 1; return player; } });
+  const intervals = [];
+  const realInterval = win.setInterval.bind(win);
+  win.setInterval = function (fn, ms) {
+    if (ms === 500) {
+      intervals.push(fn);
+      return 9999;
+    }
+    return realInterval(fn, ms);
+  };
+  chapters.armChapters(win);
+  const chip = doc.getElementById("langform-chapter-chip");
+  assert.ok(chip);
+  assert.equal(chip.getAttribute("data-langform-chip-placed"), "1");
+  assert.equal(chip.querySelector("[data-langform-chapter-label]").textContent, "Intro");
+
+  const changes = [];
+  const watcher = new win.MutationObserver(function (records) {
+    records.forEach(function (r) { changes.push(r); });
+  });
+  watcher.observe(doc, { subtree: true, childList: true, attributes: true, characterData: true });
+
+  // The retry tick does not walk the page while the video plays.
+  const before = reads;
+  intervals.forEach(function (fn) { fn(); fn(); fn(); });
+  await new Promise(function (resolve) { setTimeout(resolve, 300); });
+  assert.equal(reads, before);
+
+  for (let i = 0; i < 5; i++) {
+    doc.dispatchEvent(new win.Event("scroll"));
+    time += 1;
+    video.dispatchEvent(new win.Event("timeupdate"));
+    await new Promise(function (resolve) { setTimeout(resolve, 40); });
+  }
+  await new Promise(function (resolve) { setTimeout(resolve, 500); });
+  for (let i = 0; i < 5; i++) {
+    time += 1;
+    video.dispatchEvent(new win.Event("timeupdate"));
+  }
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  assert.equal(changes.length, 0, "kein Umschreiben im selben Kapitel");
+  assert.equal(reads, before, "nach dem Scrollen kein neuer Durchlauf, die Kapitel stehen");
+
+  time = 100;
+  video.dispatchEvent(new win.Event("timeupdate"));
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  assert.ok(changes.length > 0);
+  assert.equal(chip.querySelector("[data-langform-chapter-label]").textContent, "Gespräch");
+  changes.forEach(function (r) {
+    assert.ok(chip.contains(r.target) || r.target.closest("#langform-chapter-sheet"), "nur unsere Kapitelanzeige ändert sich");
+  });
+  assert.equal(video.getAttribute("style"), null);
+  watcher.disconnect();
+  win.close();
+});
