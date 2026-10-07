@@ -20,7 +20,7 @@ struct YouTubeWebView: UIViewRepresentable {
     }
     /// Fresh YouTube sign-in. Used once, after Google rejects the webview user agent.
     static let signInRetryURL = URL(string: "https://accounts.google.com/ServiceLogin?service=youtube&hl=de&passive=true&continue=https://m.youtube.com/")!
-    static let scriptNames = ["early", "logic", "hide", "controller", "summary", "ShortsBootstrap"]
+    static let scriptNames = ["early", "logic", "hide", "controller", "summary", "page-captions", "ShortsBootstrap"]
     /// Mobile Safari 26.6, the current iPhone string as of October 2026.
     /// The frozen OS token is 18_7; Version/26.6 is the Safari release.
     static let safariUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Mobile/15E148 Safari/604.1"

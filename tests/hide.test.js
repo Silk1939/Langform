@@ -217,4 +217,5 @@ test("CSS trifft Desktop- und Mobil-Hooks", function () {
   assert.match(css, /macro-markers-list-renderer/);
   assert.match(css, /input\[name="search_query"\]/);
   assert.doesNotMatch(css, /movie_player|html5-video-player|player-container|object-fit/);
+  assert.doesNotMatch(css, /progress-bar|ytp-chapter|video\s*\{/);
 });

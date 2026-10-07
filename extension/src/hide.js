@@ -74,6 +74,12 @@
     return null;
   }
 
+  function isPlayerChrome(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var tag = el.tagName;
+    return tag === "VIDEO" || tag === "YTD-PLAYER" || tag === "YTM-PLAYER" || el.id === "movie_player";
+  }
+
   function forEachElement(rootNode, visit) {
     var stack = [rootNode];
     var seen = new Set();
@@ -82,6 +88,7 @@
       if (!node || seen.has(node)) continue;
       seen.add(node);
       if (node.nodeType === 1) visit(node);
+      if (node.nodeType === 1 && isPlayerChrome(node)) continue;
       if (node.shadowRoot) stack.push(node.shadowRoot);
       var children = node.children;
       if (!children || !children.length) continue;
@@ -247,7 +254,7 @@
   function hideElement(el, doRemove, doomed) {
     if (!el || el.nodeType !== 1) return;
     if (el.tagName === "HTML" || el.tagName === "BODY" || el.tagName === "HEAD") return;
-    if (isSearchControl(el) || isChapterUi(el)) return;
+    if (isPlayerChrome(el) || isSearchControl(el) || isChapterUi(el)) return;
     if (el.getAttribute(MARK) !== "1") {
       el.setAttribute(MARK, "1");
       if (el.classList) el.classList.add(HIDDEN_CLASS);

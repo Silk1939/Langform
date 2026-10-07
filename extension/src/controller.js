@@ -129,10 +129,23 @@
       }, 140);
     }
 
+    function insidePlayer(node) {
+      var guard = 0;
+      while (node && guard++ < 25) {
+        if (node.nodeType === 1) {
+          var tag = node.tagName;
+          if (tag === "VIDEO" || tag === "YTD-PLAYER" || tag === "YTM-PLAYER" || node.id === "movie_player") return true;
+        }
+        var rootNode = node.getRootNode && node.getRootNode();
+        node = node.parentElement || (rootNode && rootNode.host) || null;
+      }
+      return false;
+    }
+
     function queue(node) {
       if (!node || node.nodeType !== 1) return;
-      if (node.tagName === "VIDEO" || node.tagName === "INPUT" || node.tagName === "TEXTAREA") return;
-      if (node.id === "movie_player") return;
+      if (insidePlayer(node)) return;
+      if (node.tagName === "INPUT" || node.tagName === "TEXTAREA") return;
       if (hide.isSearchControl && hide.isSearchControl(node)) return;
       queued.push(node);
       if (queued.length > 40) queued = [doc.documentElement];
@@ -145,6 +158,7 @@
         if (!enabled || scanning) return;
         for (var i = 0; i < records.length; i++) {
           var record = records[i];
+          if (record.target && insidePlayer(record.target)) continue;
           if (record.type === "childList") {
             var added = record.addedNodes;
             for (var j = 0; j < added.length; j++) queue(added[j]);

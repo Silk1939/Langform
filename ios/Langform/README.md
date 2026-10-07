@@ -38,13 +38,13 @@ Die App setzt von Anfang an die Safari-Kennung von oben, damit YouTube die mobil
 
 Wischen vom linken Rand geht zurück, solange es einen History-Eintrag gibt. Auf einer Watch-Seite zeigt YouTube selbst den Zurück-Pfeil im Player, dort legt die App keinen eigenen Knopf darüber. Auf anderen Seiten, wenn die Wischgeste nicht reicht, sitzt ein kleiner Knopf **Zurück** unten links, über der Leiste. Ein normales `/watch` ist ein eigener Eintrag, auch wenn YouTube es mit `replaceState` über die Liste legt. Zurück landet wieder auf der vorherigen YouTube-Seite, an der alten Scrollposition. Die Startseite in der unteren Leiste bleibt die Navigation von YouTube und wird nicht in einen Watch-Eintrag umgeschrieben. Gibt es keinen History-Eintrag, geht Zurück auf `https://m.youtube.com/` oder `https://www.youtube.com/`, je nach Host.
 
-Zeitstempel in der Beschreibung, Kapitelchips und Links mit `t=` oder `start=` springen im laufenden Video. Sie laden dieselbe Watch-Seite nicht neu. Suche, Vorschläge und das Absenden bleiben das Suchfeld von YouTube.
+Zeitstempel in der Beschreibung, Kapitelchips und Links mit `t=` oder `start=` springen im laufenden Video. Sie laden dieselbe Watch-Seite nicht neu. Hat das Video Kapitel, setzt die Seite dünne Unterbrechungen auf YouTubes eigene Seek-Leiste, wie in der YouTube-App. Beim Ziehen und kurz nach einem Sprung steht der Kapitelname darüber. Ein Tipp auf eine Unterbrechung springt an den Kapitelanfang. Ohne Kapitel bleibt die Leiste, wie YouTube sie gezeichnet hat. Suche, Vorschläge und das Absenden bleiben das Suchfeld von YouTube.
 
 Die Seite, auch der Player, beginnt unter der Statusleiste, wie in mobilem Safari. Die App zieht die Seite nicht mit `viewport-fit=cover` unter die Uhr. Sie setzt keine Breite, Höhe, Position oder `object-fit` auf das Video. Zeit, Untertitel und der Regler bleiben YouTubes eigene Anordnung.
 
 ## Shorts
 
-Beim Dokumentstart, bevor YouTube zeichnet, hängt die App dieselben Skripte wie die Safari-Erweiterung in die Seite: zuerst `early.js` mit dem Stylesheet, dann `logic.js`, `hide.js`, `controller.js`, `summary.js` und `ShortsBootstrap.js`. Die Erweiterung liest `chrome.storage`. Den Schalter gibt es in der App nicht, deshalb setzt `ShortsBootstrap.js` die Sperre fest auf an.
+Beim Dokumentstart, bevor YouTube zeichnet, hängt die App dieselben Skripte wie die Safari-Erweiterung in die Seite: zuerst `early.js` mit dem Stylesheet, dann `logic.js`, `hide.js`, `controller.js`, `summary.js`, `page-captions.js` und `ShortsBootstrap.js`. Die Erweiterung liest `chrome.storage`. Den Schalter gibt es in der App nicht, deshalb setzt `ShortsBootstrap.js` die Sperre fest auf an.
 
 Das Stylesheet blendet Shorts aus, bevor sie sichtbar werden. Die Skripte nehmen danach Tab, Regale, Chips und Links aus dem DOM, auch den Eintrag in der unteren Leiste auf `m.youtube.com`. Das gilt für `www.youtube.com` und `m.youtube.com`. Der Beobachter merkt sich neue Knoten nur und arbeitet sie nach dem Scrollen ab, damit die Liste nicht ruckelt.
 
