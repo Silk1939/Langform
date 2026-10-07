@@ -22,6 +22,7 @@ test("Manifest ist Safari-taugliches MV3 für beide YouTube-Hosts", function () 
     "src/hide.js",
     "src/controller.js",
     "src/summary.js",
+    "src/ads.js",
     "src/content.js",
   ]);
   assert.equal(manifest.content_scripts[1].world, "MAIN");
@@ -162,7 +163,7 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
 
   // Neither Swift nor the page scripts pause the video or style it.
   const sources = [web, app].concat(
-    ["early", "logic", "hide", "controller", "summary", "page-captions"].map(function (name) {
+    ["early", "logic", "hide", "controller", "summary", "page-captions", "ads"].map(function (name) {
       return fs.readFileSync(path.join(root, "extension/src", name + ".js"), "utf8");
     }),
     ["WebViewLinks", "PlayerRect", "ShortsBootstrap"].map(function (name) {
