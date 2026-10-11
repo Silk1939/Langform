@@ -2,7 +2,7 @@
   "date": "2026-10-12",
   "verifiedAt": "2026-10-12T01:42:28.368231+02:00",
   "repository": "https://github.com/Silk1939/Langform",
-  "status": "ready_to_upload",
+  "status": "published",
   "testMethod": "Fresh file copy exported from the Git index; npm ci at root and apps/langform; npm test; web lint and production build.",
   "environment": {
     "node": "22.16.0",
@@ -62,5 +62,14 @@
     "No new Simulator run, device build, installation or personal acceptance.",
     "Existing open device, audio, gesture and broad Simulator acceptance remains in docs/VERBESSERUNGS_BACKLOG.md.",
     "Raw historical QA evidence and most historical QA links remain local."
-  ]
+  ],
+  "publication": {
+    "public": true,
+    "defaultBranch": "main",
+    "verifiedSourceCommit": "1aa271f6f4a441ced1b2a61157bcedf878e15064",
+    "anonymousClone": true,
+    "byteIdenticalFiles": 339,
+    "localRemote": "github",
+    "originalRemotePreserved": true
+  }
 }
