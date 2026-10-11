@@ -9,8 +9,9 @@ const root = path.join(__dirname, "..");
 test("Manifest ist Safari-taugliches MV3 für beide YouTube-Hosts", function () {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "extension/manifest.json"), "utf8"));
   assert.equal(manifest.manifest_version, 3);
-  assert.deepEqual(manifest.permissions, ["storage"]);
-  assert.equal(manifest.background, undefined);
+  assert.deepEqual(manifest.permissions, ["storage", "nativeMessaging"]);
+  assert.deepEqual(manifest.background.scripts, ["src/background.js"]);
+  assert.equal(manifest.background.service_worker, "src/background.js");
   assert.deepEqual(manifest.content_scripts[0].matches, [
     "https://www.youtube.com/*",
     "https://m.youtube.com/*",
@@ -68,10 +69,11 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   assert.equal(fs.existsSync(path.join(root, "ios/Langform/Langform/PlayerFrame.js")), false);
   const app = fs.readFileSync(path.join(root, "ios/Langform/Langform/LangformApp.swift"), "utf8");
   assert.match(app, /Color\.black\.ignoresSafeArea/);
-  assert.doesNotMatch(app, /YouTubeWebView[\s\S]{0,280}ignoresSafeArea/);
+  assert.match(app, /ignoresSafeArea\(\.container, edges: \.all\)/, "Inline und Vollbild teilen eine bildschirmfüllende Stage");
+  assert.doesNotMatch(app, /edges: fullscreen \?/, "Fullscreen darf keine zweite native Viewport-Ausdehnung auslösen");
   assert.doesNotMatch(app, /AVRoutePickerView|AVPlayer/);
   const web = fs.readFileSync(path.join(root, "ios/Langform/Langform/YouTubeWebView.swift"), "utf8");
-  assert.match(web, /allowsBackForwardNavigationGestures = true/);
+  assert.match(web, /allowsBackForwardNavigationGestures = isFeed/, "Feed-Unterseiten behalten WebKit-Zurück, der Player seine Karten-Randgeste");
   assert.match(web, /allowsAirPlayForMediaPlayback = true/);
   assert.match(web, /allowsInlineMediaPlayback = true/);
   assert.match(web, /guard YouTubeWebView\.isAccountPage\(webView\.url\)/);
@@ -84,7 +86,8 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   assert.match(web, /"langformOpenFeed"/);
   assert.match(web, /"langformPlayer"/);
   assert.match(web, /"WebViewLinks"/);
-  assert.match(web, /playerScriptNames = \["PlayerRect"\]/);
+  assert.match(web, /playerEarlyScriptNames = \["PlaybackQuality"\]/);
+  assert.match(web, /playerScriptNames = \["PlaybackZoom", "PlaybackSwipe", "PlaybackHold", "PlayerRect", "CaptionToggle", "CommentsMotion", "CommentReactions", "FullscreenChapters", "FullscreenMotion", "DownloadSource", "SystemMedia", "SponsorBlock", "WatchTools"\]/);
 
   // The swipe is a pan that never cancels the tap on play and never navigates.
   assert.doesNotMatch(web, /UISwipeGestureRecognizer/);
@@ -93,24 +96,26 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   assert.match(web, /drag\.delaysTouchesBegan = false/);
   assert.match(web, /shouldRecognizeSimultaneouslyWith/);
   const begin = swiftFunction(web, "gestureRecognizerShouldBegin");
-  assert.match(begin, /move\.y > abs\(move\.x\) \* 2/);
+  // Direction, interruption and cancellation behavior is executed against the
+  // shipping Swift policy in native-gesture-policy.test.js.
+  assert.match(begin, /let begins = PlayerGesturePolicy\.canBegin\(/);
   // Touches are cancelled only once the downward drag is recognized.
   assert.match(begin, /drag\.cancelsTouchesInView = begins/);
-  assert.doesNotMatch(web, /0\.6\b|videoVisible/);
+  assert.doesNotMatch(swiftFunction(web, "reveal"), /0\.6\b/);
+  assert.doesNotMatch(web, /videoVisible/);
   // The drag sits outside WebKit's view tree and the page scroll waits for it.
   assert.match(web, /card\.addGestureRecognizer\(drag\)/);
   assert.doesNotMatch(web, /playerView\.addGestureRecognizer\(drag\)|player\.addGestureRecognizer\(drag\)/);
-  assert.match(
-    web,
-    /shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer\s*\) -> Bool \{\s*gestureRecognizer === drag && otherGestureRecognizer === player\?\.scrollView\.panGestureRecognizer/
-  );
-  assert.match(web, /isScrollEnabled = false/);
+  // The public subtree failure relationship is executed from the shipping
+  // delegate in native-player-priority.test.js, including inner WebKit input.
+  assert.match(web, /shouldBeRequiredToFailBy otherGestureRecognizer/);
   // The card follows the finger.
-  assert.match(swiftFunction(web, "follow"), /pan\.translation\(in: self\)\.y \/ dragTravel/);
+  assert.match(swiftFunction(web, "follow"), /PlayerGesturePolicy\.trackedPose\(/);
   // Without a rect the card crops the top 16:9, never an empty mask.
-  assert.match(web, /CGRect\(x: 0, y: 0, width: bounds\.width, height: bounds\.width \* 9 \/ 16\)/);
+  assert.match(web, /PlayerViewportPolicy\.fallbackPicture\(in: bounds\.size\)/);
   const dragged = swiftFunction(web, "dragPlayer");
   assert.doesNotMatch(dragged, /goBack|history|load\(|evaluateJavaScript/);
+  assert.doesNotMatch(dragged, /isScrollEnabled\s*=/, "der native Pan darf WebKit nicht zusätzlich per Scroll-Disable abbrechen");
   assert.match(dragged, /settle\(toMini \? \.mini : \.expanded/);
 
   // The card crops to the picture.
@@ -119,17 +124,20 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   assert.match(apply, /player\.transform = CGAffineTransform\(scaleX: scale, y: scale\)/);
   assert.doesNotMatch(apply, /player\.bounds|player\.frame|evaluateJavaScript/);
 
-  // The player loads behind the feed and comes forward only once the page drew.
+  // The decoded source owns the opening; the unpainted Watch loads behind it.
   const open = swiftFunction(web, "openWatch");
-  assert.doesNotMatch(open, /UIView\.animate|aboveSubview/);
+  assert.doesNotMatch(open, /UIView\.animate/);
+  assert.match(open, /if opening\.fromFeed \{ insertSubview\(feed, aboveSubview: card\) \}/);
   assert.match(open, /beginLoading\(\)/);
   const loading = swiftFunction(web, "beginLoading");
   assert.match(loading, /insertSubview\(card, belowSubview: feed\)/);
   assert.match(swiftFunction(web, "considerReveal"), /\(loadFinished && loadHasVideo\) \|\| loadPainted/);
+  assert.match(swiftFunction(web, "considerReveal"), /feedOpening\?\.landed != false/);
+  assert.match(swiftFunction(web, "finishFeedOpeningIfReady"), /openingMotion\.hasVisiblePicture[\s\S]*startupStatus\.keepsStartupPoster/);
   const reveal = swiftFunction(web, "reveal");
   assert.match(reveal, /guard mode == \.loading/);
   assert.match(reveal, /insertSubview\(card, aboveSubview: feed\)/);
-  assert.match(reveal, /UIViewPropertyAnimator\(duration: [\d.]+, timingParameters: UISpringTimingParameters/);
+  assert.doesNotMatch(reveal, /UIViewPropertyAnimator/, "Watch erscheint ohne zweite native Eintrittsbewegung");
 
   // Card motion is a spring animator Core Animation drives on the display link.
   // A finger stops it where it is on screen and takes over from that progress.
@@ -142,48 +150,52 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   assert.match(freeze, /stopAnimation\(true\)/);
   assert.match(dragged, /freezeSettle\(\)[\s\S]*dragOrigin = progress/);
   assert.doesNotMatch(dragged, /removeAllAnimations/);
-  assert.match(swiftFunction(web, "follow"), /dragOrigin \+ pan\.translation/);
-  assert.doesNotMatch(web, /Timer\.scheduledTimer|CADisplayLink\(/);
+  assert.match(swiftFunction(web, "follow"), /origin: dragOrigin, revealOffset: dragRevealOrigin/);
+  // The opt-in, bounded fullscreen presentation logger is exercised in
+  // native-fullscreen-presentation.test.js. Normal player motion has no loop.
+  const normalPlayer = web.replace(swiftFunction(web, "startFullscreenPresentation"), "");
+  assert.doesNotMatch(normalPlayer, /Timer\.scheduledTimer|CADisplayLink\(/);
   // While the card moves a new picture rect waits, so the crop never jumps under the finger.
   assert.match(swiftFunction(web, "takeVideoReport"), /if cardMoving \{\s*if valid \{ pendingRect = rect \}/);
   // Only the view on top owns the status-bar tap.
   assert.match(swiftFunction(web, "updateChrome"), /scrollsToTop/);
   const failed = swiftFunction(web, "handleFailure");
-  assert.match(failed, /if mode == \.loading \{\s*closePlayer\(\)\s*return/);
+  assert.match(failed, /if webView === player \{[\s\S]*failPlayer\(\)\s*return/);
+  assert.match(swiftFunction(web, "failPlayer"), /closePlayer\(\)[\s\S]*showLoadFailure\(\)/);
   const finished = web.slice(web.indexOf("didFinish navigation"), web.indexOf("didFail navigation"));
   assert.match(finished, /loadFinished = true/);
 
   // Close leaves the watch page; tapping the card expands it.
   const close = swiftFunction(web, "closePlayer");
-  assert.match(close, /about:blank|blankURL/);
+  assert.match(close, /finishClose\(\)/);
+  assert.match(swiftFunction(web, "finishClose"), /about:blank|blankURL/);
   assert.match(swiftFunction(web, "expandCard"), /settle\(\.expanded\)/);
   const collapse = swiftFunction(web, "collapseTapped");
-  assert.match(collapse, /videoPlaying/);
-  assert.match(collapse, /closePlayer\(\)/);
+  assert.match(collapse, /minimizePlayer\(\)/);
+  assert.doesNotMatch(collapse, /videoPlaying|closePlayer\(\)/, "der Chevron verkleinert auch ein pausiertes Video");
 
-  // Neither Swift nor the page scripts pause the video or style it.
+  // Playback is only changed by PlayerRect's explicit mini-button action,
+  // covered by interaction tests. Passive scripts never pause or stop a video.
   const sources = [web, app].concat(
     ["early", "logic", "hide", "controller", "summary", "page-captions", "ads"].map(function (name) {
       return fs.readFileSync(path.join(root, "extension/src", name + ".js"), "utf8");
     }),
-    ["WebViewLinks", "PlayerRect", "ShortsBootstrap"].map(function (name) {
+    ["WebViewLinks", "ShortsBootstrap"].map(function (name) {
       return fs.readFileSync(path.join(root, "ios/Langform/Langform", name + ".js"), "utf8");
     })
   );
   sources.forEach(function (text) {
     assert.doesNotMatch(text, /\.pause\(\)|pauseVideo|stopVideo/);
+  });
+  sources.concat(fs.readFileSync(path.join(root, "ios/Langform/Langform/PlayerRect.js"), "utf8")).forEach(function (text) {
     assert.doesNotMatch(text, /video[\w.]*\.style\.(width|height|objectFit|display)\s*=/);
   });
   const model = fs.readFileSync(path.join(root, "ios/Langform/Langform/OnDeviceSummary.swift"), "utf8");
   assert.match(model, /FoundationModels/);
   assert.match(model, /Die Kurzfassung geht nur mit dem Modell auf dem Gerät/);
-  assert.match(model, /drei bis sechs Merksätze/);
-  assert.match(model, /\["summary": \["points": points\]\]/);
   const handler = fs.readFileSync(path.join(root, "native/SafariWebExtensionHandler.swift"), "utf8");
   assert.match(handler, /SafariWebExtensionHandler/);
   assert.match(handler, /sendNativeMessage|SFExtensionMessageKey/);
-  assert.match(handler, /drei bis sechs Merksätze/);
-  assert.match(handler, /\["summary": \["points": points\]\]/);
 });
 
 test("Konverter-Skript ist gültiges Bash und zielt auf Mac und iPhone", function () {

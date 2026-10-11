@@ -5,3 +5,30 @@ safari/
 *.xcuserstate
 *.xcuserdatad/
 DerivedData/
+
+# Local configuration and Apple signing material stay on the developer's Mac.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+*.provisionprofile
+*.xcresult/
+*.xcarchive/
+*.trace/
+__pycache__/
+*.pyc
+/:-
+
+# Local QA recordings, device logs, response captures and source snapshots.
+# Keep only the two public fixtures required by the regression suite.
+/docs/qa/*
+!/docs/qa/download-resolver-2026-10-11/
+/docs/qa/download-resolver-2026-10-11/*
+!/docs/qa/download-resolver-2026-10-11/product-bundles.json
+!/docs/qa/player-features-2026-10-11/
+/docs/qa/player-features-2026-10-11/*
+!/docs/qa/player-features-2026-10-11/sponsorblock-live-query.json

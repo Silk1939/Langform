@@ -8,6 +8,33 @@
   var EMPTY_CAPTIONS = "Die Untertitel sind leer.";
   var FAILED = "Die Untertitel sind gerade nicht zu lesen.";
   var UNAVAILABLE = "Die Kurzfassung geht nur mit dem Modell auf dem Gerät, und das ist gerade nicht verfügbar.";
+  var INSUFFICIENT_CONTENT = "Aus diesen Untertiteln lässt sich gerade keine verlässliche Kurzfassung erstellen.";
+  var ERROR_MESSAGES = {
+    MISSING_CAPTIONS: EMPTY_CAPTIONS,
+    UNUSABLE_CAPTIONS: INSUFFICIENT_CONTENT,
+    INSUFFICIENT_CONTENT: INSUFFICIENT_CONTENT,
+    MODEL_UNAVAILABLE: UNAVAILABLE,
+    UNTRUSTED_SENDER: "Die Kurzfassung konnte auf dieser Seite nicht angefordert werden.",
+    INVALID_CAPTIONS: "Die Untertitel konnten nicht an die Kurzfassung übergeben werden.",
+    CAPTIONS_TOO_LARGE: "Die Untertitel sind für die lokale Kurzfassung gerade zu groß.",
+    NATIVE_CONNECTION_UNAVAILABLE: "Die Verbindung zur Kurzfassung-App ist gerade nicht verfügbar.",
+    NATIVE_CONNECTION_FAILED: "Die Kurzfassung-App konnte nicht erreicht werden. Bitte versuche es erneut.",
+    RELAY_CONNECTION_FAILED: "Die Browser-Erweiterung konnte die Kurzfassung nicht anfordern. Bitte versuche es erneut.",
+    RELAY_DISCONNECTED: "Die Verbindung zur Browser-Erweiterung wurde während der Kurzfassung unterbrochen. Bitte versuche es erneut.",
+    INVALID_NATIVE_RESPONSE: "Die Kurzfassung-App hat keine gültige Antwort zurückgegeben. Bitte versuche es erneut.",
+    NATIVE_TIMEOUT: "Die Kurzfassung braucht zu lange. Bitte versuche es erneut.",
+    CANCELLED: "Die Kurzfassung wurde abgebrochen.",
+    GENERATION_FAILED: "Die Kurzfassung konnte gerade nicht erstellt werden. Bitte versuche es erneut.",
+    CAPTIONS_TIMEOUT: "Die Untertitel konnten nicht rechtzeitig geladen werden. Bitte versuche es erneut.",
+  };
+  var MAX_POINTS = 8;
+  var CACHE_VERSION = "structured-tldr-3";
+  var CACHE_LIMIT = 12;
+  var HOST_TIMEOUT_MS = 10 * 60 * 1000;
+  var WEBVIEW_HOST_TIMEOUT_MS = 3 * 60 * 1000;
+  var CAPTIONS_TIMEOUT_MS = 30 * 1000;
+  var HEARTBEAT_MS = 20 * 1000;
+  var PROGRESS_POLL_MS = 1000;
   var PANEL_ID = "langform-kurzfassung";
   var STYLE_ID = "langform-kurz-style";
   var BUTTON_ATTR = "data-langform-kurz";
@@ -52,22 +79,28 @@
   }
 
   function decodeEntities(value) {
-    var text = String(value || "");
+    // Strip actual caption markup before decoding. Decoded angle brackets are
+    // source text (for example a comparison), never another layer of markup.
+    var text = String(value || "")
+      .replace(/<br\s*\/?>/gi, " ")
+      .replace(/<[^>]+>/g, "");
+    function codePoint(entity, number) {
+      if (!Number.isInteger(number) || number <= 0 || number > 0x10ffff || (number >= 0xd800 && number <= 0xdfff)) return entity;
+      return String.fromCodePoint(number);
+    }
     for (var pass = 0; pass < 2; pass++) {
       var next = text
-        .replace(/<br\s*\/?>/gi, " ")
-        .replace(/<[^>]+>/g, "")
         .replace(/&nbsp;/gi, " ")
         .replace(/&amp;/gi, "&")
         .replace(/&lt;/gi, "<")
         .replace(/&gt;/gi, ">")
         .replace(/&quot;/gi, '"')
         .replace(/&apos;|&#39;/gi, "'")
-        .replace(/&#(\d+);/g, function (_, n) {
-          return String.fromCharCode(Number(n));
+        .replace(/&#(\d+);/g, function (entity, n) {
+          return codePoint(entity, Number(n));
         })
-        .replace(/&#x([0-9a-f]+);/gi, function (_, n) {
-          return String.fromCharCode(parseInt(n, 16));
+        .replace(/&#x([0-9a-f]+);/gi, function (entity, n) {
+          return codePoint(entity, parseInt(n, 16));
         });
       if (next === text) break;
       text = next;
@@ -198,27 +231,88 @@
 
   function cleanModelLine(line) {
     return String(line || "")
-      .replace(/\[[^\]]*\]/g, " ")
+      .replace(/\[(?:musik|music|applaus|applause|lachen|laughter)\]/gi, " ")
       .replace(/[♪♫]/g, " ")
       .replace(/\b[Bb]ro\b/g, " ")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\s+[—–]\s+/g, ", ")
       .replace(/\s+/g, " ")
       .trim();
   }
 
+  function modelText(value) {
+    return typeof value === "string" ? cleanModelLine(value) : "";
+  }
+
   function asPoints(value) {
-    var list = Array.isArray(value) ? value : splitSentences(value);
+    var list = Array.isArray(value) ? value : typeof value === "string" ? splitSentences(value) : [];
+    var seen = new Set();
     return list
+      .filter(function (line) { return typeof line === "string"; })
       .map(cleanModelLine)
-      .filter(Boolean)
-      .slice(0, 6);
+      .filter(function (line) {
+        var key = line.toLowerCase();
+        if (!line || seen.has(key)) return false;
+        // The local model can copy this source meta remark even when asked
+        // for one factual point. Do not filter concrete study limitations.
+        if (/^(?:das|dies) (?:ist|war) (?:die )?einzige (?:neue )?information[.!]?$/i.test(line)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, MAX_POINTS);
   }
 
   function normalizeModelSummary(payload) {
-    var summary = payload && payload.summary ? payload.summary : null;
-    if (!summary) return { message: (payload && payload.message) || UNAVAILABLE };
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return summaryFailure("INVALID_NATIVE_RESPONSE");
+    var summary = payload.summary;
+    if (!summary) {
+      var code = typeof payload.code === "string" && payload.code.trim() ? payload.code : null;
+      var message = modelText(payload.message);
+      if (code) return { code: code, message: message || ERROR_MESSAGES[code] || ERROR_MESSAGES.GENERATION_FAILED };
+      if (message) return { message: message };
+      return summaryFailure("INVALID_NATIVE_RESPONSE");
+    }
+    if (typeof summary !== "object" || Array.isArray(summary) || (!Array.isArray(summary.points) && typeof summary.points !== "string")) {
+      return summaryFailure("INVALID_NATIVE_RESPONSE");
+    }
     var points = asPoints(summary.points);
-    if (points.length < 3) return { message: UNAVAILABLE };
-    return { summary: { points: points } };
+    if (!points.length) return summaryFailure("INSUFFICIENT_CONTENT");
+    var normalized = { points: points };
+    ["tldr", "takeaway", "caveat"].forEach(function (key) {
+      var text = modelText(summary[key]);
+      if (text) normalized[key] = text;
+    });
+    var coverage = summary.coverage;
+    if (coverage && typeof coverage.complete === "boolean") {
+      normalized.coverage = { complete: coverage.complete };
+      ["processedSections", "totalSections"].forEach(function (key) {
+        if (Number.isInteger(coverage[key]) && coverage[key] >= 0) normalized.coverage[key] = coverage[key];
+      });
+      var incompleteNotice = "Die Kurzfassung beruht auf einem Teil der verfügbaren Untertitel.";
+      if (!coverage.complete && (!normalized.caveat || normalized.caveat.indexOf(incompleteNotice) === -1)) {
+        normalized.caveat = (normalized.caveat ? normalized.caveat + " " : "") + incompleteNotice;
+      }
+    }
+    return { summary: normalized };
+  }
+
+  function summaryFailure(code) {
+    return { code: code, message: ERROR_MESSAGES[code] || ERROR_MESSAGES.GENERATION_FAILED };
+  }
+
+  function transportFailure(error, code) {
+    return summaryFailure(error && error.name === "AbortError" ? "CANCELLED" : code);
+  }
+
+  function validSummaryResult(result) {
+    var points = result && !result.message && result.summary && result.summary.points;
+    return Array.isArray(points) && points.length > 0 && points.every(function (point) {
+      return typeof point === "string" && point.trim().length > 0;
+    });
+  }
+
+  function reusableSummaryResult(result) {
+    return validSummaryResult(result) && !(result.summary.coverage && result.summary.coverage.complete === false);
   }
 
   function ownGlobal() {
@@ -227,12 +321,13 @@
   }
 
   function nativeRuntime(page) {
-    function take(runtime) {
-      return runtime && typeof runtime.sendNativeMessage === "function" ? runtime : null;
+    function take(runtime, promiseApi) {
+      if (!runtime || (typeof runtime.sendMessage !== "function" && typeof runtime.sendNativeMessage !== "function")) return null;
+      return { api: runtime, promiseApi: promiseApi };
     }
     try {
       if (typeof browser !== "undefined") {
-        var fromBrowser = take(browser && browser.runtime);
+        var fromBrowser = take(browser && browser.runtime, true);
         if (fromBrowser) return fromBrowser;
       }
     } catch (err) {
@@ -240,7 +335,7 @@
     }
     try {
       if (typeof chrome !== "undefined") {
-        var fromChrome = take(chrome && chrome.runtime);
+        var fromChrome = take(chrome && chrome.runtime, false);
         if (fromChrome) return fromChrome;
       }
     } catch (err2) {
@@ -251,7 +346,7 @@
       var scope = scopes[i];
       if (!scope) continue;
       try {
-        var found = take(scope.browser && scope.browser.runtime) || take(scope.chrome && scope.chrome.runtime);
+        var found = take(scope.browser && scope.browser.runtime, true) || take(scope.chrome && scope.chrome.runtime, false);
         if (found) return found;
       } catch (err3) {
         /* this scope is not the extension */
@@ -260,19 +355,76 @@
     return null;
   }
 
-  function askHost(text, host) {
+  function normalizeProgress(payload) {
+    var progress = payload && payload.progress;
+    if (!progress || typeof progress !== "object" || Array.isArray(progress)) return null;
+    if (["preparing", "reading", "reducing", "writing"].indexOf(progress.phase) === -1) return null;
+    var processed = progress.processedSections;
+    var total = progress.totalSections;
+    if (!Number.isInteger(processed) || !Number.isInteger(total) || processed < 0 || total < processed || total > 10000) return null;
+    if (typeof progress.sourceIncomplete !== "boolean" || typeof progress.coverageIncomplete !== "boolean") return null;
+    var normalized = {
+      phase: progress.phase, processedSections: processed, totalSections: total,
+      sourceIncomplete: progress.sourceIncomplete, coverageIncomplete: progress.coverageIncomplete,
+    };
+    if (progress.tldr !== undefined) {
+      if (typeof progress.tldr !== "string" || progress.tldr.length > 2000) return null;
+      // A preview can only represent the whole available source after reading
+      // is finished. A partial-source summary is left to the final response.
+      if (progress.phase !== "writing" || total === 0 || processed !== total || progress.sourceIncomplete || progress.coverageIncomplete) return null;
+      normalized.tldr = modelText(progress.tldr);
+    }
+    return normalized;
+  }
+
+  function askHost(text, host, onProgress) {
     return new Promise(function (resolve) {
       var settled = false;
+      var port = null;
+      var heartbeatTimer = 0;
+      var progressTimer = 0;
+      var hostTimer = 0;
+      var timers = null;
+      var hostTicket = null;
+      function onHeartbeatAck(message) {
+        // The background's reply refreshes Safari's background activity.
+        // It is never a summary and must not complete the native request.
+        if (!message || message.type !== "langform:summary-heartbeat-ack") return;
+      }
+      function onPortDisconnect() {
+        try { void runtime.lastError; } catch (error) { /* inspect optional runtime error */ }
+        finish(summaryFailure("RELAY_DISCONNECTED"));
+      }
+      function cleanup() {
+        if (heartbeatTimer) timers.clearInterval(heartbeatTimer);
+        if (progressTimer) timers.clearInterval(progressTimer);
+        if (hostTimer) timers.clearTimeout(hostTimer);
+        heartbeatTimer = progressTimer = hostTimer = 0;
+        if (hostTicket && page && page.__langformKurzWait) delete page.__langformKurzWait[hostTicket];
+        hostTicket = null;
+        if (!port) return;
+        try {
+          if (port.onMessage && typeof port.onMessage.removeListener === "function") port.onMessage.removeListener(onHeartbeatAck);
+          if (port.onDisconnect && typeof port.onDisconnect.removeListener === "function") port.onDisconnect.removeListener(onPortDisconnect);
+          port.disconnect();
+        } catch (error) { /* the background may already have disconnected */ }
+        port = null;
+      }
       function finish(payload) {
         if (settled) return;
         settled = true;
+        cleanup();
         resolve(normalizeModelSummary(payload));
       }
+      var bridgeError = null;
       var page = host || ownGlobal();
       try {
         var handlers = page && page.webkit && page.webkit.messageHandlers;
         if (handlers && handlers.langformSummary && typeof handlers.langformSummary.postMessage === "function") {
           var id = String(Date.now()) + "-" + Math.random();
+          hostTicket = id;
+          timers = page && typeof page.setTimeout === "function" ? page : ownGlobal();
+          hostTimer = timers.setTimeout(function () { finish(summaryFailure("NATIVE_TIMEOUT")); }, WEBVIEW_HOST_TIMEOUT_MS);
           page.__langformKurzWait = page.__langformKurzWait || {};
           page.__langformKurzWait[id] = finish;
           page.__langformKurzFinish = function (ticket, payload) {
@@ -285,37 +437,92 @@
           return;
         }
       } catch (err) {
-        /* the page bridge is optional */
+        if (id && page && page.__langformKurzWait) delete page.__langformKurzWait[id];
+        bridgeError = err;
       }
-      var runtime = nativeRuntime(page);
-      if (runtime) {
+      var binding = nativeRuntime(page);
+      if (binding) {
+        var runtime = binding.api;
+        var relay = typeof runtime.sendMessage === "function";
+        var failureCode = relay ? "RELAY_CONNECTION_FAILED" : "NATIVE_CONNECTION_FAILED";
         var callback = function (response) {
-          var failed = false;
           try {
-            failed = !!runtime.lastError;
+            var error = runtime.lastError;
+            if (error) finish(transportFailure(error, failureCode));
+            else finish(response);
           } catch (err3) {
-            failed = false;
+            finish(transportFailure(err3, failureCode));
           }
-          if (failed || !response) finish({ message: UNAVAILABLE });
-          else finish(response);
         };
         try {
-          var pending = runtime.sendNativeMessage(
-            "de.ipekkaya.shorts-ausblenden",
-            { text: String(text || "") },
-            callback
-          );
+          timers = page && typeof page.setInterval === "function" && typeof page.setTimeout === "function" ? page : ownGlobal();
+          hostTimer = timers.setTimeout(function () { finish(summaryFailure("NATIVE_TIMEOUT")); }, HOST_TIMEOUT_MS);
+          if (relay && typeof runtime.connect === "function") {
+            // A pending native Promise does not keep Safari's background
+            // alive. Exchanging port messages does, even for long videos.
+            port = runtime.connect({ name: "langform:summary-keepalive" });
+            if (!port || typeof port.postMessage !== "function" || !port.onMessage || !port.onDisconnect) {
+              throw new Error("Summary relay port unavailable");
+            }
+            port.onMessage.addListener(onHeartbeatAck);
+            port.onDisconnect.addListener(onPortDisconnect);
+            var heartbeat = function () {
+              try { port.postMessage({ type: "langform:summary-heartbeat" }); }
+              catch (error) { finish(transportFailure(error, "RELAY_DISCONNECTED")); }
+            };
+            heartbeat();
+            if (settled) return;
+            heartbeatTimer = timers.setInterval(heartbeat, HEARTBEAT_MS);
+          }
+          // Safari only permits native messaging in the extension background,
+          // not in an isolated content script. Keep captions off the DOM bus.
+          var method = relay ? "sendMessage" : "sendNativeMessage";
+          var requestId = "summary-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+          var args = relay
+            ? [{ type: "langform:summarize", text: String(text || ""), requestId: requestId }]
+            : ["de.ipekkaya.shorts-ausblenden", { text: String(text || "") }];
+          if (!binding.promiseApi) args.push(callback);
+          var pending = runtime[method].apply(runtime, args);
           if (pending && typeof pending.then === "function") {
-            pending.then(callback, function () {
-              finish({ message: UNAVAILABLE });
+            pending.then(callback, function (error) {
+              finish(transportFailure(error, failureCode));
             });
+          } else if (binding.promiseApi) {
+            finish(summaryFailure(failureCode));
+          }
+          if (relay && !settled) {
+            var pollPending = false;
+            progressTimer = timers.setInterval(function () {
+              if (settled || pollPending) return;
+              pollPending = true;
+              var pollFinished = false;
+              function receiveProgress(response) {
+                if (pollFinished) return;
+                pollFinished = true;
+                pollPending = false;
+                if (settled) return;
+                try {
+                  if (runtime.lastError) return;
+                  var progress = normalizeProgress(response);
+                  if (progress && typeof onProgress === "function") onProgress(progress);
+                } catch (error) { /* optional progress cannot affect the final response */ }
+              }
+              try {
+                var pollArgs = [{ type: "langform:summary-status", requestId: requestId }];
+                if (!binding.promiseApi) pollArgs.push(receiveProgress);
+                var poll = runtime.sendMessage.apply(runtime, pollArgs);
+                if (poll && typeof poll.then === "function") poll.then(receiveProgress, function () { receiveProgress(null); });
+                else if (binding.promiseApi) receiveProgress(null);
+              } catch (error) { receiveProgress(null); }
+            }, PROGRESS_POLL_MS);
           }
           return;
         } catch (err4) {
-          /* try the next path */
+          finish(transportFailure(err4, failureCode));
+          return;
         }
       }
-      finish({ message: UNAVAILABLE });
+      finish(bridgeError ? transportFailure(bridgeError, "NATIVE_CONNECTION_FAILED") : summaryFailure("NATIVE_CONNECTION_UNAVAILABLE"));
     });
   }
 
@@ -324,9 +531,9 @@
       if (env && typeof env.summarize === "function") {
         return normalizeModelSummary(await env.summarize(text));
       }
-      return await askHost(text, env && env.host);
+      return await askHost(text, env && env.host, env && env.onProgress);
     } catch (err) {
-      return { message: UNAVAILABLE };
+      return transportFailure(err, "GENERATION_FAILED");
     }
   }
 
@@ -581,6 +788,7 @@
         try {
           raw = await fetchText(urls[u]);
         } catch (err) {
+          if (err && err.code === "CAPTIONS_TIMEOUT") return { kind: "timeout" };
           error = true;
           continue;
         }
@@ -614,6 +822,7 @@
       if (read.kind === "none") return null;
       sawTracks = true;
       if (read.kind === "text") return askModel(read.text, env);
+      if (read.kind === "timeout") return summaryFailure("CAPTIONS_TIMEOUT");
       if (read.kind === "empty") sawEmpty = true;
       if (read.kind === "error") sawError = true;
       return null;
@@ -632,6 +841,7 @@
         var fromApi = await consider(await requestPlayer(videoId, env, config));
         if (fromApi) return fromApi;
       } catch (err) {
+        if (err && err.code === "CAPTIONS_TIMEOUT") return summaryFailure("CAPTIONS_TIMEOUT");
         sawError = true;
       }
     }
@@ -649,6 +859,7 @@
         var fromWatch = await consider(extractPlayer(page, videoId));
         if (fromWatch) return fromWatch;
       } catch (err2) {
+        if (err2 && err2.code === "CAPTIONS_TIMEOUT") return summaryFailure("CAPTIONS_TIMEOUT");
         sawError = true;
       }
     }
@@ -719,8 +930,9 @@
       "  box-sizing: border-box;",
       "  margin: 0;",
       "  padding: 0;",
-      "  background: rgba(8, 7, 6, 0.66);",
+      "  overflow: clip;",
       "}",
+      ".langform-kurz-backdrop { position: absolute; inset: 0; background: rgba(8, 7, 6, 0.66); }",
       ".langform-kurz {",
       "  position: relative;",
       "  box-sizing: border-box;",
@@ -748,9 +960,10 @@
       "}",
       ".langform-kurz-body {",
       "  flex: 1 1 auto;",
+      "  min-height: 0;",
       "  overflow-y: auto;",
       "  -webkit-overflow-scrolling: touch;",
-      "  padding: 0 18px calc(36px + env(safe-area-inset-bottom, 0px));",
+      "  padding: 12px 18px calc(36px + env(safe-area-inset-bottom, 0px));",
       "}",
       ".langform-kurz h3 { scroll-margin-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }",
       ".langform-kurz button {",
@@ -768,11 +981,11 @@
       "  width: fit-content;",
       "  max-width: 100%;",
       "  margin: 6px 0 0;",
-      "  min-height: 32px;",
+      "  min-height: 44px;",
       "  padding: 0 2px;",
       "  border: 0;",
       "  background: transparent;",
-      "  color: #e6d3b1;",
+      "  color: var(--yt-spec-text-primary, inherit);",
       "  font: 600 13px/1.2 system-ui, sans-serif;",
       "  white-space: nowrap;",
       "  text-decoration: underline;",
@@ -780,9 +993,13 @@
       "  position: static;",
       "  flex: 0 0 auto;",
       "}",
-      ".langform-kurz h3 { margin: 14px 0 4px; font-size: 0.95rem; }",
-      ".langform-kurz p, .langform-kurz li { margin: 0 0 6px; }",
+      ".langform-kurz h3 { margin: 20px 0 8px; font-size: 1rem; font-weight: 500; }",
+      ".langform-kurz-body h3:first-child { margin-top: 0; }",
+      ".langform-kurz p, .langform-kurz li { margin: 0 0 12px; line-height: 1.5; }",
       ".langform-kurz ul { margin: 0; padding-left: 1.1rem; }",
+      ".langform-kurz button, .langform-kurz-open { transition: transform 100ms ease-out, background-color 100ms ease-out; -webkit-tap-highlight-color: transparent; }",
+      ".langform-kurz button:active, .langform-kurz-open:active { transform: scale(.97); }",
+      "@media (prefers-reduced-motion: reduce) { .langform-kurz button, .langform-kurz-open { transition: none; } .langform-kurz button:active, .langform-kurz-open:active { transform: none; } }",
     ].join("\n");
     (doc.documentElement || doc.head || doc.body).appendChild(style);
   }
@@ -790,13 +1007,45 @@
   function fillPanel(panel, doc, result) {
     var body = panel.querySelector(".langform-kurz-body");
     if (!body) return;
+    body.setAttribute("aria-busy", "false");
+    panel.setAttribute("data-summary-state", "error");
     while (body.firstChild) body.removeChild(body.firstChild);
     var points = result && result.summary && result.summary.points;
-    if (!result || result.message || !points || points.length < 3) {
+    if (!validSummaryResult(result)) {
       var note = doc.createElement("p");
-      note.textContent = (result && result.message) || FAILED;
+      note.textContent = (result && result.message) || ERROR_MESSAGES.INVALID_NATIVE_RESPONSE;
       body.appendChild(note);
+      if (typeof panel.__langformKurzRetry === "function") {
+        var retry = doc.createElement("button");
+        retry.type = "button";
+        retry.className = "langform-kurz-retry";
+        retry.textContent = "Erneut versuchen";
+        retry.addEventListener("click", function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          panel.__langformKurzRetry();
+        });
+        body.appendChild(retry);
+      }
       return;
+    }
+    var summary = result.summary;
+    function paragraphSection(title, text) {
+      if (!text) return;
+      var heading = doc.createElement("h3");
+      heading.textContent = title;
+      var paragraph = doc.createElement("p");
+      paragraph.textContent = text;
+      body.appendChild(heading);
+      body.appendChild(paragraph);
+    }
+    paragraphSection("TLDR", summary.tldr);
+    // Older native apps return only points. Show what they supplied without
+    // inventing an introduction or a takeaway during an app update.
+    if (summary.tldr || summary.takeaway) {
+      var heading = doc.createElement("h3");
+      heading.textContent = "Die wichtigsten Punkte";
+      body.appendChild(heading);
     }
     var list = doc.createElement("ul");
     points.forEach(function (line) {
@@ -805,10 +1054,128 @@
       list.appendChild(item);
     });
     body.appendChild(list);
+    paragraphSection("Das bleibt hängen", summary.takeaway);
+    paragraphSection("Wichtige Einordnung", summary.caveat);
+    panel.setAttribute("data-summary-state", "ready");
+    panel.__langformKurzResult = result;
   }
 
-  function closeSheet(sheet) {
+  function fillProgress(panel, doc, progress) {
+    var body = panel.querySelector(".langform-kurz-body");
+    if (!body) return;
+    var label = "Die Untertitel werden vorbereitet …";
+    if (progress.phase === "reading") {
+      label = progress.totalSections > 0
+        ? "Die Untertitel werden gelesen: " + progress.processedSections + " von " + progress.totalSections + " Abschnitten …"
+        : "Die Untertitel werden gelesen …";
+    } else if (progress.phase === "reducing") {
+      label = "Die Inhalte werden zusammengeführt …";
+    } else if (progress.phase === "writing") {
+      label = progress.tldr ? "Wird noch ergänzt … Die wichtigsten Punkte werden geschrieben." : "Die Kurzfassung wird geschrieben …";
+    }
+    // Most polls repeat the same status. Preserve the existing text and scroll
+    // position instead of repeatedly announcing it to assistive technology.
+    var signature = JSON.stringify(progress);
+    if (panel.__langformKurzProgressSignature === signature) return;
+    panel.__langformKurzProgressSignature = signature;
+    while (body.firstChild) body.removeChild(body.firstChild);
+    if (progress.tldr) {
+      var heading = doc.createElement("h3");
+      heading.textContent = "TLDR";
+      var tldr = doc.createElement("p");
+      tldr.textContent = progress.tldr;
+      body.appendChild(heading);
+      body.appendChild(tldr);
+    }
+    var status = doc.createElement("p");
+    status.className = "langform-kurz-progress";
+    status.textContent = label;
+    body.appendChild(status);
+    if (progress.sourceIncomplete || progress.coverageIncomplete) {
+      var caveat = doc.createElement("p");
+      caveat.textContent = progress.coverageIncomplete
+        ? "Bisher konnte nur ein Teil der Untertitel berücksichtigt werden."
+        : "Die verfügbaren Untertitel sind unvollständig.";
+      body.appendChild(caveat);
+    }
+    body.setAttribute("aria-busy", "true");
+    panel.setAttribute("data-summary-state", "pending");
+  }
+
+  function stopObservingProgress(sheet) {
+    if (sheet && typeof sheet.__langformKurzStopProgress === "function") sheet.__langformKurzStopProgress();
+  }
+
+  function stopSheetMotion(sheet) {
+    var motion = sheet.__langformKurzMotion;
+    sheet.__langformKurzMotion = null;
+    if (motion) motion.animations.forEach(function (animation) {
+      animation.onfinish = null;
+      animation.cancel();
+    });
+  }
+
+  function finishSheetClose(sheet, restoreFocus) {
+    stopObservingProgress(sheet);
+    stopSheetMotion(sheet);
+    if (sheet.__langformKurzDispose) sheet.__langformKurzDispose();
+    var doc = sheet.ownerDocument;
+    var focusedHere = sheet.contains(doc.activeElement);
     if (sheet && sheet.parentNode) sheet.parentNode.removeChild(sheet);
+    var opener = sheet.__langformKurzOpener;
+    if (restoreFocus && focusedHere && opener && opener.isConnected) opener.focus({ preventScroll: true });
+  }
+
+  function moveSummarySheet(sheet, opening) {
+    var win = sheet.ownerDocument.defaultView;
+    var panel = sheet.querySelector(".langform-kurz");
+    var backdrop = sheet.querySelector(".langform-kurz-backdrop");
+    var preference = sheet.__langformKurzReduced;
+    if (!win || (preference && preference.matches) || typeof panel.animate !== "function") {
+      stopSheetMotion(sheet);
+      if (!opening) finishSheetClose(sheet, true);
+      return;
+    }
+    var from = opening ? "translateY(100%)" : "translateY(0)";
+    var shade = opening ? "0" : "1";
+    if (sheet.__langformKurzMotion) {
+      from = win.getComputedStyle(panel).transform;
+      shade = win.getComputedStyle(backdrop).opacity;
+    }
+    stopSheetMotion(sheet);
+    var timing = { duration: opening ? 280 : 180,
+      easing: opening ? "cubic-bezier(.16,1,.3,1)" : "cubic-bezier(.7,0,.84,0)", fill: "both" };
+    var motion = { opening: opening, animations: [
+      panel.animate([{ transform: from }, { transform: opening ? "translateY(0)" : "translateY(100%)" }], timing),
+      backdrop.animate([{ opacity: shade }, { opacity: opening ? "1" : "0" }], timing),
+    ] };
+    sheet.__langformKurzMotion = motion;
+    motion.animations[0].onfinish = function () {
+      if (sheet.__langformKurzMotion !== motion) return;
+      if (opening) stopSheetMotion(sheet);
+      else finishSheetClose(sheet, true);
+    };
+  }
+
+  function closeSheet(sheet, immediate) {
+    if (!sheet) return;
+    if (immediate) { finishSheetClose(sheet, false); return; }
+    if (sheet.__langformKurzClosing) return;
+    sheet.__langformKurzClosing = true;
+    stopObservingProgress(sheet);
+    sheet.querySelector(".langform-kurz").style.pointerEvents = "none";
+    moveSummarySheet(sheet, false);
+  }
+
+  function openSheetMotion(sheet, opener) {
+    var fresh = !sheet.__langformKurzOpened;
+    if (opener) sheet.__langformKurzOpener = opener;
+    if (!fresh && !sheet.__langformKurzClosing) return;
+    sheet.__langformKurzOpened = true;
+    sheet.__langformKurzClosing = false;
+    sheet.querySelector(".langform-kurz").style.pointerEvents = "";
+    if (fresh) sheet.querySelector("header button").focus({ preventScroll: true });
+    moveSummarySheet(sheet, true);
   }
 
   function ensureSheet(doc) {
@@ -818,6 +1185,10 @@
     sheet.id = PANEL_ID;
     sheet.className = "langform-kurz-sheet";
     sheet.setAttribute("lang", "de");
+    var backdrop = doc.createElement("div");
+    backdrop.className = "langform-kurz-backdrop";
+    backdrop.setAttribute("aria-hidden", "true");
+    sheet.appendChild(backdrop);
     var panel = doc.createElement("section");
     panel.className = "langform-kurz";
     panel.setAttribute("role", "dialog");
@@ -838,13 +1209,53 @@
     header.appendChild(close);
     var body = doc.createElement("div");
     body.className = "langform-kurz-body";
+    body.setAttribute("aria-live", "polite");
     panel.appendChild(header);
     panel.appendChild(body);
     panel.setAttribute("aria-labelledby", title.id);
     sheet.appendChild(panel);
     sheet.addEventListener("click", function (event) {
-      if (event.target === sheet) closeSheet(sheet);
+      if (event.target === sheet || event.target === backdrop) closeSheet(sheet);
     });
+    sheet.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        event.preventDefault(); event.stopPropagation(); closeSheet(sheet);
+      } else if (event.key === "Tab") {
+        var buttons = panel.querySelectorAll("button:not([disabled])");
+        var first = buttons[0], last = buttons[buttons.length - 1];
+        if (first && ((event.shiftKey && doc.activeElement === first) || (!event.shiftKey && doc.activeElement === last))) {
+          event.preventDefault(); (event.shiftKey ? last : first).focus({ preventScroll: true });
+        }
+      }
+    });
+    var win = doc.defaultView;
+    if (win) {
+      var preference = win.matchMedia && win.matchMedia("(prefers-reduced-motion: reduce)");
+      sheet.__langformKurzReduced = preference;
+      function settle() {
+        if (sheet.__langformKurzClosing) finishSheetClose(sheet, true);
+        else stopSheetMotion(sheet);
+      }
+      function reduce() { if (preference.matches) settle(); }
+      function leave() { closeSheet(sheet, true); }
+      function visibility() { if (win.__langformFeedActive === false) leave(); }
+      var lifecycle = ["pagehide", "yt-navigate-start", "state-navigatestart", "popstate"];
+      lifecycle.forEach(function (name) { win.addEventListener(name, leave); });
+      win.addEventListener("resize", settle);
+      win.addEventListener("orientationchange", settle);
+      win.addEventListener("langform-feed-visibility", visibility);
+      if (win.visualViewport) win.visualViewport.addEventListener("resize", settle);
+      if (preference && preference.addEventListener) preference.addEventListener("change", reduce);
+      sheet.__langformKurzDispose = function () {
+        lifecycle.forEach(function (name) { win.removeEventListener(name, leave); });
+        win.removeEventListener("resize", settle);
+        win.removeEventListener("orientationchange", settle);
+        win.removeEventListener("langform-feed-visibility", visibility);
+        if (win.visualViewport) win.visualViewport.removeEventListener("resize", settle);
+        if (preference && preference.removeEventListener) preference.removeEventListener("change", reduce);
+        sheet.__langformKurzDispose = null;
+      };
+    }
     return sheet;
   }
 
@@ -857,18 +1268,37 @@
   function fetchTextFactory(win) {
     return function (url, init) {
       var fetchImpl = (win && win.fetch) || (ownGlobal() && ownGlobal().fetch);
+      var timers = win && typeof win.setTimeout === "function" ? win : ownGlobal();
+      var Controller = (win && win.AbortController) || (ownGlobal() && ownGlobal().AbortController);
+      var controller = Controller ? new Controller() : null;
       var options = { credentials: "include" };
+      if (controller) options.signal = controller.signal;
       if (init && init.method) options.method = init.method;
       if (init && init.body != null) options.body = init.body;
       if (init && init.headers) options.headers = init.headers;
-      return Promise.resolve()
-        .then(function () {
-          return fetchImpl(url, options);
-        })
-        .then(function (response) {
+      // Include response-body reading in the deadline: headers alone do not
+      // make the captions usable. Ignore late replies and leave retry explicit.
+      return new Promise(function (resolve, reject) {
+        var settled = false;
+        var timer = timers.setTimeout(function () {
+          var error = new Error(ERROR_MESSAGES.CAPTIONS_TIMEOUT);
+          error.code = "CAPTIONS_TIMEOUT";
+          finish(null, error);
+          if (controller) controller.abort();
+        }, CAPTIONS_TIMEOUT_MS);
+        function finish(text, error) {
+          if (settled) return;
+          settled = true;
+          timers.clearTimeout(timer);
+          if (error) reject(error);
+          else resolve(text);
+        }
+        Promise.resolve().then(function () { return fetchImpl(url, options); }).then(function (response) {
+          if (settled) return null;
           if (!response || !response.ok) throw new Error("Antwort fehlt");
           return response.text();
-        });
+        }).then(function (text) { finish(text); }, function (error) { finish(null, error); });
+      });
     };
   }
 
@@ -1027,39 +1457,126 @@
       });
   }
 
-  function showSummary(doc, win, videoId) {
+  function cachedSummaries(win) {
+    var cache = win.__langformKurzCache;
+    if (!cache || cache.version !== CACHE_VERSION || !Array.isArray(cache.entries)) {
+      cache = { version: CACHE_VERSION, entries: [] };
+      win.__langformKurzCache = cache;
+    }
+    return cache.entries;
+  }
+
+  function cachedSummary(win, videoId) {
+    var entries = cachedSummaries(win);
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].videoId !== videoId) continue;
+      var entry = entries.splice(i, 1)[0];
+      if (!reusableSummaryResult(entry.result)) return null;
+      entries.push(entry);
+      return entry.result;
+    }
+    return null;
+  }
+
+  function rememberSummary(win, videoId, result) {
+    if (!reusableSummaryResult(result)) return;
+    var entries = cachedSummaries(win);
+    for (var i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].videoId === videoId) entries.splice(i, 1);
+    }
+    entries.push({ videoId: videoId, result: result });
+    if (entries.length > CACHE_LIMIT) entries.splice(0, entries.length - CACHE_LIMIT);
+  }
+
+  function summaryRequests(win) {
+    var requests = win.__langformKurzRequests;
+    if (!requests || requests.version !== CACHE_VERSION) {
+      requests = { version: CACHE_VERSION, pending: Object.create(null) };
+      win.__langformKurzRequests = requests;
+    }
+    return requests.pending;
+  }
+
+  function showSummary(doc, win, videoId, opener) {
     ensureStyle(doc);
     var sheet = ensureSheet(doc);
     mountSheet(doc, sheet);
-    if (sheet.getAttribute("data-video") === videoId && sheet.querySelector(".langform-kurz-body").childNodes.length) {
+    sheet.__langformKurzRetry = function () { showSummary(doc, win, videoId); };
+    if (sheet.getAttribute("data-video") === videoId && sheet.getAttribute("data-summary-state") === "ready" && reusableSummaryResult(sheet.__langformKurzResult)) {
+      openSheetMotion(sheet, opener);
       return;
     }
+    stopObservingProgress(sheet);
+    sheet.__langformKurzProgressSignature = null;
+    sheet.__langformKurzResult = null;
     sheet.setAttribute("data-video", videoId);
     var body = sheet.querySelector(".langform-kurz-body");
     while (body.firstChild) body.removeChild(body.firstChild);
-    var waiting = doc.createElement("p");
-    waiting.textContent = "Die Kurzfassung wird geschrieben …";
-    body.appendChild(waiting);
     var ticket = String(Date.now()) + "-" + Math.random();
     sheet.setAttribute("data-ticket", ticket);
+    // The window cache skips caption retrieval. Safari's background also keeps
+    // successful model results locally by transcript fingerprint across loads.
+    var cached = cachedSummary(win, videoId);
+    if (cached) {
+      fillPanel(sheet, doc, cached);
+      openSheetMotion(sheet, opener);
+      return;
+    }
+    var waiting = doc.createElement("p");
+    waiting.textContent = "Die Untertitel werden gelesen und verständlich zusammengefasst …";
+    body.setAttribute("aria-busy", "true");
+    sheet.setAttribute("data-summary-state", "pending");
+    body.appendChild(waiting);
+    openSheetMotion(sheet, opener);
     var pageUrl = win && win.location ? win.location.href : "https://www.youtube.com/";
-    bridgeFor(win, videoId, pageUrl).then(function (bridge) {
-      if (!sheet.isConnected) return null;
-      if (sheet.getAttribute("data-ticket") !== ticket) return null;
-      if (!bridge) return { message: FAILED };
-      return loadSummary(videoId, {
-        player: bridge.player,
-        pageUrl: pageUrl,
-        ytcfg: bridge.ytcfg,
-        host: win,
-        fetchText: bridge.fetchText,
-        watchPage: bridge.watchPage,
+    var requests = summaryRequests(win);
+    var request = requests[videoId];
+    if (!request) {
+      request = { progress: null, observers: new Set(), promise: null };
+      // Pending work belongs to the window, not the temporary sheet. Closing
+      // or switching the sheet keeps both the request and its latest status.
+      requests[videoId] = request;
+      request.promise = bridgeFor(win, videoId, pageUrl).then(function (bridge) {
+        if (!bridge) return { message: FAILED };
+        return loadSummary(videoId, {
+          player: bridge.player,
+          pageUrl: pageUrl,
+          ytcfg: bridge.ytcfg,
+          host: win,
+          fetchText: bridge.fetchText,
+          watchPage: bridge.watchPage,
+          onProgress: function (progress) {
+            if (requests[videoId] !== request) return;
+            request.progress = progress;
+            request.observers.forEach(function (observer) { observer(progress); });
+          },
+        });
+      }).catch(function () { return { message: FAILED }; }).then(function (result) {
+        if (requests[videoId] === request) delete requests[videoId];
+        request.progress = null;
+        request.observers.clear();
+        rememberSummary(win, videoId, result);
+        return result;
       });
-    }).then(function (result) {
+    }
+    function stillVisible() {
+      return sheet.isConnected && !sheet.__langformKurzClosing && sheet.getAttribute("data-ticket") === ticket && sheet.getAttribute("data-video") === videoId;
+    }
+    function observeProgress(progress) {
+      if (!stillVisible()) { unsubscribe(); return; }
+      fillProgress(sheet, doc, progress);
+    }
+    function unsubscribe() {
+      request.observers.delete(observeProgress);
+      if (sheet.__langformKurzStopProgress === unsubscribe) sheet.__langformKurzStopProgress = null;
+    }
+    sheet.__langformKurzStopProgress = unsubscribe;
+    request.observers.add(observeProgress);
+    if (request.progress) observeProgress(request.progress);
+    request.promise.then(function (result) {
+      unsubscribe();
       if (!result) return;
-      if (!sheet.isConnected) return;
-      if (sheet.getAttribute("data-ticket") !== ticket) return;
-      if (sheet.getAttribute("data-video") !== videoId) return;
+      if (!stillVisible()) return;
       fillPanel(sheet, doc, result);
     });
   }
@@ -1093,7 +1610,14 @@
   }
 
   function bindButton(doc, win, card, videoId) {
-    if (!card || card.querySelector("[" + BUTTON_ATTR + '="' + videoId + '"]')) return;
+    if (!card) return null;
+    var existing = null;
+    var buttons = card.querySelectorAll("[" + BUTTON_ATTR + "]");
+    for (var i = 0; i < buttons.length; i++) {
+      if (!existing && buttons[i].getAttribute(BUTTON_ATTR) === videoId) existing = buttons[i];
+      else buttons[i].remove();
+    }
+    if (existing) return existing;
     ensureStyle(doc);
     var button = doc.createElement("button");
     button.type = "button";
@@ -1108,11 +1632,12 @@
       function (event) {
         event.preventDefault();
         event.stopPropagation();
-        showSummary(doc, win, videoId);
+        showSummary(doc, win, videoId, button);
       },
       true
     );
     placeInColumn(card, button);
+    return button;
   }
 
   function forEachElement(rootNode, visit) {
@@ -1122,6 +1647,7 @@
       var node = stack.pop();
       if (!node || seen.has(node)) continue;
       seen.add(node);
+      if (node.nodeType === 1 && skipDecorationBranch(node)) continue;
       if (node.nodeType === 1) visit(node);
       if (node.shadowRoot) stack.push(node.shadowRoot);
       var children = node.children;
@@ -1149,7 +1675,7 @@
     return null;
   }
 
-  function decorate(doc, pageUrl, win) {
+  function decorate(doc, pageUrl, win, roots) {
     if (!doc) return;
     var base = pageUrl || (win && win.location && win.location.href) || "https://www.youtube.com/";
     var watchId = "";
@@ -1166,24 +1692,25 @@
       var meta = watchAnchor(doc);
       if (meta) bindButton(doc, win || ownGlobal(), meta, watchId);
     }
-    forEachElement(doc, function (el) {
+    var seenCards = new Set();
+    function decorateLink(el) {
       if (el.tagName !== "A" || !el.getAttribute("href")) return;
-      if (el.closest && el.closest("#" + PANEL_ID)) return;
-      if (isHeaderControl(el)) return;
-      var id = videoIdFromHref(el.getAttribute("href"), base);
-      if (!id || id === watchId) return;
       var card = videoRowOf(el);
-      if (!card || (card.closest && card.closest("#" + PANEL_ID))) return;
+      if (!card || seenCards.has(card)) return;
+      seenCards.add(card);
       var rowId = videoIdFromHref(rowWatchHref(card, base), base);
-      if (!rowId) return;
+      if (!rowId || rowId === watchId) return;
       var seconds = durationSecondsFromCard(card);
       if (seconds != null && seconds < 60) return;
       bindButton(doc, win || ownGlobal(), card, rowId);
+    }
+    (roots || [doc]).forEach(function (rootNode) {
+      if (rootNode && rootNode.isConnected) forEachElement(rootNode, decorateLink);
     });
   }
 
-  // decorate walks every link on the page. While the feed streams in, run it
-  // at most this often instead of once per mutation batch.
+  // Coalesce changed cards while the feed streams in. Only startup and
+  // navigation need to revisit the links that were already decorated.
   var DECORATE_GAP = 300;
 
   function watchIdOf(win) {
@@ -1212,69 +1739,148 @@
     if (!watchPlaying(win)) return false;
     win.__langformKurzDeferred = true;
     var id = watchIdOf(win);
-    if (win.__langformKurzWatchBound !== id) {
+    var bound = win.__langformKurzWatchButton;
+    if (!bound || !bound.isConnected || bound.getAttribute(BUTTON_ATTR) !== id) {
       var meta = watchAnchor(win.document);
       if (meta) {
-        bindButton(win.document, win, meta, id);
-        win.__langformKurzWatchBound = id;
+        win.__langformKurzWatchButton = bindButton(win.document, win, meta, id);
       }
     }
     return true;
   }
 
-  function schedule(win) {
-    if (!win || win.__langformKurzTimer) return;
-    if (win.__langformKurzScrolling) return;
+  function schedule(win, incremental) {
+    if (!win) return;
+    if (!incremental) {
+      win.__langformKurzFull = true;
+      win.__langformKurzRoots = [];
+    }
+    if (win.__langformFeedActive === false) {
+      suspendFeed(win, true);
+      return;
+    }
+    if (win.__langformKurzTimer) return;
+    if (win.__langformKurzScrolling) {
+      win.__langformKurzPending = true;
+      return;
+    }
+    win.__langformKurzPending = false;
     if (holdForPlayback(win)) return;
     var last = win.__langformKurzLast || 0;
     var wait = Math.max(0, last + DECORATE_GAP - Date.now());
     win.__langformKurzTimer = setTimeout(function () {
       win.__langformKurzTimer = 0;
-      if (win.__langformKurzScrolling || !win.document) return;
+      if (!win.document) return;
+      if (win.__langformFeedActive === false) {
+        suspendFeed(win, true);
+        return;
+      }
+      if (win.__langformKurzScrolling) {
+        win.__langformKurzPending = true;
+        return;
+      }
       if (holdForPlayback(win)) return;
       win.__langformKurzLast = Date.now();
+      var roots = win.__langformKurzFull ? null : win.__langformKurzRoots || [];
+      win.__langformKurzFull = false;
+      win.__langformKurzRoots = [];
       try {
-        decorate(win.document, win.location.href, win);
+        decorate(win.document, win.location.href, win, roots);
       } catch (err) {
         /* the page can tear the DOM down mid-walk */
       }
     }, wait);
   }
 
+  function skipDecorationBranch(node) {
+    var tag = node.tagName;
+    return tag === "VIDEO" || tag === "YTD-PLAYER" || tag === "YTM-PLAYER" || node.id === "movie_player" ||
+      /^YT[DM]-COMMENTS?(?:-|$)/.test(tag) || tag === "YT-COMMENT-THREAD-VIEW-MODEL" ||
+      tag === "YT-COMMENT-VIEW-MODEL" ||
+      node.id === PANEL_ID || node.id === "langform-chapter-chip" || node.id === "langform-chapter-sheet" ||
+      node.hasAttribute(BUTTON_ATTR) || node.id === STYLE_ID;
+  }
+
   function insidePlayerOrOurs(node) {
     var guard = 0;
     while (node && guard++ < 25) {
-      if (node.nodeType === 1) {
-        var tag = node.tagName;
-        if (tag === "VIDEO" || tag === "YTD-PLAYER" || tag === "YTM-PLAYER" || node.id === "movie_player") return true;
-        if (node.id === PANEL_ID || node.id === "langform-chapter-chip" || node.id === "langform-chapter-sheet") return true;
-      }
+      if (node.nodeType === 1 && skipDecorationBranch(node)) return true;
       var rootNode = node.getRootNode && node.getRootNode();
       node = node.parentElement || (rootNode && rootNode.host) || null;
     }
     return false;
   }
 
-  function relevantMutation(records) {
+  function queueDecoration(win, node) {
+    if (!node || node.nodeType !== 1 || insidePlayerOrOurs(node)) return false;
+    if (win.__langformKurzFull) return true;
+    // A changed title or thumbnail may have lost its button, while a changed
+    // href may now represent a different video. Refresh its complete card.
+    node = videoRowOf(node) || node;
+    var roots = win.__langformKurzRoots || (win.__langformKurzRoots = []);
+    for (var i = roots.length - 1; i >= 0; i--) {
+      if (roots[i] === node || roots[i].contains(node)) return true;
+      if (node.contains(roots[i])) roots.splice(i, 1);
+    }
+    roots.push(node);
+    if (roots.length > 40) {
+      win.__langformKurzFull = true;
+      win.__langformKurzRoots = [];
+    }
+    return true;
+  }
+
+  function queueMutations(win, records) {
+    var relevant = false;
     for (var i = 0; i < records.length; i++) {
       var record = records[i];
       if (insidePlayerOrOurs(record.target)) continue;
+      if (record.type === "attributes") {
+        if (queueDecoration(win, record.target)) relevant = true;
+        continue;
+      }
       var added = record.addedNodes || [];
       for (var j = 0; j < added.length; j++) {
-        if (added[j] && added[j].nodeType === 1) return true;
+        if (queueDecoration(win, added[j])) relevant = true;
       }
     }
-    return false;
+    return relevant;
   }
 
   function noteScroll(win) {
+    if (win.__langformFeedActive === false) return;
     win.__langformKurzScrolling = true;
     if (win.__langformKurzScrollTimer) clearTimeout(win.__langformKurzScrollTimer);
     win.__langformKurzScrollTimer = setTimeout(function () {
       win.__langformKurzScrolling = false;
       win.__langformKurzScrollTimer = 0;
-      schedule(win);
+      if (win.__langformKurzPending) schedule(win, true);
     }, 140);
+  }
+
+  function suspendFeed(win, dirty) {
+    if (dirty) {
+      win.__langformKurzFeedDeferred = true;
+      win.__langformKurzFull = true;
+    }
+    if (win.__langformKurzTimer) clearTimeout(win.__langformKurzTimer);
+    if (win.__langformKurzScrollTimer) clearTimeout(win.__langformKurzScrollTimer);
+    win.__langformKurzTimer = win.__langformKurzScrollTimer = 0;
+    win.__langformKurzScrolling = win.__langformKurzPending = false;
+    // Retained inactive tabs need one dirty bit, not references to every
+    // changing card. Their existing DOM, buttons and scroll position stay.
+    win.__langformKurzRoots = [];
+  }
+
+  function feedVisibilityChanged(win) {
+    if (win.__langformFeedActive === false) {
+      suspendFeed(win, !!(win.__langformKurzTimer || win.__langformKurzPending ||
+        win.__langformKurzFull || win.__langformKurzDeferred ||
+        (win.__langformKurzRoots && win.__langformKurzRoots.length)));
+    } else if (win.__langformKurzFeedDeferred) {
+      win.__langformKurzFeedDeferred = false;
+      schedule(win);
+    }
   }
 
   function start(win) {
@@ -1287,6 +1893,9 @@
     }
     if (!hosts[host]) return;
     win.__langformKurzStarted = true;
+    win.addEventListener("langform-feed-visibility", function () {
+      feedVisibilityChanged(win);
+    });
     if (isolatedFromPage(win)) injectPageHook(win);
     win.addEventListener("yt-navigate-finish", function () {
       schedule(win);
@@ -1297,26 +1906,29 @@
     function afterPlayback() {
       if (!win.__langformKurzDeferred) return;
       win.__langformKurzDeferred = false;
-      schedule(win);
+      schedule(win, true);
     }
     win.document.addEventListener("pause", afterPlayback, true);
     win.document.addEventListener("ended", afterPlayback, true);
     win.document.addEventListener(
       "scroll",
-      function () {
+      function (event) {
+        // A comment list or our own sheet scrolls independently of the feed.
+        // Its links are text content, not video cards awaiting decoration.
+        if (event.target && insidePlayerOrOurs(event.target)) return;
         noteScroll(win);
       },
       { passive: true, capture: true }
     );
     if (win.MutationObserver && win.document.documentElement) {
       var observer = new win.MutationObserver(function (records) {
-        if (watchPlaying(win)) {
-          holdForPlayback(win);
+        if (win.__langformFeedActive === false) {
+          if (records.length) suspendFeed(win, true);
           return;
         }
-        if (relevantMutation(records)) schedule(win);
+        if (queueMutations(win, records)) schedule(win, true);
       });
-      observer.observe(win.document.documentElement, { childList: true, subtree: true });
+      observer.observe(win.document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["href"] });
     }
     schedule(win);
   }

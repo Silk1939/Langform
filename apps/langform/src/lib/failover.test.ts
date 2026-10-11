@@ -76,4 +76,20 @@ describe("Ausweichkette", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(aborted).toBe(true);
   });
+
+  it("beendet eine verschachtelte Ausweichkette, wenn ihre übergeordnete Anfrage endet", async () => {
+    const parent = new AbortController();
+    let signal: AbortSignal | undefined;
+    const request = firstUseful([{
+      name: "langsam",
+      load: (child) => {
+        signal = child;
+        return new Promise<string>(() => {});
+      },
+    }], () => true, { signal: parent.signal });
+    await Promise.resolve();
+    parent.abort();
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(signal?.aborted).toBe(true);
+  });
 });

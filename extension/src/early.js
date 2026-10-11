@@ -77,8 +77,11 @@
     ':not(:has(input[name="search_query"]))' +
     ':not(:has(input[type="search"]))';
 
+  var CONTINUATION_GUARD =
+    ':not(:has(ytm-continuation-item-renderer, ytd-continuation-item-renderer))';
+
   // Only the bar, guide and chip containers can hold YouTube's search box.
-  // Feed cards skip the extra :has() tests, which WebKit re-evaluates on every
+  // Feed cards skip the extra search :has() tests, which WebKit re-evaluates on every
   // mutation while the feed streams in.
   function mayHoldSearch(tag) {
     return tag.indexOf("pivot") !== -1 || tag.indexOf("guide") !== -1 || tag.indexOf("chip") !== -1;
@@ -87,7 +90,7 @@
   function buildCss() {
     var anchors = safeAnchors().join(", ");
     var items = ITEM_TAGS.map(function (tag) {
-      return tag + ":has(" + anchors + ")" + (mayHoldSearch(tag) ? SEARCH_GUARD : "") + CHAPTER_GUARD;
+      return tag + ":has(" + anchors + ")" + (mayHoldSearch(tag) ? SEARCH_GUARD : "") + CHAPTER_GUARD + CONTINUATION_GUARD;
     });
     var always = [
       "ytd-reel-shelf-renderer",
@@ -113,7 +116,11 @@
       'ytm-pivot-bar-item-renderer:has([aria-label="YouTube Shorts"])' + SEARCH_GUARD,
       ".shorts-ausblenden-hidden",
     ];
-    return always.concat(items).join(",\n") + " {\n  display: none !important;\n}\n";
+    // A continuation needs non-zero layout height for YouTube's own
+    // IntersectionObserver to load the next page. Its wrapper must survive
+    // even when the neighboring Shorts content is hidden.
+    return always.map(function (selector) { return selector + CONTINUATION_GUARD; })
+      .concat(items).join(",\n") + " {\n  display: none !important;\n}\n";
   }
 
   function install(doc) {

@@ -41,7 +41,7 @@ function sentences(count) {
   return lines.join(" ");
 }
 
-test("Seitenwelt erreicht sendNativeMessage, ohne ein globales root", async function () {
+test("Safari-Content-Script erreicht das Modell über den Background, ohne ein globales root", async function () {
   const fs = require("fs");
   const src = fs.readFileSync(require.resolve("../extension/src/summary.js"), "utf8");
   const factoryAt = src.indexOf("function () {");
@@ -50,13 +50,13 @@ test("Seitenwelt erreicht sendNativeMessage, ohne ein globales root", async func
   const previous = global.browser;
   global.browser = {
     runtime: {
-      sendNativeMessage(name, body, callback) {
+      sendMessage(body) {
+        assert.equal(arguments.length, 1, "browser.runtime.sendMessage nutzt die Promise-API");
         if (String(body && body.text).indexOf("MARKER_SEITENWELT") === -1) {
-          if (typeof callback === "function") callback(null);
-          return;
+          return Promise.resolve(null);
         }
-        seen.push({ name: name, text: body.text });
-        callback({
+        seen.push({ type: body.type, text: body.text });
+        return Promise.resolve({
           summary: {
             points: [
               "Der Markt wird aufgebaut.",
@@ -81,7 +81,7 @@ test("Seitenwelt erreicht sendNativeMessage, ohne ein globales root", async func
       },
     });
     assert.equal(seen.length, 1);
-    assert.equal(seen[0].name, "de.ipekkaya.shorts-ausblenden");
+    assert.equal(seen[0].type, "langform:summarize");
     assert.match(seen[0].text, /MARKER_SEITENWELT/);
     assert.equal(result.message, undefined);
     assert.equal(result.summary.points.length, 3);
@@ -90,6 +90,21 @@ test("Seitenwelt erreicht sendNativeMessage, ohne ein globales root", async func
     if (previous === undefined) delete global.browser;
     else global.browser = previous;
   }
+});
+
+test("XML-Untertitel erhalten Vergleiche, literale Tags und Unicode-Zeichen nach dem Decoding", function () {
+  assert.equal(
+    summary.textFromCaptions('<transcript><text>x &lt; 5 und y &gt; 2. &lt;script&gt; ist hier Text.</text></transcript>'),
+    "x < 5 und y > 2. <script> ist hier Text."
+  );
+  assert.equal(
+    summary.textFromCaptions('<timedtext><body><p><s>Ein </s><s>Zeichen: &#x1F9EC; und &#129516;.</s></p></body></timedtext>'),
+    "Ein Zeichen: 🧬 und 🧬."
+  );
+  assert.equal(
+    summary.textFromCaptions('<transcript><text>&amp;lt; 5 und &amp;gt; 2. &#x110000; bleibt lesbar.</text></transcript>'),
+    "< 5 und > 2. &#x110000; bleibt lesbar."
+  );
 });
 
 test("deutsche Spur gewinnt, sonst Übersetzung nach Deutsch", function () {
@@ -167,7 +182,7 @@ test("Kurzfassung ist das Modell, kein Transkript", async function () {
   assert.equal(joined.includes("wörtlich so gesagt"), false);
   assert.equal(joined.includes("Am Ende ist das Essen fertig"), false);
   assert.equal(joined.includes("Es geht um ein Rezept"), false);
-  const tooFew = await summary.loadSummary("abcdefghijk", {
+  const brief = await summary.loadSummary("abcdefghijk", {
     player: {
       videoDetails: { videoId: "abcdefghijk" },
       captions: { playerCaptionsTracklistRenderer: { captionTracks: [DE_TRACK] } },
@@ -179,9 +194,9 @@ test("Kurzfassung ist das Modell, kein Transkript", async function () {
       return { summary: { about: "Nur ein Überblick.", points: ["Ein einzelner Punkt."] } };
     },
   });
-  assert.equal(tooFew.message, summary.UNAVAILABLE);
-  assert.equal(tooFew.summary, undefined);
-  assert.equal(JSON.stringify(tooFew).includes("Satz Nummer"), false);
+  assert.deepEqual(brief.summary.points, ["Ein einzelner Punkt."]);
+  assert.equal(brief.message, undefined);
+  assert.equal(JSON.stringify(brief).includes("Satz Nummer"), false);
   const tooMany = await summary.loadSummary("abcdefghijk", {
     player: {
       videoDetails: { videoId: "abcdefghijk" },
@@ -193,12 +208,12 @@ test("Kurzfassung ist das Modell, kein Transkript", async function () {
     summarize() {
       return {
         summary: {
-          points: ["Eins.", "Zwei.", "Drei.", "Vier.", "Fünf.", "Sechs.", "Sieben.", "Acht."],
+          points: ["Eins.", "Zwei.", "Drei.", "Vier.", "Fünf.", "Sechs.", "Sieben.", "Acht.", "Neun."],
         },
       };
     },
   });
-  assert.deepEqual(tooMany.summary.points, ["Eins.", "Zwei.", "Drei.", "Vier.", "Fünf.", "Sechs."]);
+  assert.deepEqual(tooMany.summary.points, ["Eins.", "Zwei.", "Drei.", "Vier.", "Fünf.", "Sechs.", "Sieben.", "Acht."]);
   const missed = await summary.loadSummary("abcdefghijk", {
     player: {
       videoDetails: { videoId: "abcdefghijk" },
@@ -208,7 +223,8 @@ test("Kurzfassung ist das Modell, kein Transkript", async function () {
       return Promise.resolve(JSON.stringify({ events: [{ segs: [{ utf8: spoken }] }] }));
     },
   });
-  assert.equal(missed.message, summary.UNAVAILABLE);
+  assert.equal(missed.code, "NATIVE_CONNECTION_UNAVAILABLE");
+  assert.equal(missed.message, "Die Verbindung zur Kurzfassung-App ist gerade nicht verfügbar.");
   assert.equal(JSON.stringify(missed).includes("Satz Nummer"), false);
   assert.equal(summary.textFromJson3({ events: [] }), "");
   assert.equal(
@@ -283,6 +299,723 @@ test("ohne Spur ein Satz, Fetch bleibt auf YouTube-Untertiteln", async function 
   });
   assert.match(calls[1], /tlang=de/);
   assert.match(calls[0], /m\.youtube\.com\/watch\?v=abcdefghijk/);
+});
+
+test("wenige belegte Punkte bleiben kurz; Dopplungen und fehlerhafte Modellwerte füllen sie nicht auf", async function () {
+  async function resultFor(points) {
+    return summary.loadSummary("abcdefghijk", {
+      player: {
+        videoDetails: { videoId: "abcdefghijk" },
+        captions: { playerCaptionsTracklistRenderer: { captionTracks: [DE_TRACK] } },
+      },
+      fetchText() {
+        return Promise.resolve(JSON.stringify({ events: [{ segs: [{ utf8: "Das Gemüse braucht 20 Minuten. Die Autorin hält Umluft für besser." }] }] }));
+      },
+      summarize() { return { summary: { points: points } }; },
+    });
+  }
+  const compact = await resultFor([
+    "  Das Gemüse braucht 20 Minuten.  ",
+    "Das Gemüse braucht 20 Minuten.",
+    "Die Autorin hält Umluft für besser.",
+    "Das war die einzige neue Information.",
+    "", null, 20, { text: "Kein gültiger Modellpunkt" },
+  ]);
+  assert.deepEqual(compact.summary.points, [
+    "Das Gemüse braucht 20 Minuten.", "Die Autorin hält Umluft für besser.",
+  ]);
+  const empty = await resultFor([" ", null, {}]);
+  assert.equal(empty.summary, undefined);
+  assert.match(empty.message, /keine verlässliche Kurzfassung/);
+  const limitations = await resultFor([
+    "Das war die einzige neue Information.",
+    "Die Studie umfasst nur 30 Haushalte.",
+    "Die Langzeithaltbarkeit wurde nicht getestet.",
+    "Die Ergebnisse gelten nur für den Winter.",
+  ]);
+  assert.deepEqual(limitations.summary.points, [
+    "Die Studie umfasst nur 30 Haushalte.",
+    "Die Langzeithaltbarkeit wurde nicht getestet.",
+    "Die Ergebnisse gelten nur für den Winter.",
+  ]);
+});
+
+function summaryEnvironment(extra) {
+  return {
+    player: { videoDetails: { videoId: "abcdefghijk" }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [DE_TRACK] } } },
+    fetchText() { return Promise.resolve(JSON.stringify({ events: [{ segs: [{ utf8: "Ein Versuch ist geplant. Der Erfolg ist offen." }] }] })); },
+    ...extra,
+  };
+}
+
+test("fehlende und ungültige native Antworten begründen keine Diagnose zum lokalen Modell", async function () {
+  for (const payload of [undefined, null, "", [], {}, { summary: [] }, { summary: "wrong" }, { summary: { points: {} } }]) {
+    const result = await summary.loadSummary("abcdefghijk", summaryEnvironment({ summarize() { return payload; } }));
+    assert.equal(result.code, "INVALID_NATIVE_RESPONSE");
+    assert.equal(result.summary, undefined);
+    assert.notEqual(result.message, summary.UNAVAILABLE);
+  }
+  const unknown = await summary.loadSummary("abcdefghijk", summaryEnvironment({ summarize() { return { code: "UNEXPECTED_NATIVE_ERROR" }; } }));
+  assert.equal(unknown.code, "UNEXPECTED_NATIVE_ERROR");
+  assert.notEqual(unknown.message, summary.UNAVAILABLE);
+  const unavailable = await summary.loadSummary("abcdefghijk", summaryEnvironment({ summarize() { return { code: "MODEL_UNAVAILABLE" }; } }));
+  assert.deepEqual(unavailable, { code: "MODEL_UNAVAILABLE", message: summary.UNAVAILABLE });
+});
+
+test("Safari-Relay-, WebView- und native Verbindungsfehler bleiben von Modellfehlern getrennt", async function () {
+  const abort = Object.assign(new Error("cancelled"), { name: "AbortError" });
+  for (const [method, native, code] of [
+    ["sendMessage", function () { return Promise.reject(new Error("relay disconnected")); }, "RELAY_CONNECTION_FAILED"],
+    ["sendMessage", function () { throw new Error("relay disconnected"); }, "RELAY_CONNECTION_FAILED"],
+    ["sendMessage", function () { return undefined; }, "RELAY_CONNECTION_FAILED"],
+    ["sendMessage", function () { return Promise.resolve(null); }, "INVALID_NATIVE_RESPONSE"],
+    ["sendNativeMessage", function () { return Promise.reject(new Error("host disconnected")); }, "NATIVE_CONNECTION_FAILED"],
+    ["sendMessage", function () { return Promise.reject(abort); }, "CANCELLED"],
+  ]) {
+    const host = { browser: { runtime: { [method]: native } } };
+    const result = await summary.loadSummary("abcdefghijk", summaryEnvironment({ host }));
+    assert.equal(result.code, code);
+    assert.notEqual(result.message, summary.UNAVAILABLE);
+  }
+  const host = { webkit: { messageHandlers: { langformSummary: { postMessage() { throw new Error("WebView unavailable"); } } } } };
+  const webView = await summary.loadSummary("abcdefghijk", summaryEnvironment({ host }));
+  assert.equal(webView.code, "NATIVE_CONNECTION_FAILED");
+  assert.deepEqual(Object.keys(host.__langformKurzWait), [], "abgewiesene WebView-Tickets bleiben nicht gespeichert");
+  const generation = await summary.loadSummary("abcdefghijk", summaryEnvironment({ summarize() { throw new Error("generation failed"); } }));
+  assert.equal(generation.code, "GENERATION_FAILED");
+  assert.notEqual(generation.message, summary.UNAVAILABLE);
+});
+
+test("Chrome lastError und konkrete Background-Fehler bleiben als Verbindungsmeldung erhalten", async function () {
+  let reads = 0;
+  const runtime = {
+    sendMessage(_body, callback) { callback(modelSummary()); },
+    get lastError() { reads++; return { message: "response channel closed" }; },
+  };
+  const chrome = await summary.loadSummary("abcdefghijk", summaryEnvironment({ host: { chrome: { runtime } } }));
+  assert.equal(reads, 1);
+  assert.equal(chrome.code, "RELAY_CONNECTION_FAILED");
+  assert.notEqual(chrome.message, summary.UNAVAILABLE);
+  const nativeError = { code: "NATIVE_TIMEOUT", message: "Die Kurzfassung braucht zu lange. Bitte versuche es erneut." };
+  const safari = await summary.loadSummary("abcdefghijk", summaryEnvironment({ host: { browser: { runtime: {
+    sendMessage() { return Promise.resolve(nativeError); },
+  } } } }));
+  assert.deepEqual(safari, nativeError);
+});
+
+function keepaliveRelay(namespace = "browser") {
+  const events = [];
+  const posts = [];
+  const intervals = new Map();
+  const timeouts = new Map();
+  const messages = new Set();
+  const disconnects = new Set();
+  const statusRequests = [];
+  const nativeReplies = [];
+  let sequence = 0;
+  let reply;
+  let nativeCalls = 0;
+  let portCloses = 0;
+  let requestArguments;
+  function newPort() {
+    const portMessages = new Set();
+    const portDisconnects = new Set();
+    return {
+      onMessage: { addListener(fn) { messages.add(fn); portMessages.add(fn); }, removeListener(fn) { messages.delete(fn); portMessages.delete(fn); } },
+      onDisconnect: { addListener(fn) { disconnects.add(fn); portDisconnects.add(fn); }, removeListener(fn) { disconnects.delete(fn); portDisconnects.delete(fn); } },
+      postMessage(message) {
+        events.push("heartbeat");
+        posts.push(message);
+        portMessages.forEach(function (fn) { fn({ type: "langform:summary-heartbeat-ack" }); });
+      },
+      disconnect() {
+        portCloses++;
+        portDisconnects.forEach(function (fn) { fn(); });
+      },
+    };
+  }
+  const runtime = {
+    connect(options) {
+      assert.equal(arguments.length, 1);
+      assert.deepEqual(options, { name: "langform:summary-keepalive" });
+      events.push("connect");
+      return newPort();
+    },
+    sendMessage(...args) {
+      if (args[0].type === "langform:summary-status") {
+        const status = { args };
+        statusRequests.push(status);
+        if (namespace === "chrome") { status.reply = args[1]; return; }
+        return new Promise(function (resolve, reject) { status.reply = resolve; status.reject = reject; });
+      }
+      events.push("native");
+      nativeCalls++;
+      requestArguments = args;
+      if (namespace === "chrome") { reply = args[1]; nativeReplies.push(reply); return; }
+      return new Promise(function (resolve) { reply = resolve; nativeReplies.push(reply); });
+    },
+  };
+  const host = {
+    [namespace]: { runtime },
+    setInterval(fn, delay) { const id = ++sequence; intervals.set(id, { fn, delay }); return id; },
+    clearInterval(id) { intervals.delete(id); },
+    setTimeout(fn, delay) { const id = ++sequence; timeouts.set(id, { fn, delay }); return id; },
+    clearTimeout(id) { timeouts.delete(id); },
+  };
+  return {
+    host, events, posts, intervals, timeouts, messages, disconnects, statusRequests, runtime,
+    reply(response, index) { if (index === undefined) reply(response); else nativeReplies[index](response); },
+    heartbeat() { [...intervals.values()][0].fn(); },
+    poll() { [...intervals.values()].filter(function (interval) { return interval.delay === 1000; }).forEach(function (interval) { interval.fn(); }); },
+    expire() { [...timeouts.values()][0].fn(); },
+    drop() { [...disconnects].forEach(function (fn) { fn(); }); },
+    get nativeCalls() { return nativeCalls; },
+    get portCloses() { return portCloses; },
+    get requestArguments() { return requestArguments; },
+  };
+}
+
+test("Safari hält den Background vor dem nativen Auftrag und mit bestätigten Nachrichten alle20Sekunden aktiv", async function () {
+  const relay = keepaliveRelay();
+  let complete = false;
+  const pending = summary.loadSummary("abcdefghijk", summaryEnvironment({ host: relay.host })).then(function (result) { complete = true; return result; });
+  await delay(0);
+  assert.deepEqual(relay.events, ["connect", "heartbeat", "native"]);
+  assert.equal(relay.messages.size, 1, "ACK-Listener ist vor der ersten Nachricht installiert");
+  assert.equal(relay.nativeCalls, 1);
+  assert.equal([...relay.intervals.values()][0].delay, 20000);
+  assert.equal([...relay.timeouts.values()][0].delay, 10 * 60 * 1000);
+  relay.heartbeat();
+  await Promise.resolve();
+  assert.deepEqual(relay.posts, [
+    { type: "langform:summary-heartbeat" }, { type: "langform:summary-heartbeat" },
+  ]);
+  assert.equal(complete, false, "Heartbeat-ACK wird nicht als native Antwort verstanden");
+  assert.equal(relay.nativeCalls, 1, "Heartbeat erzeugt keinen zweiten Modellauftrag");
+  relay.reply(modelSummary());
+  const result = await pending;
+  assert.deepEqual(result.summary.points, modelSummary().summary.points);
+  assert.equal(relay.portCloses, 1);
+  assert.equal(relay.intervals.size, 0);
+  assert.equal(relay.timeouts.size, 0);
+  assert.equal(relay.messages.size, 0);
+  assert.equal(relay.disconnects.size, 0);
+});
+
+test("Portunterbrechung und Zeitüberschreitung beenden Heartbeat ohne einen weiteren nativen Auftrag", async function () {
+  for (const [stop, code] of [["drop", "RELAY_DISCONNECTED"], ["expire", "NATIVE_TIMEOUT"]]) {
+    const relay = keepaliveRelay();
+    const pending = summary.loadSummary("abcdefghijk", summaryEnvironment({ host: relay.host }));
+    await delay(0);
+    relay[stop]();
+    const result = await pending;
+    assert.equal(result.code, code);
+    assert.notEqual(result.message, summary.UNAVAILABLE);
+    assert.equal(relay.nativeCalls, 1);
+    assert.equal(relay.portCloses, 1);
+    assert.equal(relay.intervals.size, 0);
+    assert.equal(relay.timeouts.size, 0);
+    assert.equal(relay.messages.size, 0);
+    assert.equal(relay.disconnects.size, 0);
+    relay.reply(modelSummary());
+    await Promise.resolve();
+    assert.equal(result.code, code, "die verspätete Antwort ersetzt den Fehler nicht");
+    assert.equal(relay.nativeCalls, 1);
+  }
+});
+
+test("Chromes Callback-Aufruf bleibt beim selben Auftrag und räumt seinen Keepalive-Port auf", async function () {
+  const relay = keepaliveRelay("chrome");
+  const pending = summary.loadSummary("abcdefghijk", summaryEnvironment({ host: relay.host }));
+  await delay(0);
+  assert.deepEqual(relay.events, ["connect", "heartbeat", "native"]);
+  assert.equal(relay.requestArguments.length, 2);
+  assert.equal(relay.requestArguments[0].type, "langform:summarize");
+  assert.equal(typeof relay.requestArguments[1], "function");
+  relay.reply(modelSummary());
+  assert.deepEqual((await pending).summary.points, modelSummary().summary.points);
+  assert.equal(relay.portCloses, 1);
+  assert.equal(relay.intervals.size, 0);
+  assert.equal(relay.timeouts.size, 0);
+});
+
+function progressResponse(extra) {
+  return { progress: { phase: "writing", processedSections: 1, totalSections: 1, sourceIncomplete: false, coverageIncomplete: false, ...extra } };
+}
+
+test("Statusabfragen zeigen Fortschritt, laufen höchstens einmal parallel und können die Hauptanfrage nicht abschließen", async function () {
+  for (const namespace of ["browser", "chrome"]) {
+    const relay = keepaliveRelay(namespace);
+    const progress = [];
+    let complete = false;
+    const pending = summary.loadSummary("abcdefghijk", summaryEnvironment({ host: relay.host, onProgress(value) { progress.push(value); } }))
+      .then(function (result) { complete = true; return result; });
+    await delay(0);
+    const id = relay.requestArguments[0].requestId;
+    assert.match(id, /^[A-Za-z0-9_-]{12,96}$/);
+    relay.poll();
+    relay.poll();
+    assert.equal(relay.statusRequests.length, 1, "eine noch offene Statusabfrage wird nicht dupliziert");
+    const first = relay.statusRequests[0];
+    assert.deepEqual(first.args[0], { type: "langform:summary-status", requestId: id });
+    assert.equal(first.args.length, namespace === "chrome" ? 2 : 1);
+    first.reply(progressResponse({ tldr: "Der gesamte Versuch zeigt einen Unterschied." }));
+    await delay(0);
+    assert.equal(progress.length, 1);
+    assert.equal(complete, false, "ein vollständiger TLDR ist noch kein Endergebnis");
+    relay.poll();
+    relay.statusRequests[1].reply(modelSummary());
+    await delay(0);
+    assert.equal(complete, false, "selbst eine Endantwort auf dem Statuskanal beendet den Auftrag nicht");
+    assert.equal(progress.length, 1);
+    relay.poll();
+    const latePoll = relay.statusRequests[2];
+    relay.reply(modelSummary());
+    assert.deepEqual((await pending).summary.points, modelSummary().summary.points);
+    latePoll.reply(progressResponse({ tldr: "Verspäteter Status." }));
+    await delay(0);
+    assert.equal(progress.length, 1, "Statusantwort nach dem Endergebnis wird ignoriert");
+    assert.equal(relay.nativeCalls, 1);
+    assert.equal(relay.intervals.size, 0);
+    assert.equal(relay.timeouts.size, 0);
+  }
+});
+
+test("fehlende, fehlerhafte und unbegrenzte Statusdaten verändern weder Vorschau noch Hauptantwort", async function () {
+  const relay = keepaliveRelay();
+  const progress = [];
+  const pending = summary.loadSummary("abcdefghijk", summaryEnvironment({ host: relay.host, onProgress(value) { progress.push(value); } }));
+  await delay(0);
+  const invalid = [
+    undefined, {}, { progress: [] }, progressResponse({ phase: "unknown" }),
+    progressResponse({ processedSections: -1 }), progressResponse({ processedSections: 1.5 }),
+    progressResponse({ processedSections: 2, totalSections: 1 }), progressResponse({ totalSections: 10001 }),
+    progressResponse({ sourceIncomplete: "false" }), progressResponse({ coverageIncomplete: undefined }),
+    progressResponse({ tldr: "a".repeat(2001) }), progressResponse({ tldr: {} }),
+    progressResponse({ phase: "reading", tldr: "Zu früh." }),
+    progressResponse({ processedSections: 0, tldr: "Nicht vollständig gelesen." }),
+    progressResponse({ coverageIncomplete: true, tldr: "Unvollständige Auswahl." }),
+    progressResponse({ sourceIncomplete: true, tldr: "Die verfügbare Teilquelle ist keine vollständige Vorschau." }),
+  ];
+  for (const response of invalid) {
+    relay.poll();
+    relay.statusRequests.at(-1).reply(response);
+    await delay(0);
+  }
+  relay.poll();
+  relay.statusRequests.at(-1).reject(new Error("status unavailable"));
+  await delay(0);
+  assert.deepEqual(progress, []);
+  relay.poll();
+  relay.statusRequests.at(-1).reply(progressResponse({ phase: "reading", processedSections: 2, totalSections: 4 }));
+  await delay(0);
+  assert.equal(progress.length, 1, "gültige spätere Fortschritte bleiben verfügbar");
+  relay.reply(modelSummary());
+  assert.deepEqual((await pending).summary.points, modelSummary().summary.points);
+});
+
+test("Portabbruch und Timeout stoppen Statusabfragen und ignorieren bereits ausstehende Statusantworten", async function () {
+  for (const stop of ["drop", "expire"]) {
+    const relay = keepaliveRelay();
+    const progress = [];
+    const pending = summary.loadSummary("abcdefghijk", summaryEnvironment({ host: relay.host, onProgress(value) { progress.push(value); } }));
+    await delay(0);
+    relay.poll();
+    relay[stop]();
+    assert.equal((await pending).code, stop === "drop" ? "RELAY_DISCONNECTED" : "NATIVE_TIMEOUT");
+    relay.statusRequests[0].reply(progressResponse({ tldr: "Zu spät." }));
+    await delay(0);
+    relay.poll();
+    assert.equal(relay.statusRequests.length, 1);
+    assert.deepEqual(progress, []);
+    assert.equal(relay.intervals.size, 0);
+  }
+});
+
+test("WebView und direkter Native-Fallback starten keine Safari-Statusabfragen", async function () {
+  for (const mode of ["webview", "native"]) {
+    const relay = keepaliveRelay();
+    let reply;
+    if (mode === "webview") {
+      relay.host.webkit = { messageHandlers: { langformSummary: { postMessage(request) { reply = function (response) { relay.host.__langformKurzFinish(request.id, response); }; } } } };
+    } else {
+      delete relay.runtime.sendMessage;
+      relay.runtime.sendNativeMessage = function () { return new Promise(function (resolve) { reply = resolve; }); };
+    }
+    const pending = summary.loadSummary("abcdefghijk", summaryEnvironment({ host: relay.host, onProgress() { assert.fail("kein Fortschrittskanal"); } }));
+    await delay(0);
+    assert.equal(relay.intervals.size, 0);
+    relay.poll();
+    assert.equal(relay.statusRequests.length, 0);
+    reply(modelSummary());
+    assert.deepEqual((await pending).summary.points, modelSummary().summary.points);
+  }
+});
+
+function summaryUi(t, ids, replies) {
+  const dom = new JSDOM('<!DOCTYPE html><body>' + ids.map(function (id) {
+    return '<ytm-video-with-context-renderer><a href="/watch?v=' + id + '">Film</a></ytm-video-with-context-renderer>';
+  }).join("") + '</body>', { url: "https://m.youtube.com/" });
+  const win = dom.window;
+  const calls = { fetch: 0, model: 0 };
+  win.fetch = function (href) {
+    calls.fetch += 1;
+    const url = new URL(href);
+    const source = url.pathname === "/watch" ? "ytInitialPlayerResponse=" + JSON.stringify({
+      videoDetails: { videoId: url.searchParams.get("v") },
+      captions: { playerCaptionsTracklistRenderer: { captionTracks: [DE_TRACK] } },
+    }) + ";" : JSON.stringify({ events: [{ segs: [{ utf8: "Das Gemüse braucht 20 Minuten. Danach ruht es kurz." }] }] });
+    return Promise.resolve({ ok: true, text: async function () { return source; } });
+  };
+  win.webkit = { messageHandlers: { langformSummary: { postMessage(request) {
+    const response = replies ? replies(calls.model) : { summary: { points: ["Das Gemüse braucht 20 Minuten."] } };
+    calls.model += 1;
+    win.__langformKurzFinish(request.id, response);
+  } } } };
+  summary.decorate(win.document, win.location.href, win);
+  t.after(function () { win.close(); });
+  return {
+    win: win,
+    calls: calls,
+    open(id) { win.document.querySelector('[data-langform-kurz="' + id + '"]').click(); },
+    close() { win.document.querySelector("#langform-kurzfassung header button").click(); },
+    points() { return [...win.document.querySelectorAll("#langform-kurzfassung li")].map(function (el) { return el.textContent; }); },
+  };
+}
+
+function progressUi(t, ids) {
+  const ui = summaryUi(t, ids);
+  const relay = keepaliveRelay();
+  delete ui.win.webkit;
+  Object.assign(ui.win, relay.host);
+  return { ...ui, relay };
+}
+
+test("TLDR erscheint sicher als laufende Vorschau und bleibt beim Schließen und Zurückwechseln sofort verfügbar", async function (t) {
+  const ui = progressUi(t, ["abcdefghijk", "zyxwvutsrqp"]);
+  ui.open("abcdefghijk");
+  await delay(0);
+  const firstId = ui.relay.requestArguments[0].requestId;
+  const firstRequest = ui.win.__langformKurzRequests.pending.abcdefghijk;
+  ui.relay.poll();
+  ui.relay.statusRequests.at(-1).reply(progressResponse({ phase: "reading", processedSections: 1, totalSections: 2 }));
+  await delay(0);
+  let sheet = ui.win.document.getElementById("langform-kurzfassung");
+  assert.match(sheet.textContent, /1 von 2 Abschnitten/);
+  ui.relay.poll();
+  const draft = "Der gesamte Versuch zeigt <img src=x onerror=alert(1)> einen Unterschied.";
+  ui.relay.statusRequests.at(-1).reply(progressResponse({ tldr: draft }));
+  await delay(0);
+  assert.equal(sheet.querySelector("h3").textContent, "TLDR");
+  assert.match(sheet.textContent, /Wird noch ergänzt/);
+  assert.equal(sheet.querySelector("img"), null, "Vorschau wird als Text eingesetzt");
+  assert.ok(sheet.textContent.includes(draft));
+  assert.equal(sheet.getAttribute("data-summary-state"), "pending");
+  assert.equal(sheet.querySelector(".langform-kurz-body").getAttribute("aria-busy"), "true");
+  assert.equal(ui.win.__langformKurzCache.entries.length, 0);
+  ui.open("abcdefghijk");
+  assert.equal(firstRequest.observers.size, 1, "erneuter Klick ersetzt den Beobachter");
+  ui.close();
+  assert.equal(firstRequest.observers.size, 0);
+  ui.open("abcdefghijk");
+  sheet = ui.win.document.getElementById("langform-kurzfassung");
+  assert.ok(sheet.textContent.includes(draft), "neues Sheet übernimmt Vorschau synchron");
+  assert.equal(ui.relay.nativeCalls, 1);
+  ui.open("zyxwvutsrqp");
+  await delay(0);
+  const secondId = ui.relay.requestArguments[0].requestId;
+  assert.notEqual(firstId, secondId);
+  assert.equal(firstRequest.observers.size, 0, "Video-Wechsel entfernt vorherigen Beobachter");
+  ui.relay.poll();
+  const recent = ui.relay.statusRequests.slice(-2);
+  recent.find(function (entry) { return entry.args[0].requestId === firstId; }).reply(progressResponse({ tldr: "Aktualisierter erster Film." }));
+  recent.find(function (entry) { return entry.args[0].requestId === secondId; }).reply(progressResponse({ tldr: "Zweiter Film." }));
+  await delay(0);
+  assert.match(sheet.textContent, /Zweiter Film/);
+  assert.doesNotMatch(sheet.textContent, /erster Film/);
+  ui.open("abcdefghijk");
+  assert.match(sheet.textContent, /Aktualisierter erster Film/);
+  assert.doesNotMatch(sheet.textContent, /Zweiter Film/);
+  assert.equal(ui.relay.nativeCalls, 2);
+  ui.relay.reply({ summary: { points: ["Fertiger zweiter Film."] } }, 1);
+  await delay(0);
+  assert.doesNotMatch(sheet.textContent, /Fertiger zweiter Film/);
+  ui.relay.reply({ summary: { tldr: "Fertiger erster Film.", points: ["Ein erklärter Punkt."] } }, 0);
+  await delay(0);
+  assert.match(sheet.textContent, /Fertiger erster Film/);
+  assert.doesNotMatch(sheet.textContent, /Wird noch ergänzt|Aktualisierter/);
+  assert.equal(sheet.getAttribute("data-summary-state"), "ready");
+  assert.equal(firstRequest.observers.size, 0);
+  assert.equal(firstRequest.progress, null);
+  assert.equal(sheet.__langformKurzStopProgress, null);
+  assert.equal(ui.win.__langformKurzCache.entries.length, 2);
+});
+
+test("später Fehler ersetzt den frühen TLDR vollständig und speichert keine Vorschau", async function (t) {
+  const ui = progressUi(t, ["abcdefghijk"]);
+  ui.open("abcdefghijk");
+  await delay(0);
+  const request = ui.win.__langformKurzRequests.pending.abcdefghijk;
+  ui.relay.poll();
+  ui.relay.statusRequests.at(-1).reply(progressResponse({ tldr: "Vorläufiger TLDR." }));
+  await delay(0);
+  const sheet = ui.win.document.getElementById("langform-kurzfassung");
+  assert.match(sheet.textContent, /Vorläufiger TLDR/);
+  ui.relay.reply({ code: "GENERATION_FAILED" });
+  await delay(0);
+  assert.doesNotMatch(sheet.textContent, /Vorläufiger TLDR|Wird noch ergänzt/);
+  assert.equal(sheet.getAttribute("data-summary-state"), "error");
+  assert.match(sheet.textContent, /Erneut versuchen/);
+  assert.equal(sheet.querySelector(".langform-kurz-body").getAttribute("aria-busy"), "false");
+  assert.equal(ui.win.__langformKurzCache.entries.length, 0);
+  assert.equal(Object.keys(ui.win.__langformKurzRequests.pending).length, 0);
+  assert.equal(request.observers.size, 0);
+  assert.equal(request.progress, null);
+  ui.close();
+  ui.open("abcdefghijk");
+  await delay(0);
+  assert.equal(ui.relay.nativeCalls, 2);
+  assert.doesNotMatch(ui.win.document.getElementById("langform-kurzfassung").textContent, /Vorläufiger TLDR/);
+  ui.relay.reply(modelSummary());
+  await delay(0);
+});
+
+test("erneutes Öffnen zeigt die Kurzfassung sofort ohne weitere Untertitel- oder Modellanfrage; alte Cacheversionen werden ignoriert", async function (t) {
+  const ui = summaryUi(t, ["abcdefghijk"]);
+  ui.win.localStorage.setItem("user-preference", "keep");
+  ui.open("abcdefghijk");
+  await delay(20);
+  assert.deepEqual(ui.points(), ["Das Gemüse braucht 20 Minuten."]);
+  const requests = { ...ui.calls };
+  ui.close();
+  ui.open("abcdefghijk");
+  assert.deepEqual(ui.points(), ["Das Gemüse braucht 20 Minuten."], "Cache ist synchron sichtbar");
+  await delay(20);
+  assert.deepEqual(ui.calls, requests);
+  ui.close();
+  ui.win.__langformKurzCache.version = "key-points-2";
+  ui.open("abcdefghijk");
+  await delay(20);
+  assert.equal(ui.calls.model, requests.model + 1);
+  assert.equal(ui.win.localStorage.getItem("user-preference"), "keep");
+});
+
+test("TLDR, erklärte Punkte und Merksatz bleiben vollständig erhalten und werden gemeinsam zwischengespeichert", async function (t) {
+  const explanation = "Das entstehende Produkt hilft bei der Herstellung weiterer Produkte derselben Variante. " +
+    "Dadurch kann ein kleiner anfänglicher Vorsprung wachsen. " +
+    "Die Forscher haben diesen Effekt im Labor untersucht. " +
+    "Das beweist noch nicht, dass das Leben auf demselben Weg entstanden ist.";
+  const supplied = {
+    tldr: "Manche Moleküle gibt es als spiegelbildliche Varianten. Bestimmte Reaktionen können einen kleinen Vorsprung verstärken.",
+    points: [explanation, "Wenn beide Varianten gleich schnell wachsen, bleibt ihr Verhältnis gleich."],
+    takeaway: "Entscheidend ist, ob ein Prozess den Vorsprung immer weiter verstärkt.",
+    caveat: "Die Ergebnisse stammen aus einem Laborversuch.",
+    coverage: { processedSections: 3, totalSections: 3, complete: true },
+  };
+  const ui = summaryUi(t, ["abcdefghijk"], function () { return { summary: supplied }; });
+  ui.open("abcdefghijk");
+  await delay(20);
+  const doc = ui.win.document;
+  const body = doc.querySelector(".langform-kurz-body");
+  assert.deepEqual([...body.querySelectorAll("h3")].map(function (h) { return h.textContent; }), [
+    "TLDR", "Die wichtigsten Punkte", "Das bleibt hängen", "Wichtige Einordnung",
+  ]);
+  assert.deepEqual([...body.querySelectorAll("p")].map(function (p) { return p.textContent; }), [
+    supplied.tldr, supplied.takeaway, supplied.caveat,
+  ]);
+  assert.deepEqual(ui.points(), supplied.points, "Erklärungen werden nicht auf einen Satz gekürzt");
+  assert.deepEqual(ui.win.__langformKurzCache.entries[0].result.summary, supplied);
+  assert.equal(body.getAttribute("aria-busy"), "false");
+  assert.equal(body.getAttribute("aria-live"), "polite");
+  const dialog = doc.querySelector('[role="dialog"]');
+  assert.equal(doc.getElementById(dialog.getAttribute("aria-labelledby")).textContent, "Das Wichtigste");
+  const calls = { ...ui.calls };
+  ui.close();
+  ui.open("abcdefghijk");
+  assert.match(doc.querySelector(".langform-kurz-body").textContent, /Entscheidend ist/);
+  assert.deepEqual(ui.points(), supplied.points);
+  await delay(20);
+  assert.deepEqual(ui.calls, calls, "alle Teile erscheinen aus dem Sitzungscache");
+});
+
+test("neue Kurzfassungen bleiben reiner Text, fehlende Einordnungen und alte Antwortteile werden nicht erfunden", async function (t) {
+  const ui = summaryUi(t, ["abcdefghijk", "zyxwvutsrqp"], function (index) {
+    return index === 0 ? { summary: {
+      tldr: "**Ein Ergebnis** wird im Labor gezeigt. <img src=x onerror=alert(1)>",
+      points: ["Die Proben liegen im Bereich [0,1]. Das ist eine gemessene Spanne."],
+      takeaway: "Die Messung gilt für diese Proben.",
+      caveat: "  ",
+    } } : { summary: { about: "Nicht als neuer TLDR verwenden.", points: ["Eine belastbare Erkenntnis."], ending: "Nicht als neuer Merksatz verwenden." } };
+  });
+  ui.open("abcdefghijk");
+  await delay(20);
+  let body = ui.win.document.querySelector(".langform-kurz-body");
+  assert.equal(body.querySelector("img, script, strong, b"), null);
+  assert.match(body.textContent, /<img src=x onerror=alert\(1\)>/);
+  assert.doesNotMatch(body.textContent, /\*\*/);
+  assert.match(body.textContent, /\[0,1\]/, "fachlich relevante Klammern bleiben erhalten");
+  assert.deepEqual([...body.querySelectorAll("h3")].map(function (h) { return h.textContent; }), [
+    "TLDR", "Die wichtigsten Punkte", "Das bleibt hängen",
+  ]);
+  ui.close();
+  ui.open("zyxwvutsrqp");
+  await delay(20);
+  body = ui.win.document.querySelector(".langform-kurz-body");
+  assert.equal(body.querySelector("h3"), null, "alte Antwort enthält nur vorhandene Punkte");
+  assert.deepEqual(ui.points(), ["Eine belastbare Erkenntnis."]);
+  assert.doesNotMatch(body.textContent, /Nicht als neuer/);
+});
+
+test("bekannte unvollständige Untertitel und genaue native Fehler bleiben erkennbar", async function (t) {
+  const ui = summaryUi(t, ["abcdefghijk", "zyxwvutsrqp"], function (index) {
+    return index === 0 ? { summary: {
+      tldr: "Der verfügbare Versuch zeigt einen Unterschied.", points: ["Es wurden zwei Proben verglichen."],
+      takeaway: "Der Vergleich betrifft diese beiden Proben.",
+      caveat: "Das Ergebnis wurde nur im Labor gezeigt.",
+      coverage: { processedSections: 1, totalSections: 2, complete: false },
+    } } : { code: "UNUSABLE_CAPTIONS", message: "Die Untertitel sind unverständlich." };
+  });
+  ui.open("abcdefghijk");
+  await delay(20);
+  const partialText = ui.win.document.querySelector(".langform-kurz-body").textContent;
+  assert.match(partialText, /Das Ergebnis wurde nur im Labor gezeigt/);
+  assert.match(partialText, /beruht auf einem Teil der verfügbaren Untertitel/);
+  assert.equal(partialText.split("Die Kurzfassung beruht").length - 1, 1);
+  assert.equal(ui.win.__langformKurzCache.entries.length, 0, "unvollständige Antworten bleiben erneut versuchbar");
+  ui.close();
+  ui.open("zyxwvutsrqp");
+  await delay(20);
+  assert.match(ui.win.document.querySelector(".langform-kurz-body").textContent, /Die Untertitel sind unverständlich/);
+  assert.equal(ui.win.__langformKurzCache.entries.length, 0, "Fehler werden nicht als Kurzfassung gespeichert");
+  const failed = await summary.loadSummary("abcdefghijk", {
+    player: { videoDetails: { videoId: "abcdefghijk" }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [DE_TRACK] } } },
+    fetchText() { return Promise.resolve(JSON.stringify({ events: [{ segs: [{ utf8: "Unverständlicher Inhalt." }] }] })); },
+    summarize() { return { code: "UNUSABLE_CAPTIONS", message: "Die Untertitel sind unverständlich." }; },
+  });
+  assert.deepEqual(failed, { code: "UNUSABLE_CAPTIONS", message: "Die Untertitel sind unverständlich." });
+});
+
+test("fehlgeschlagene Kurzfassungen bleiben erneut versuchbar und der Sitzungscache ist begrenzt", async function (t) {
+  const ids = Array.from({ length: 14 }, function (_, i) { return "cached" + String(i).padStart(5, "0"); });
+  const ui = summaryUi(t, ids, function (request) {
+    return request === 0 ? { code: "MODEL_UNAVAILABLE", message: summary.UNAVAILABLE } : { summary: { points: ["Das Gemüse braucht 20 Minuten."] } };
+  });
+  ui.open(ids[0]);
+  await delay(20);
+  assert.equal(ui.win.__langformKurzCache.entries.length, 0);
+  ui.close();
+  for (const id of ids) {
+    ui.open(id);
+    await delay(10);
+    assert.equal(ui.points().length, 1);
+    ui.close();
+  }
+  assert.equal(ui.calls.model, ids.length + 1);
+  assert.equal(ui.win.__langformKurzCache.entries.length, 12);
+  ui.open(ids[ids.length - 1]);
+  assert.equal(ui.points().length, 1);
+  assert.equal(ui.calls.model, ids.length + 1);
+  ui.close();
+  ui.open(ids[0]);
+  await delay(20);
+  assert.equal(ui.calls.model, ids.length + 2, "ältester Eintrag wurde freigegeben");
+});
+
+test("unvollständige Kurzfassungen bleiben sichtbar, werden beim nächsten Öffnen aber neu erstellt", async function (t) {
+  const ui = summaryUi(t, ["abcdefghijk"], function (index) {
+    return index < 2 ? { summary: { points: ["Vorläufiger Punkt."], coverage: { complete: false } } } : modelSummary();
+  });
+  ui.open("abcdefghijk");
+  await delay(20);
+  assert.deepEqual(ui.points(), ["Vorläufiger Punkt."]);
+  assert.equal(ui.win.__langformKurzCache.entries.length, 0);
+  ui.open("abcdefghijk");
+  await delay(20);
+  assert.equal(ui.calls.model, 2, "offenes Sheet verhindert keinen erneuten Versuch");
+  ui.close();
+  ui.open("abcdefghijk");
+  await delay(20);
+  assert.equal(ui.calls.model, 3);
+  assert.deepEqual(ui.points(), modelSummary().summary.points);
+  assert.equal(ui.win.__langformKurzCache.entries.length, 1, "vollständige Antwort wird wiederverwendet");
+});
+
+test("ein offenes Fehlermodal versucht dasselbe Video erneut; gültige Kurzfassungen bleiben sofort verfügbar", async function (t) {
+  const ui = summaryUi(t, ["abcdefghijk"], function (index) {
+    return index < 2 ? { code: "NATIVE_CONNECTION_FAILED", message: "Die Kurzfassung-App konnte nicht erreicht werden." } : modelSummary();
+  });
+  ui.open("abcdefghijk");
+  await delay(20);
+  const sheet = ui.win.document.getElementById("langform-kurzfassung");
+  assert.equal(sheet.getAttribute("data-summary-state"), "error");
+  assert.equal(ui.calls.model, 1);
+  ui.open("abcdefghijk");
+  await delay(20);
+  assert.equal(ui.calls.model, 2, "Fehler gilt beim erneuten Klick nicht als fertige Kurzfassung");
+  assert.equal(ui.win.document.getElementById("langform-kurzfassung"), sheet);
+  assert.equal(sheet.querySelector(".langform-kurz-retry").textContent, "Erneut versuchen");
+  sheet.querySelector(".langform-kurz-retry").click();
+  await delay(20);
+  assert.equal(ui.calls.model, 3);
+  assert.equal(sheet.getAttribute("data-summary-state"), "ready");
+  assert.deepEqual(ui.points(), modelSummary().summary.points);
+  assert.equal(sheet.querySelector(".langform-kurz-retry"), null);
+  ui.open("abcdefghijk");
+  await delay(20);
+  assert.equal(ui.calls.model, 3, "die erfolgreiche Kurzfassung bleibt ohne weitere Anfrage sichtbar");
+});
+
+test("wiederholte Klicks während der lokalen Erstellung verwenden genau eine laufende Anfrage", async function (t) {
+  const ui = summaryUi(t, ["abcdefghijk"]);
+  let ticket;
+  ui.win.webkit.messageHandlers.langformSummary.postMessage = function (request) {
+    ui.calls.model++;
+    ticket = request.id;
+  };
+  ui.open("abcdefghijk");
+  await delay(20);
+  const sheet = ui.win.document.getElementById("langform-kurzfassung");
+  assert.equal(sheet.getAttribute("data-summary-state"), "pending");
+  ui.open("abcdefghijk");
+  ui.open("abcdefghijk");
+  await delay(20);
+  assert.equal(ui.calls.model, 1);
+  ui.win.__langformKurzFinish(ticket, modelSummary());
+  await delay(20);
+  assert.equal(sheet.getAttribute("data-summary-state"), "ready");
+  assert.deepEqual(ui.points(), modelSummary().summary.points);
+  assert.equal(ui.calls.model, 1);
+});
+
+test("Schließen und Video-Wechsel verwenden weiterhin die laufende Kurzfassung ohne zweite Modellanfrage", async function (t) {
+  const ui = summaryUi(t, ["abcdefghijk", "zyxwvutsrqp"]);
+  const tickets = [];
+  ui.win.webkit.messageHandlers.langformSummary.postMessage = function (request) {
+    ui.calls.model++;
+    tickets.push(request.id);
+  };
+  ui.open("abcdefghijk");
+  await delay(20);
+  const fetches = ui.calls.fetch;
+  ui.close();
+  ui.open("abcdefghijk");
+  await delay(20);
+  assert.equal(ui.calls.model, 1, "neu erstelltes Sheet hängt sich an dieselbe Anfrage");
+  assert.equal(ui.calls.fetch, fetches, "auch die Untertitel werden nicht erneut abgerufen");
+  ui.open("zyxwvutsrqp");
+  await delay(20);
+  ui.open("abcdefghijk");
+  await delay(20);
+  assert.equal(ui.calls.model, 2, "jedes Video hat genau einen laufenden Auftrag");
+  ui.win.__langformKurzFinish(tickets[1], { summary: { points: ["Anderes Video."] } });
+  await delay(0);
+  assert.deepEqual(ui.points(), [], "das fremde Ergebnis überschreibt den gewählten Film nicht");
+  ui.win.__langformKurzFinish(tickets[0], modelSummary());
+  await delay(0);
+  assert.deepEqual(ui.points(), modelSummary().summary.points);
+  ui.open("zyxwvutsrqp");
+  assert.deepEqual(ui.points(), ["Anderes Video."], "abgeschlossenes Ergebnis ist beim Wechsel sofort sichtbar");
+  assert.equal(Object.keys(ui.win.__langformKurzRequests.pending).length, 0);
 });
 
 test("Watch-Seite zeigt die Kurzfassung unter dem Video", async function () {
@@ -374,7 +1107,7 @@ test("isolierte Safari-Welt liest den gefüllten Player in der Seite", async fun
   assert.match(calls[0], /\/api\/timedtext/);
   assert.match(calls[1], /fmt=json3/);
   assert.match(sheet.textContent, /Das Wichtigste/);
-  assert.match(sheet.textContent, /Die Kurzfassung geht nur mit dem Modell auf dem Gerät/);
+  assert.match(sheet.textContent, /Die Verbindung zur Kurzfassung-App ist gerade nicht verfügbar/);
   assert.equal(/Untertitel sind leer/.test(sheet.textContent), false);
   assert.equal(sheet.textContent.includes("Der Ofen übernimmt den Rest"), false);
 });
@@ -418,7 +1151,7 @@ test("Watch-Seite wartet, das erste null ist kein Player", async function () {
   const sheet = win.document.getElementById("langform-kurzfassung");
   assert.equal(calls.length, 1);
   assert.match(calls[0], /\/api\/timedtext/);
-  assert.match(sheet.textContent, /Modell auf dem Gerät/);
+  assert.match(sheet.textContent, /Verbindung zur Kurzfassung-App/);
   assert.equal(/Untertitel sind leer/.test(sheet.textContent), false);
   assert.equal(/keine Untertitel/.test(sheet.textContent), false);
 });
@@ -842,4 +1575,202 @@ test("während das Video läuft, kommt nur der Knopf unter dem Video, die Liste 
   assert.ok(doc.querySelector('#row [data-langform-kurz="zyxwvutsrqp"]'));
   assert.equal(video.getAttribute("style"), null);
   win.close();
+});
+
+test("wiederverwendete Videokarten bekommen genau eine Kurzfassung für ihr aktuelles Video", async function () {
+  const dom = new JSDOM(
+    '<!DOCTYPE html><body><ytm-video-with-context-renderer><a href="/watch?v=abcdefghijk">Film</a></ytm-video-with-context-renderer></body>',
+    { url: "https://m.youtube.com/" }
+  );
+  const win = dom.window;
+  const card = win.document.querySelector("ytm-video-with-context-renderer");
+  summary.start(win);
+  await delay(30);
+  assert.equal(card.querySelector("[data-langform-kurz]").getAttribute("data-langform-kurz"), "abcdefghijk");
+  card.querySelector("a").setAttribute("href", "/watch?v=zyxwvutsrqp");
+  await delay(350);
+  const buttons = card.querySelectorAll("[data-langform-kurz]");
+  assert.equal(buttons.length, 1);
+  assert.equal(buttons[0].getAttribute("data-langform-kurz"), "zyxwvutsrqp");
+  win.close();
+});
+
+test("der Kurzfassungsknopf bleibt nach einem Austausch der Metadaten während der Wiedergabe erreichbar", async function () {
+  const dom = new JSDOM(
+    '<!DOCTYPE html><body><ytm-player><video></video></ytm-player><ytm-slim-video-metadata-section-renderer><h1>Film</h1></ytm-slim-video-metadata-section-renderer></body>',
+    { url: "https://m.youtube.com/watch?v=abcdefghijk" }
+  );
+  const win = dom.window;
+  const doc = win.document;
+  Object.defineProperty(doc.querySelector("video"), "paused", { get: function () { return false; } });
+  summary.start(win);
+  const first = doc.querySelector("ytm-slim-video-metadata-section-renderer");
+  assert.ok(first.querySelector("[data-langform-kurz]"));
+  const replacement = doc.createElement("ytm-slim-video-metadata-section-renderer");
+  replacement.innerHTML = "<h1>Film neu aufgebaut</h1>";
+  first.replaceWith(replacement);
+  await delay(30);
+  assert.equal(doc.querySelectorAll("[data-langform-kurz]").length, 1);
+  assert.ok(replacement.querySelector('[data-langform-kurz="abcdefghijk"]'));
+
+  win.history.replaceState({}, "", "/watch?v=zyxwvutsrqp");
+  win.dispatchEvent(new win.Event("yt-navigate-finish"));
+  assert.equal(replacement.querySelectorAll("[data-langform-kurz]").length, 1);
+  assert.ok(replacement.querySelector('[data-langform-kurz="zyxwvutsrqp"]'));
+  win.close();
+});
+
+test("eigene Kurzfassungsknöpfe und bloßes Scrollen lösen keinen weiteren Feed-Durchlauf aus", async function () {
+  const dom = new JSDOM(
+    '<!DOCTYPE html><body><ytm-video-with-context-renderer><a href="/watch?v=abcdefghijk">Film</a></ytm-video-with-context-renderer></body>',
+    { url: "https://m.youtube.com/" }
+  );
+  const win = dom.window;
+  const doc = win.document;
+  const link = doc.querySelector("a");
+  const readAttribute = link.getAttribute.bind(link);
+  let hrefReads = 0;
+  link.getAttribute = function (name) {
+    if (name === "href") hrefReads += 1;
+    return readAttribute(name);
+  };
+  summary.start(win);
+  await delay(30);
+  assert.ok(doc.querySelector("[data-langform-kurz]"));
+  assert.ok(hrefReads > 0);
+  hrefReads = 0;
+  doc.dispatchEvent(new win.Event("scroll", { bubbles: true }));
+  await delay(400);
+  assert.equal(hrefReads, 0);
+  // A real card change during scrolling is still processed once scrolling ends.
+  doc.dispatchEvent(new win.Event("scroll", { bubbles: true }));
+  link.setAttribute("href", "/watch?v=zyxwvutsrqp");
+  await delay(220);
+  assert.ok(hrefReads > 0);
+  assert.ok(doc.querySelector('[data-langform-kurz="zyxwvutsrqp"]'));
+  win.close();
+});
+
+test("mehrere Änderungen einer Karte werden zusammengefasst, auch wenn ihre Metadaten ersetzt werden", async function () {
+  const dom = new JSDOM(
+    '<!DOCTYPE html><body><ytm-video-with-context-renderer><a href="/watch?v=abcdefghijk">Film</a>' +
+      '<div class="metadata"><h3>Alter Titel</h3></div></ytm-video-with-context-renderer></body>',
+    { url: "https://m.youtube.com/" }
+  );
+  const win = dom.window;
+  const card = win.document.querySelector("ytm-video-with-context-renderer");
+  try {
+    summary.start(win);
+    await delay(30);
+    const query = card.querySelectorAll.bind(card);
+    let rowReads = 0;
+    card.querySelectorAll = function (selector) {
+      if (selector === "a[href]") rowReads += 1;
+      return query(selector);
+    };
+    for (let i = 0; i < 80; i++) card.querySelector("a").setAttribute("href", "/watch?v=zyxwvutsrqp&t=" + i);
+    card.querySelector(".metadata").innerHTML = "<h3>Neuer Titel</h3>";
+    await delay(350);
+    assert.equal(rowReads, 1, "die vollständige Karte wird nur einmal gelesen");
+    assert.equal(card.querySelectorAll("[data-langform-kurz]").length, 1);
+    assert.ok(card.querySelector('.metadata [data-langform-kurz="zyxwvutsrqp"]'));
+  } finally {
+    win.close();
+  }
+});
+
+test("eine Navigation aktualisiert alle Karten, auch während ein Teilbaum-Update wartet", async function () {
+  const dom = new JSDOM(
+    '<!DOCTYPE html><body><ytm-video-with-context-renderer id="first"><a href="/watch?v=abcdefghijk">Film</a></ytm-video-with-context-renderer>' +
+      '<ytm-video-with-context-renderer id="second"><a href="/watch?v=zyxwvutsrqp">Zweiter Film</a></ytm-video-with-context-renderer></body>',
+    { url: "https://m.youtube.com/" }
+  );
+  const win = dom.window;
+  const doc = win.document;
+  try {
+    summary.start(win);
+    await delay(30);
+    const second = doc.getElementById("second");
+    const query = second.querySelectorAll.bind(second);
+    let rowReads = 0;
+    second.querySelectorAll = function (selector) {
+      if (selector === "a[href]") rowReads += 1;
+      return query(selector);
+    };
+    doc.querySelector("#first a").setAttribute("href", "/watch?v=abcdefghijk&t=10");
+    await delay(10);
+    win.dispatchEvent(new win.Event("yt-navigate-finish"));
+    await delay(350);
+    assert.equal(rowReads, 1, "Navigation überschreibt die eingeschränkte Teilbaum-Aktualisierung");
+    assert.equal(doc.querySelectorAll("[data-langform-kurz]").length, 2);
+  } finally {
+    win.close();
+  }
+});
+
+test("ein bereits geplanter Kurzfassungsdurchlauf wartet nach dem Tabwechsel bis zur Rückkehr", async function () {
+  const dom = new JSDOM(
+    '<!DOCTYPE html><body><ytm-video-with-context-renderer><a href="/watch?v=abcdefghijk">Film</a></ytm-video-with-context-renderer></body>',
+    { url: "https://m.youtube.com/" }
+  );
+  const win = dom.window;
+  const card = win.document.querySelector("ytm-video-with-context-renderer");
+  try {
+    summary.start(win);
+    await delay(30);
+    card.querySelector("a").setAttribute("href", "/watch?v=zyxwvutsrqp");
+    await delay(10);
+    assert.ok(win.__langformKurzTimer);
+    win.__langformFeedActive = false;
+    win.dispatchEvent(new win.Event("langform-feed-visibility"));
+    assert.equal(win.__langformKurzTimer, 0);
+    assert.equal(win.__langformKurzRoots.length, 0);
+    await delay(350);
+    assert.ok(card.querySelector('[data-langform-kurz="abcdefghijk"]'));
+    win.__langformFeedActive = true;
+    win.dispatchEvent(new win.Event("langform-feed-visibility"));
+    await delay(350);
+    assert.ok(card.querySelector('[data-langform-kurz="zyxwvutsrqp"]'));
+    assert.equal(card.querySelectorAll("[data-langform-kurz]").length, 1);
+  } finally {
+    win.close();
+  }
+});
+
+test("Kommentarlisten werden weder als Videokarten durchsucht noch beim inneren Scrollen neu geplant", async function (t) {
+  const dom = new JSDOM('<!DOCTYPE html><body><ytm-slim-video-metadata-section-renderer></ytm-slim-video-metadata-section-renderer>' +
+    '<ytm-comment-section-renderer><div id="comments"></div></ytm-comment-section-renderer>' +
+    '<bottom-sheet-container><ytm-video-with-context-renderer id="real-card"><a href="/watch?v=zyxwvutsrqp">Film</a></ytm-video-with-context-renderer></bottom-sheet-container></body>',
+    { url: "https://m.youtube.com/watch?v=abcdefghijk" });
+  t.after(() => dom.window.close());
+  const win = dom.window;
+  const doc = win.document;
+  const comments = doc.getElementById("comments");
+  let hrefReads = 0;
+  function addComment() {
+    const comment = doc.createElement("ytm-comment-thread-renderer");
+    const link = doc.createElement("a");
+    link.href = "/watch?v=abcdefghijk&t=50";
+    link.textContent = "Mein Kommentar bei 0:50";
+    const get = link.getAttribute.bind(link);
+    link.getAttribute = function (name) {
+      if (name === "href") hrefReads++;
+      return get(name);
+    };
+    comment.appendChild(link);
+    comments.appendChild(comment);
+    return link;
+  }
+  addComment();
+  summary.start(win);
+  await delay(40);
+  assert.equal(hrefReads, 0, "der erste Durchlauf überspringt Kommentare vollständig");
+  assert.ok(doc.querySelector('#real-card [data-langform-kurz="zyxwvutsrqp"]'), "echte Videolisten in einem Sheet werden weiter ergänzt");
+  const late = addComment();
+  late.setAttribute("href", "/watch?v=abcdefghijk&t=51");
+  comments.dispatchEvent(new win.Event("scroll", { bubbles: true }));
+  await delay(350);
+  assert.equal(hrefReads, 0, "neue und bearbeitete Kommentare erzeugen keinen Link-Durchlauf");
+  assert.equal(win.__langformKurzScrolling, undefined, "inneres Kommentarscrollen hält den Feed nicht an");
+  assert.equal(win.__langformKurzTimer, 0);
 });

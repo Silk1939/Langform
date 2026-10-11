@@ -28,7 +28,7 @@ export type Playable = {
 
 type ShellApi = {
   openVideo: (video: Playable, options?: { gesture?: boolean }) => void;
-  closeVideo: () => void;
+  closeVideo: (expectedId?: string) => void;
   nowPlaying: Playable | null;
   scrollerRef: RefObject<HTMLDivElement | null>;
 };
@@ -55,40 +55,32 @@ function watchId(path: string): string | null {
   return path.match(/^\/schauen\/([A-Za-z0-9_-]{11})$/)?.[1] ?? null;
 }
 
-function placeholder(id: string): Playable {
-  return { id, title: "Langes Video", channelName: "", channelId: "" };
-}
-
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const scrollerRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [seenPath, setSeenPath] = useState(pathname);
-  const [active, setActive] = useState<Playable | null>(() => {
-    const id = watchId(pathname);
-    return id ? placeholder(id) : null;
-  });
+  // A route ID is navigation intent, not a decision that this video may play.
+  // Feed/history selections and matching non-blocked watch details open it.
+  const [active, setActive] = useState<Playable | null>(null);
   const [started, setStarted] = useState(false);
   const [forceFull, setForceFull] = useState(false);
 
   if (seenPath !== pathname) {
     setSeenPath(pathname);
     const id = watchId(pathname);
-    if (id && active?.id !== id) {
-      setActive(placeholder(id));
-      setStarted(false);
-      setForceFull(true);
-    } else if (id && active?.id === id) {
-      setForceFull(false);
-    } else if (!id && active && !started) {
+    if (active && active.id !== id && !started) {
       setActive(null);
-      setForceFull(false);
-    } else if (!id) {
-      setForceFull(false);
     }
+    // Keep an already playing video in mini mode while new details load.
+    setForceFull(false);
   }
 
-  const closeVideo = useCallback(() => {
+  const closeVideo = useCallback((expectedId?: string) => {
+    if (expectedId) {
+      const current = frameRef.current?.src.match(/\/embed\/([A-Za-z0-9_-]{11})/)?.[1];
+      if (current !== expectedId) return;
+    }
     setActive(null);
     setStarted(false);
     setForceFull(false);
@@ -282,7 +274,7 @@ function PlayerSlot({
   mode: PlayerMode;
   active: Playable | null;
   frameRef: RefObject<HTMLIFrameElement | null>;
-  closeVideo: () => void;
+  closeVideo: (expectedId?: string) => void;
 }) {
   return (
     <div
@@ -313,7 +305,7 @@ function PlayerSlot({
         {mode === "mini" ? (
           <button
             type="button"
-            onClick={closeVideo}
+            onClick={() => closeVideo()}
             className="absolute top-1 right-1 z-20 flex size-11 touch-manipulation items-center justify-center rounded-full bg-background/85 text-foreground"
             aria-label="Wiedergabe beenden"
           >

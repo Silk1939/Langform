@@ -1,0 +1,14 @@
+---
+description: Gemeinsames Langform-Backlog nach jeder Feature- und Bugfix-Arbeit pflegen
+alwaysApply: true
+---
+
+# Backlogpflege
+
+Die verbindliche Projektregel steht in `AGENTS.md` und gilt für iPhone, Erweiterung und Web-App.
+
+- Vor jeder Feature-/Bugfix-Arbeit den passenden Eintrag in `docs/VERBESSERUNGS_BACKLOG.md` lesen oder mit einer freien `LF-`-ID anlegen.
+- Nach jeder Bearbeitung vor dem Abschlussbericht Status, Datum, Änderung, Nachweise/Prüfung und offene nächste Schritte aktualisieren; auch Teilfortschritt dokumentieren.
+- Keine doppelte Aufgabenliste pflegen. Historische Tests/Installation beweisen keine aktuelle Nutzerabnahme.
+- Beispiel: Ein installierter Player-Fix mit ausstehendem Fingertest bleibt „Umgesetzt – Abnahme offen“ und nennt den konkreten noch offenen Test.
+- Zurückgestellte Features benötigen einen neuen Nutzerauftrag; LF-31 Dynamic Island und LF-32 Downloads bleiben vorerst zurückgestellt.

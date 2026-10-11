@@ -107,8 +107,12 @@
   function isAdShowing(player) {
     if (!player || !player.classList) return false;
     if (player.classList.contains("ad-showing") || player.classList.contains("ad-interrupting")) return true;
-    var overlay = player.querySelector(AD_UI);
-    return !!(overlay && overlay.childElementCount + String(overlay.textContent || "").trim().length > 0 && shown(overlay));
+    var overlays = player.querySelectorAll(AD_UI);
+    for (var i = 0; i < overlays.length; i++) {
+      var overlay = overlays[i];
+      if (overlay.childElementCount + String(overlay.textContent || "").trim().length > 0 && shown(overlay)) return true;
+    }
+    return false;
   }
 
   function skipControl(player) {
@@ -215,19 +219,23 @@
           watchModule();
           check();
         });
-        rootWatch.observe(player, { attributes: true, attributeFilter: ["class"] });
+        rootWatch.observe(player, { childList: true, attributes: true, attributeFilter: ["class"] });
       }
       watchModule();
     }
     function watchModule() {
       var module = watchedPlayer && watchedPlayer.querySelector(".video-ads, .ytp-ad-module");
-      if (!module || module === watchedModule) return;
+      if (module === watchedModule) return;
       if (moduleWatch) moduleWatch.disconnect();
       watchedModule = module;
+      moduleWatch = null;
+      if (!module) return;
       moduleWatch = new win.MutationObserver(function () {
-        if (isAdShowing(watchedPlayer)) check();
+        // Overlay-only ads can end without changing the player's classes.
+        // The final mutation must restore sound as well as detect new ads.
+        check();
       });
-      moduleWatch.observe(module, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style"] });
+      moduleWatch.observe(module, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden"] });
     }
 
     // A new ad brings its own media: metadata, duration and playing fire on it.
@@ -242,6 +250,7 @@
       check();
     });
     watchPlayer();
+    check();
   }
 
   return {

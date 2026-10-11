@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-12",
+  "verifiedAt": "2026-10-12T01:42:28.368231+02:00",
+  "repository": "https://github.com/Silk1939/Langform",
+  "status": "ready_to_upload",
+  "testMethod": "Fresh file copy exported from the Git index; npm ci at root and apps/langform; npm test; web lint and production build.",
+  "environment": {
+    "node": "22.16.0",
+    "npm": "10.9.2",
+    "xcode": "27.0 (27A266a)"
+  },
+  "snapshot": {
+    "files": 338,
+    "bytes": 4586478,
+    "manifestSha256": "1b547e9ef3ef3ba30df421803d362ca31307b1a31ce0f5f34b1f6b58c80bdef8"
+  },
+  "checks": {
+    "rootTests": {
+      "passed": 1138,
+      "failed": 0,
+      "skipped": 0
+    },
+    "webTests": {
+      "passed": 87,
+      "failed": 0,
+      "skipped": 0
+    },
+    "npmCiRoot": {
+      "exitCode": 0
+    },
+    "npmCiWeb": {
+      "exitCode": 0
+    },
+    "webLint": {
+      "exitCode": 0
+    },
+    "webProductionBuild": {
+      "exitCode": 0
+    }
+  },
+  "credentialScan": {
+    "currentFiles": 338,
+    "mainHistoryBlobs": 267,
+    "highConfidencePatterns": [
+      "private keys",
+      "GitHub tokens",
+      "cloud provider keys",
+      "Slack tokens",
+      "credential assignments",
+      "signed URLs"
+    ],
+    "findings": "Only explicit fake test placeholders; no actual credential detected by these checks.",
+    "otherLocalGitRefsExcluded": true
+  },
+  "publicQaFixtures": [
+    "docs/qa/download-resolver-2026-10-11/product-bundles.json",
+    "docs/qa/player-features-2026-10-11/sponsorblock-live-query.json"
+  ],
+  "localEvidence": "docs/qa/github-handoff-2026-10-12/ (not uploaded)",
+  "limits": [
+    "No app behavior or signing configuration changed in this handoff.",
+    "No new Simulator run, device build, installation or personal acceptance.",
+    "Existing open device, audio, gesture and broad Simulator acceptance remains in docs/VERBESSERUNGS_BACKLOG.md.",
+    "Raw historical QA evidence and most historical QA links remain local."
+  ]
+}

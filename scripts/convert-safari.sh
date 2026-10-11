@@ -28,6 +28,10 @@ xcrun safari-web-extension-converter "$EXT" \
   --no-open \
   --no-prompt
 
+# The converter defaults to automatic signing. Lock it before the generated
+# project can be opened: iPhone provisioning must not rotate Safari's signer.
+python3 "$ROOT/scripts/lock-safari-signing.py" "$OUT"
+
 HANDLER="$ROOT/native/SafariWebExtensionHandler.swift"
 copied=0
 while IFS= read -r dest; do

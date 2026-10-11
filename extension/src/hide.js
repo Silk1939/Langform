@@ -80,6 +80,11 @@
     return tag === "VIDEO" || tag === "YTD-PLAYER" || tag === "YTM-PLAYER" || el.id === "movie_player";
   }
 
+  function containsContinuation(el) {
+    return !!(el && el.querySelector &&
+      el.querySelector("ytm-continuation-item-renderer, ytd-continuation-item-renderer"));
+  }
+
   function forEachElement(rootNode, visit) {
     var stack = [rootNode];
     var seen = new Set();
@@ -207,7 +212,9 @@
       if (STOP_TAGS[node.tagName]) break;
       if (isSearchForm(node) || isSearchBox(node) || node.getAttribute("role") === "search") break;
       if (isChapterUi(node) && node !== el) break;
-      if (ITEM_TAGS[tagNameOf(node)]) found = node;
+      // Continuation lives beside content in some hydrated feed containers.
+      // Remove the individual Shorts card/link, never its pagination owner.
+      if (ITEM_TAGS[tagNameOf(node)] && !containsContinuation(node)) found = node;
       }
       node = parentAcross(node);
     }
@@ -255,9 +262,28 @@
     if (!el || el.nodeType !== 1) return;
     if (el.tagName === "HTML" || el.tagName === "BODY" || el.tagName === "HEAD") return;
     if (isPlayerChrome(el) || isSearchControl(el) || isChapterUi(el)) return;
+    if (containsContinuation(el)) {
+      // A sentinel can arrive after an initially empty Shorts wrapper was
+      // marked. Restore that wrapper before WebKit measures its intersection.
+      if (el.getAttribute(MARK) === "1") {
+        el.removeAttribute(MARK);
+        if (el.classList) el.classList.remove(HIDDEN_CLASS);
+        if (el.style) el.style.removeProperty("display");
+      }
+      return;
+    }
+    // YouTube can reuse an already-marked card for playback between scans.
+    // Recheck before every removal, and undo our mark on the reused container.
+    if (el.querySelector && el.querySelector("video, #movie_player, ytm-player, ytd-player")) {
+      if (el.getAttribute(MARK) === "1") {
+        el.removeAttribute(MARK);
+        if (el.classList) el.classList.remove(HIDDEN_CLASS);
+        if (el.style) el.style.removeProperty("display");
+      }
+      return;
+    }
     if (el.getAttribute(MARK) !== "1") {
       // Taking a playing video out of the document pauses it.
-      if (el.querySelector && el.querySelector("video, #movie_player, ytm-player, ytd-player")) return;
       el.setAttribute(MARK, "1");
       if (el.classList) el.classList.add(HIDDEN_CLASS);
       if (el.style && el.style.setProperty) el.style.setProperty("display", "none", "important");
@@ -308,6 +334,7 @@
     var tabs = [];
     forEachElement(rootNode, function (el) {
       var tag = tagNameOf(el);
+      if (el.getAttribute(MARK) === "1" && containsContinuation(el)) hideElement(el, false);
       if (el.tagName === "A" && el.hasAttribute("href")) anchors.push(el);
       if (REEL_TAGS[tag] || tag.indexOf("shelf") !== -1) shelves.push(el);
       if (tag.indexOf("chip") !== -1) chips.push(el);
@@ -439,6 +466,7 @@
     STYLE_ID: STYLE_ID,
     VEIL_CLASS: VEIL_CLASS,
     cssText: cssText,
+    ensureStyle: ensureStyle,
     scan: scan,
     applyEnabled: applyEnabled,
     setVeil: setVeil,

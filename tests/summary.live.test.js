@@ -98,7 +98,8 @@ test("öffentliches Video liefert Untertitel über den WEB-Player", { timeout: 3
   assert.ok(calls.some(function (url) { return url.includes("/api/timedtext"); }));
   assert.equal(calls.some(function (url) { return url.includes("/watch?"); }), false);
   assert.ok(captionBody.length > 40);
-  assert.equal(result.message, summary.UNAVAILABLE);
+  assert.equal(result.code, "NATIVE_CONNECTION_UNAVAILABLE");
+  assert.equal(result.message, "Die Verbindung zur Kurzfassung-App ist gerade nicht verfügbar.");
   assert.equal(result.summary, undefined);
   assert.equal(String(result.message).includes("Liebe"), false);
   assert.equal(captionBody.includes(result.message), false);
@@ -165,7 +166,8 @@ test("Watch-Seite: null ist kein Player, die signierte Spur hat Text", { timeout
   assert.ok(calls.some(function (url) { return url.includes("/youtubei/v1/player"); }));
   assert.ok(captionBody.length > 40);
   assert.ok(summary.textFromCaptions(captionBody).length > 20);
-  assert.equal(result.message, summary.UNAVAILABLE);
+  assert.equal(result.code, "NATIVE_CONNECTION_UNAVAILABLE");
+  assert.equal(result.message, "Die Verbindung zur Kurzfassung-App ist gerade nicht verfügbar.");
   assert.notEqual(result.message, summary.EMPTY_CAPTIONS);
   assert.equal(String(result.message).includes("Liebe"), false);
 });

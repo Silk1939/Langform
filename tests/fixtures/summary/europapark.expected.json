@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "source": "europapark.en.txt",
+  "sourceProvenance": "Vom Nutzer am 09.10.2026 bereitgestellte Untertitel. Keine unabhängige Prüfung aktueller Preise oder Parkdaten.",
+  "purpose": "Modellunabhängiger Abnahmetest für Zusammenfassungen. Die Originalzitate sind Prüfhilfen; ihre bloße Existenz beweist keine semantische Übereinstimmung.",
+  "evaluation": "Gesamte Ausgabe einschließlich TLDR, Merksatz und Einordnung manuell gegen die vollständige Quelle prüfen. Auslassungen unwichtiger Details sind erlaubt. Keine Freigabe bei wesentlichen Falschaussagen. Laufzeit und tatsächliche Nutzungskosten separat messen.",
+  "referenceTldr": "Der Europa-Park begeistert die beiden mit liebevoll gestalteten Themenbereichen und Attraktionen auch für Menschen, die keine extremen Achterbahnen mögen. Die Parkhotels finden sie teuer und berichten von schlechter Nachtruhe.",
+  "checks": [
+    {
+      "id": "overall_verdict",
+      "severity": "critical",
+      "expected": "Das Hauptfazit zum Park ist sehr positiv. Kritik betrifft vor allem teure Hotels und die schlechte Nachtruhe.",
+      "originalQuotes": [
+        "I thought it was, I thought it was really great overall.",
+        "there were just noises all night long."
+      ]
+    },
+    {
+      "id": "wait_times",
+      "severity": "critical",
+      "expected": "Die Wartezeiten werden bei diesem Besuch als kurz beschrieben. Keine Behauptung über lange Wartezeiten oder generell leere Parks.",
+      "originalQuotes": [
+        "the wait times for the attractions are listed here, and it all doesn't look long at all.",
+        "weekdays outside of the holiday season are the best time."
+      ]
+    },
+    {
+      "id": "room_key_resolution",
+      "severity": "critical",
+      "expected": "Wenn der digitale Schlüssel erwähnt wird, muss die spätere Lösung erhalten bleiben. Kein allgemeines Urteil, dass die App unzuverlässig sei.",
+      "originalQuotes": [
+        "Okay, it actually worked."
+      ]
+    },
+    {
+      "id": "hotel_price",
+      "severity": "major",
+      "expected": "270 Euro betrifft die erste Hotelnacht und enthält Frühstück. Es ist kein Preis für beide Hotels oder ein Eintrittspaket.",
+      "originalQuotes": [
+        "we paid about 270 € for one night here",
+        "we do have breakfast included"
+      ]
+    },
+    {
+      "id": "hotel_preference",
+      "severity": "major",
+      "expected": "Der Sprecher bevorzugt am Ende Silverlake City wegen des Europa-Park-Gefühls. Kein erfundener Spa-Vergleich.",
+      "originalQuotes": [
+        "it's obviously Silver Lake City, because I just think when you go to Europa-Park, you get more of that Europa-Park feeling."
+      ]
+    },
+    {
+      "id": "spa_attribution",
+      "severity": "critical",
+      "expected": "Der am Ende besichtigte und positiv beschriebene Spa-Bereich gehört zum Colosseo. Die etwa 20 Minuten sind keine Spa-Wartezeit.",
+      "originalQuotes": [
+        "We also found the spa area, which looked pretty good",
+        "heading over to the spa area to change"
+      ]
+    },
+    {
+      "id": "no_technical_filler",
+      "severity": "critical",
+      "expected": "Keine erfundene digitale Kostenstruktur, technische Verwaltungsanalyse oder allgemeine Ausrichtung der Hotelinfrastruktur auf vier Personen.",
+      "originalQuotes": [
+        "Four towel sets.",
+        "What kind of cable management is that?"
+      ]
+    },
+    {
+      "id": "no_sponsorship",
+      "severity": "major",
+      "expected": "Sponsoring, Gewinnspiel, Like- und Abo-Aufrufe dürfen keine Hauptpunkte sein.",
+      "originalQuotes": []
+    }
+  ],
+  "measurements": {
+    "latencyMs": null,
+    "inputTokens": null,
+    "outputTokensIncludingReasoning": null,
+    "cost": null
+  }
+}

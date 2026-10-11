@@ -219,3 +219,74 @@ test("CSS trifft Desktop- und Mobil-Hooks", function () {
   assert.doesNotMatch(css, /movie_player|html5-video-player|player-container|object-fit/);
   assert.doesNotMatch(css, /progress-bar|ytp-chapter|video\s*\{/);
 });
+
+test("eine markierte Karte mit nachträglich eingesetztem Video bleibt im DOM", function () {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM('<!DOCTYPE html><body><ytm-rich-item-renderer><a href="/shorts/reused">Kurz</a></ytm-rich-item-renderer></body>');
+  const doc = dom.window.document;
+  const card = doc.querySelector("ytm-rich-item-renderer");
+  hide.scan(doc, "https://m.youtube.com/", { remove: false });
+  assert.equal(marked(card), true);
+  const video = doc.createElement("video");
+  card.appendChild(video);
+  hide.scan(doc, "https://m.youtube.com/");
+  assert.equal(card.isConnected, true);
+  assert.equal(video.isConnected, true);
+  assert.equal(marked(card), false);
+  assert.equal(card.style.display, "");
+  assert.equal(video.getAttribute("style"), null);
+  dom.window.close();
+});
+
+for (const prefix of ["ytm", "ytd"]) {
+  test(prefix + " Shorts filtering preserves the native pagination owner and following long-form page", function () {
+    const { JSDOM } = require("jsdom");
+    const dom = new JSDOM('<' + prefix + '-rich-section-renderer id="section"><' + prefix + '-reel-shelf-renderer id="shelf"><' + prefix + '-rich-item-renderer id="short"><a href="/shorts/abcdefghijk">Shorts</a></' + prefix + '-rich-item-renderer></' + prefix + '-reel-shelf-renderer><' + prefix + '-continuation-item-renderer id="continuation">More</' + prefix + '-continuation-item-renderer></' + prefix + '-rich-section-renderer>');
+    const doc = dom.window.document;
+    const section = doc.getElementById("section"), sentinel = doc.getElementById("continuation"), shelf = doc.getElementById("shelf");
+    hide.scan(doc, "https://m.youtube.com/");
+    kept(section); kept(sentinel); gone(shelf);
+    const sectionRules = hide.cssText().split(",\n").filter(selector => selector.startsWith(prefix + "-rich-section-renderer"));
+    assert.ok(sectionRules.length >= 2);
+    assert.ok(sectionRules.every(selector => !section.matches(selector)), "the early CSS must not hide the surviving sentinel's parent");
+    let loads = 0;
+    // YouTube keeps ownership of the continuation: its existing callback can
+    // append the next page after our filter runs, without replacing the feed.
+    sentinel.addEventListener("native-visible", () => {
+      loads++;
+      const page = doc.createElement(prefix + "-rich-item-renderer");
+      page.id = "next-page"; page.innerHTML = '<a href="/watch?v=abcdefghijk">Long video</a>';
+      section.insertBefore(page, sentinel);
+    });
+    sentinel.dispatchEvent(new dom.window.Event("native-visible"));
+    hide.scan(doc, "https://m.youtube.com/");
+    assert.equal(loads, 1); kept(doc.getElementById("next-page")); kept(sentinel);
+    dom.window.close();
+  });
+}
+
+test("A continuation nested inside a Shorts shelf survives while the individual Shorts cells disappear", function () {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM('<ytm-rich-section-renderer id="section"><ytm-reel-shelf-renderer id="shelf"><ytm-rich-item-renderer id="short"><a href="/shorts/abcdefghijk">Shorts</a></ytm-rich-item-renderer><ytm-continuation-item-renderer id="continuation">More</ytm-continuation-item-renderer></ytm-reel-shelf-renderer></ytm-rich-section-renderer>');
+  const doc = dom.window.document;
+  hide.scan(doc, "https://m.youtube.com/");
+  kept(doc.getElementById("section")); kept(doc.getElementById("shelf")); kept(doc.getElementById("continuation"));
+  assert.equal(doc.querySelector('[href^="/shorts/"]'), null);
+  const shelfRules = hide.cssText().split(",\n").filter(selector => selector.startsWith("ytm-reel-shelf-renderer"));
+  assert.ok(shelfRules.every(selector => !doc.getElementById("shelf").matches(selector)));
+  dom.window.close();
+});
+
+test("A late continuation restores a marked container before its native observer measures it", function () {
+  const { JSDOM } = require("jsdom");
+  const dom = new JSDOM('<ytm-rich-item-renderer id="container"><a href="/shorts/abcdefghijk">Shorts</a></ytm-rich-item-renderer>');
+  const doc = dom.window.document, container = doc.getElementById("container");
+  hide.scan(doc, "https://m.youtube.com/", { remove: false });
+  assert.equal(marked(container), true); assert.equal(container.style.display, "none");
+  container.insertAdjacentHTML("beforeend", '<ytm-continuation-item-renderer id="continuation">More</ytm-continuation-item-renderer>');
+  hide.scan(doc, "https://m.youtube.com/");
+  kept(container); kept(doc.getElementById("continuation"));
+  assert.equal(container.style.display, "");
+  assert.equal(container.querySelector('[href^="/shorts/"]'), null);
+  dom.window.close();
+});

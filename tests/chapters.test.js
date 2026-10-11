@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { JSDOM } = require("jsdom");
 const chapters = require("../extension/src/page-captions.js");
 
@@ -40,7 +42,7 @@ function playerWithChapters() {
   };
 }
 
-test("Kapitelliste wird zu Anteilen auf der Seek-Leiste, ein Klick sucht", function () {
+test("Kapitelliste segmentiert die Seek-Leiste ohne native Scrub-Eingaben zu übernehmen", function () {
   const list = chapters.chaptersFromPlayer(playerWithChapters());
   assert.deepEqual(
     list.map(function (item) { return item.start; }),
@@ -80,7 +82,9 @@ test("Kapitelliste wird zu Anteilen auf der Seek-Leiste, ein Klick sucht", funct
   assert.equal(marks.length, 2);
   assert.equal(doc.querySelectorAll("video").length, 1);
   marks[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
-  assert.deepEqual(sought, [83, 83]);
+  assert.deepEqual(sought, [], "visuelle Grenzen übernehmen keinen nativen Seek");
+  assert.equal(layer.getAttribute("aria-hidden"), "true");
+  assert.ok(marks.every(mark => mark.style.pointerEvents === "none" && !mark.hasAttribute("role")));
   assert.equal(doc.getElementById("langform-chapter-title"), null);
   assert.equal(video.style.width, "");
   assert.equal(video.style.height, "");
@@ -163,7 +167,7 @@ test("aktuelles Kapitel ist das letzte mit Start <= Spielzeit, eine Zeile sucht"
   chapters.syncChapterUi(doc, list, 100);
   const chip = doc.getElementById("langform-chapter-chip");
   assert.equal(chip.querySelector("[data-langform-chapter-label]").textContent, "Gespräch");
-  assert.match(chip.textContent, />/);
+  assert.match(chip.textContent, /›/);
   assert.equal(chip.previousElementSibling, doc.getElementById("time"));
   ui.open();
   const sheet = doc.getElementById("langform-chapter-sheet");
@@ -546,6 +550,13 @@ test("taucht YouTubes Chip später auf, verschwindet unserer", function () {
   chapters.refreshChapters(win);
   assert.equal(doc.getElementById("langform-chapter-chip"), null);
   assert.equal(doc.documentElement.getAttribute("data-langform-chapter-ui"), "native");
+  assert.equal(doc.documentElement.__langformChapterVideoID, "abcdefghijk");
+  assert.deepEqual(doc.documentElement.__langformChapterList.map(item => item.start), [0, 83, 724]);
+  doc.documentElement.__langformChapterList = [];
+  doc.documentElement.__langformChapterVideoID = "";
+  chapters.refreshChapters(win);
+  assert.equal(doc.documentElement.__langformChapterVideoID, "abcdefghijk", "auch native Chrome hält die Vollbild-Kapitel aktuell");
+  assert.deepEqual(doc.documentElement.__langformChapterList.map(item => item.start), [0, 83, 724]);
   doc.getElementById("native-wrap").style.display = "none";
   chapters.refreshChapters(win);
   assert.equal(doc.getElementById("langform-chapter-chip"), null);
@@ -618,4 +629,663 @@ test("beim Scrollen und Abspielen ändert sich das DOM nur, wenn das Kapitel wec
   assert.equal(video.getAttribute("style"), null);
   watcher.disconnect();
   win.close();
+});
+
+test("das erste Kapitel sucht zurück zu 0:00, ohne die Wiedergabe zu pausieren", function () {
+  const dom = new JSDOM('<div id="movie_player"><video></video></div>', { url: "https://m.youtube.com/watch?v=abcdefghijk" });
+  const win = dom.window;
+  const video = win.document.querySelector("video");
+  video.currentTime = 90;
+  const sought = [];
+  win.document.getElementById("movie_player").seekTo = function (seconds) { sought.push(seconds); };
+  video.pause = function () { assert.fail("Kapitelwahl pausiert den Film nicht"); };
+  assert.equal(chapters.seekTo(win, 0), true);
+  assert.equal(chapters.seekTo(win, -1), false);
+  assert.deepEqual(sought, [0]);
+  video.currentTime = 0;
+  assert.equal(chapters.seekTo(win, 0), false, "kein unnötiger Sprung beim frischen Start");
+  win.close();
+});
+
+test("ein Videowechsel zeigt keine Kapitel aus der vorherigen Player-Antwort", function () {
+  const dom = screenshotPlayerDom();
+  const win = dom.window;
+  const doc = win.document;
+  win.ytInitialPlayerResponse = playerWithChapters();
+  chapters.refreshChapters(win);
+  assert.ok(doc.getElementById("langform-chapter-chip"));
+  dom.reconfigure({ url: "https://m.youtube.com/watch?v=zyxwvutsrqp" });
+  chapters.refreshChapters(win);
+  assert.equal(doc.getElementById("langform-chapter-chip"), null);
+  assert.equal(doc.querySelector("[data-langform-chapters]"), null);
+  assert.equal(doc.documentElement.__langformChapterList.length, 0);
+  assert.equal(doc.documentElement.__langformChapterVideoID, "");
+  const next = playerWithChapters();
+  next.videoDetails.videoId = "zyxwvutsrqp";
+  win.ytInitialPlayerResponse = next;
+  chapters.refreshChapters(win);
+  assert.ok(doc.getElementById("langform-chapter-chip"));
+  assert.equal(doc.documentElement.__langformChapterVideoID, "zyxwvutsrqp");
+  win.close();
+});
+
+function mobileChapterPage(t) {
+  const dom = screenshotPlayerDom();
+  const win = dom.window, doc = win.document;
+  t.after(() => win.close());
+  const timers = new Map(), intervals = new Map();
+  let serial = 0;
+  win.setTimeout = (callback, delay) => { timers.set(++serial, { callback, delay }); return serial; };
+  win.clearTimeout = id => timers.delete(id);
+  win.setInterval = (callback, delay) => { intervals.set(++serial, { callback, delay }); return serial; };
+  win.clearInterval = id => intervals.delete(id);
+  const video = doc.getElementById("v"), sought = [];
+  Object.defineProperty(video, "paused", { get: () => false });
+  video.currentTime = 5;
+  video.play = video.pause = () => assert.fail("Kapitelwechsel darf die Wiedergabe nicht steuern");
+  doc.getElementById("player").seekTo = seconds => sought.push(seconds);
+  win.ytInitialPlayerResponse = playerWithChapters();
+  chapters.armChapters(win);
+  function response(id, prefix) {
+    const next = playerWithChapters();
+    next.videoDetails.videoId = id;
+    const rows = next.playerOverlays.playerOverlayRenderer.decoratedPlayerBarRenderer.decoratedPlayerBarRenderer
+      .playerBar.multiMarkersPlayerBarRenderer.markersMap[0].value.chapters;
+    rows.forEach((row, index) => {
+      row.chapterRenderer.title.simpleText = prefix + " " + index;
+      row.chapterRenderer.timeRangeStartMillis = [0, 123000, 764000][index];
+    });
+    return next;
+  }
+  function start(id) {
+    win.dispatchEvent(new win.CustomEvent("state-navigatestart", { detail: { href: "/watch?v=" + id } }));
+  }
+  function end(id) {
+    win.dispatchEvent(new win.CustomEvent("state-navigateend", { detail: { href: "/watch?v=" + id } }));
+  }
+  function flush() {
+    // Execute one turn; a callback may schedule a later independent turn.
+    for (const [id, item] of [...timers]) { timers.delete(id); item.callback(); }
+  }
+  const chip = () => doc.getElementById("langform-chapter-chip");
+  return { dom, win, doc, video, sought, timers, intervals, response, start, end, flush, chip };
+}
+
+test("mobiler Videostart entfernt alte Kapitel, offene Sheets und Seek-Aktionen schon vor dem URL-Wechsel", function (t) {
+  const page = mobileChapterPage(t);
+  const { win, doc, video } = page;
+  const oldChip = page.chip(), sheet = doc.getElementById("langform-chapter-sheet");
+  const animations = fakeSheetAnimations(sheet);
+  doc.getElementById("player").dispatchEvent(new win.Event("pointerdown", { bubbles: true }));
+  oldChip.click();
+  const row = sheet.querySelector('[data-start="83"]');
+  const gap = doc.querySelector('[data-langform-chapter][data-start="83"]');
+  const bar = doc.getElementById("bar"), preview = bar.__langformOnPreview;
+  const staleFinish = animations[0].onfinish;
+  win.dispatchEvent(new win.Event("resize"));
+  win.dispatchEvent(new win.Event("yt-navigate-finish"));
+  doc.dispatchEvent(new win.Event("scroll"));
+  const callbacks = [...page.timers.values(), ...page.intervals.values()].map(item => item.callback);
+  const mediaMarkup = video.outerHTML, mediaTime = video.currentTime;
+  page.start("lmnopqrstuv");
+  assert.equal(page.chip(), null, "Start meldet die neue Ziel-ID, bevor location.href wechselt");
+  assert.equal(doc.getElementById("langform-chapter-sheet"), null);
+  assert.equal(doc.querySelector("[data-langform-chapters]"), null);
+  assert.equal(doc.documentElement.__langformChapterList.length, 0);
+  assert.equal(animations[0].cancelled, true);
+  assert.equal(page.timers.size, 0, "alte Scroll-, Refresh- und Placement-Timer werden abgeräumt");
+  assert.equal(page.intervals.size, 0, "alter Bootstrap-/Controls-Follow wird beendet");
+  assert.deepEqual(bar.__langformFractions, []);
+  assert.equal(bar.__langformOnPreview, null);
+  for (const callback of callbacks) callback();
+  for (const name of ["loadedmetadata", "playing"]) video.dispatchEvent(new win.Event(name));
+  page.flush();
+  assert.equal(page.chip(), null, "alte Medien dürfen A nicht während der Navigation neu aufbauen");
+  assert.equal(page.intervals.size, 0, "alte playing-Events starten keine neuen Follow-Timer");
+  row.click(); gap.click(); oldChip.click(); staleFinish(); preview(83);
+  assert.deepEqual(page.sought, [], "auch gehaltene alte Event-/Preview-Closures bleiben wirkungslos");
+  assert.equal(doc.documentElement.__langformChapterList.length, 0);
+  assert.equal(video.outerHTML, mediaMarkup);
+  assert.equal(video.currentTime, mediaTime);
+  assert.equal(win.location.search, "?v=abcdefghijk", "Kapitelinvalidierung navigiert selbst nicht");
+  win.history.replaceState({}, "", "/watch?v=lmnopqrstuv");
+  win.ytInitialPlayerResponse = page.response("lmnopqrstuv", "B");
+  page.end("lmnopqrstuv"); page.flush();
+  assert.equal(page.chip().querySelector("[data-langform-chapter-label]").textContent, "B 0");
+  assert.equal(page.intervals.size, 0, "der mobile Wechsel arbeitet über Ereignisse, ohne neues Polling");
+  page.chip().click();
+  doc.querySelector('#langform-chapter-sheet [data-start="123"]').click();
+  assert.deepEqual(page.sought, [123]);
+});
+
+test("mobiles Ende wartet auf passende verspätete Metadaten und verwirft alte Ziele bei schnellem Wechsel", function (t) {
+  const page = mobileChapterPage(t);
+  page.win.dispatchEvent(new page.win.Event("resize"));
+  const stalePlacement = [...page.timers.values()][0].callback;
+  page.start("lmnopqrstuv");
+  page.win.history.replaceState({}, "", "/watch?v=lmnopqrstuv");
+  page.end("lmnopqrstuv");
+  const staleRefresh = [...page.timers.values()][0].callback;
+  page.start("zyxwvutsrqp");
+  page.win.history.replaceState({}, "", "/watch?v=zyxwvutsrqp");
+  page.win.ytInitialPlayerResponse = page.response("lmnopqrstuv", "B");
+  staleRefresh();
+  page.end("lmnopqrstuv"); page.flush();
+  assert.equal(page.chip(), null, "verspätetes Ende von B beendet nicht den laufenden Wechsel nach C");
+  page.end("zyxwvutsrqp"); page.flush();
+  assert.equal(page.chip(), null, "B-Metadaten werden unter der C-Adresse nicht verwendet");
+  assert.equal(page.intervals.size, 0);
+  page.win.ytInitialPlayerResponse = page.response("zyxwvutsrqp", "C");
+  page.win.dispatchEvent(new page.win.CustomEvent("video-data-change", { detail: { type: "dataloaded" } }));
+  page.flush();
+  assert.equal(page.chip().querySelector("[data-langform-chapter-label]").textContent, "C 0");
+  const chip = page.chip();
+  stalePlacement(); page.end("lmnopqrstuv"); page.flush();
+  assert.equal(page.chip(), chip, "alte Platzierungs-/Endcallbacks greifen nicht in C ein");
+  assert.equal(page.video.currentTime, 5);
+  assert.equal(page.video.getAttribute("style"), null);
+});
+
+test("mobiles Ende ohne beobachteten Start aktualisiert Kapitel und lässt fremde Ziele unberührt", function (t) {
+  const page = mobileChapterPage(t);
+  const chip = page.chip();
+  for (const name of ["state-navigatestart", "state-navigateend"]) {
+    page.win.dispatchEvent(new page.win.CustomEvent(name, { detail: { href: "https://example.com/watch?v=lmnopqrstuv" } }));
+  }
+  page.flush();
+  assert.equal(page.chip(), chip);
+  assert.equal(page.timers.size, 0);
+  page.win.history.replaceState({}, "", "/watch?v=lmnopqrstuv");
+  page.win.ytInitialPlayerResponse = page.response("lmnopqrstuv", "B");
+  page.end("lmnopqrstuv"); page.flush();
+  assert.equal(page.chip().querySelector("[data-langform-chapter-label]").textContent, "B 0");
+  assert.equal(page.intervals.size, 0);
+});
+
+test("mobiler Wechsel zur Startseite räumt Kapitelarbeit ab und ein späteres Video startet ereignisgesteuert", function (t) {
+  const page = mobileChapterPage(t);
+  page.doc.getElementById("player").dispatchEvent(new page.win.Event("pointerdown", { bubbles: true }));
+  page.win.dispatchEvent(new page.win.Event("resize"));
+  page.win.dispatchEvent(new page.win.CustomEvent("state-navigatestart", { detail: { href: "/" } }));
+  assert.equal(page.chip(), null);
+  assert.equal(page.timers.size, 0);
+  assert.equal(page.intervals.size, 0);
+  page.win.history.replaceState({}, "", "/");
+  page.win.dispatchEvent(new page.win.CustomEvent("state-navigateend", { detail: { href: "/" } }));
+  page.video.dispatchEvent(new page.win.Event("playing"));
+  page.flush();
+  assert.equal(page.chip(), null);
+  assert.equal(page.timers.size, 0);
+  assert.equal(page.intervals.size, 0);
+  page.start("lmnopqrstuv");
+  page.win.history.replaceState({}, "", "/watch?v=lmnopqrstuv");
+  page.win.ytInitialPlayerResponse = page.response("lmnopqrstuv", "B");
+  page.end("lmnopqrstuv"); page.flush();
+  assert.equal(page.chip().querySelector("[data-langform-chapter-label]").textContent, "B 0");
+  assert.equal(page.intervals.size, 0);
+  assert.equal(page.video.currentTime, 5);
+});
+
+test("mobile Ereignisse zum gleichen Video erhalten offenes Sheet und erzeugen keine neue Kapitelarbeit", function (t) {
+  const page = mobileChapterPage(t);
+  const chip = page.chip(), sheet = page.doc.getElementById("langform-chapter-sheet");
+  chip.click();
+  let reads = 0;
+  const response = page.win.ytInitialPlayerResponse;
+  Object.defineProperty(page.win, "ytInitialPlayerResponse", { get: () => { reads++; return response; } });
+  page.win.dispatchEvent(new page.win.CustomEvent("state-navigatestart", { detail: { href: "/watch?v=abcdefghijk&t=12" } }));
+  page.end("abcdefghijk"); page.end("abcdefghijk"); page.flush();
+  assert.equal(page.chip(), chip);
+  assert.equal(page.doc.getElementById("langform-chapter-sheet"), sheet);
+  assert.equal(sheet.style.display, "flex");
+  assert.equal(reads, 0);
+  assert.equal(page.timers.size, 0);
+  assert.equal(page.intervals.size, 0);
+});
+
+test("Desktop-Ende und Popstate behalten nach mobilen Wechseln ihre Kapitelinvalidierung", function (t) {
+  const page = mobileChapterPage(t);
+  for (const [id, event, title] of [["lmnopqrstuv", "yt-navigate-finish", "Desktop"], ["zyxwvutsrqp", "popstate", "Back"]]) {
+    page.win.history.replaceState({}, "", "/watch?v=" + id);
+    page.win.ytInitialPlayerResponse = page.response(id, title);
+    page.win.dispatchEvent(new page.win.Event(event)); page.flush();
+    assert.equal(page.chip().querySelector("[data-langform-chapter-label]").textContent, title + " 0");
+  }
+  assert.deepEqual(page.sought, []);
+  assert.equal(page.video.currentTime, 5);
+});
+
+test("nach Scrollen und Drehen folgen Kapitel und AirPlay der neuen Steuerzeile", async function (t) {
+  const dom = screenshotPlayerDom();
+  const win = dom.window;
+  t.after(function () { win.close(); });
+  const doc = win.document;
+  doc.getElementById("v").webkitShowPlaybackTargetPicker = function () {};
+  win.ytInitialPlayerResponse = playerWithChapters();
+  chapters.armChapters(win);
+  const chip = doc.getElementById("langform-chapter-chip");
+  const airplay = doc.getElementById("langform-airplay");
+  assert.ok(airplay);
+  doc.dispatchEvent(new win.Event("scroll"));
+  assert.equal(airplay.style.visibility, "hidden");
+  placeBox(doc.getElementById("player"), 0, 88, 471, 265);
+  placeBox(doc.getElementById("time"), 36, 280, 104, 24);
+  placeBox(doc.getElementById("fullscreen"), 396, 274, 36, 36);
+  placeBox(doc.getElementById("cc"), 340, 100, 36, 36);
+  placeBox(doc.getElementById("gear"), 396, 100, 36, 36);
+  await new Promise(function (resolve) { setTimeout(resolve, 260); });
+  assert.equal(airplay.style.visibility, "");
+  assert.equal(airplay.style.top, "100px");
+  assert.equal(chip.style.top, "292px");
+  placeBox(doc.getElementById("time"), 36, 280, 144, 24);
+  win.dispatchEvent(new win.Event("resize"));
+  await new Promise(function (resolve) { setTimeout(resolve, 240); });
+  assert.equal(chip.style.left, "188px");
+  assert.equal(chip.style.maxWidth, "200px");
+  assert.equal(doc.getElementById("v").getAttribute("style"), null);
+});
+
+test("der native Zeitstempel-Hook sucht nur das aktuelle Video und fasst History nicht an", function () {
+  const dom = new JSDOM('<div id="movie_player"><video></video></div>', { url: "https://m.youtube.com/watch?v=abcdefghijk" });
+  const win = dom.window;
+  win.ShortsAusblenden = { logic: require("../extension/src/logic.js") };
+  win.document.querySelector("video").currentTime = 100;
+  const sought = [];
+  win.document.getElementById("movie_player").seekTo = function (seconds) { sought.push(seconds); };
+  chapters.install(win);
+  assert.equal(win.__langformSeekFromLink("/watch?v=abcdefghijk&t=1m23s"), true);
+  assert.equal(win.__langformSeekFromLink("/watch?v=abcdefghijk&t=0"), true);
+  assert.equal(win.__langformSeekFromLink("/watch?v=zyxwvutsrqp&t=83"), false);
+  assert.equal(win.__langformSeekFromLink("/watch?v=abcdefghijk"), false);
+  assert.equal(win.__langformSeekFromLink("https://example.com/watch?v=abcdefghijk&t=83"), false);
+  assert.equal(win.__langformSeekFromLink("/watch?v=abcdefghijk#t=%invalid"), false);
+  assert.deepEqual(sought, [83, 0]);
+  assert.equal(win.location.href, "https://m.youtube.com/watch?v=abcdefghijk");
+  win.history.replaceState(null, "", "/watch?v=abcdefghijk&t=95");
+  assert.deepEqual(sought, [83, 0], "History-Änderungen lösen keinen Seek aus");
+  win.ytInitialPlayerResponse = { videoDetails: { videoId: "zyxwvutsrqp" } };
+  assert.equal(win.__langformSeekFromLink("/watch?v=abcdefghijk&t=10"), false);
+  win.close();
+});
+
+test("die Suche nach der Kapitelleiste misst keine Empfehlungen außerhalb des Players", function () {
+  const dom = screenshotPlayerDom();
+  const doc = dom.window.document;
+  let measured = 0;
+  for (let i = 0; i < 200; i++) {
+    const card = doc.createElement("div");
+    card.textContent = "Empfohlenes Video " + i;
+    card.getBoundingClientRect = function () { measured += 1; return { left: 0, top: 500, width: 471, height: 200 }; };
+    doc.body.appendChild(card);
+  }
+  assert.equal(chapters.findSeekBar(doc), doc.getElementById("bar"));
+  assert.equal(measured, 0);
+  dom.window.close();
+});
+
+test("Scrollen und Tippen in Kommentar- und Kapitellisten erzeugt keine Player-Messung", async function (t) {
+  const dom = screenshotPlayerDom();
+  const win = dom.window;
+  const doc = win.document;
+  t.after(function () { win.close(); });
+  doc.getElementById("v").webkitShowPlaybackTargetPicker = function () {};
+  win.ytInitialPlayerResponse = playerWithChapters();
+  chapters.armChapters(win);
+  const airplay = doc.getElementById("langform-airplay");
+  const originalVisibility = airplay.style.visibility;
+  doc.body.insertAdjacentHTML("beforeend", '<bottom-sheet-container><div id="comments-list"><button>Antworten</button></div></bottom-sheet-container>' +
+    '<div id="dialog-container"><div id="native-chapters">YouTube-Kapitel</div></div>' +
+    '<ytm-comments-section-renderer><div id="inline-comments">Kommentare</div></ytm-comments-section-renderer>' +
+    '<panel-container><ytm-engagement-panel><ytm-engagement-panel-section-list-renderer class="comment-item-section">' +
+    '<div class="engagement-panel-container"><div class="engagement-panel-content-wrapper" id="engagement-comments">' +
+    '<ytm-comments-header-renderer></ytm-comments-header-renderer><button>Antworten</button>' +
+    '</div></div></ytm-engagement-panel-section-list-renderer></ytm-engagement-panel>' +
+    '<ytm-engagement-panel><div class="engagement-panel-content-wrapper" id="engagement-loading">Lädt …</div></ytm-engagement-panel></panel-container>');
+  const nativeMarkup = doc.querySelector("bottom-sheet-container").outerHTML;
+  const engagementMarkup = doc.querySelector("panel-container").outerHTML;
+  const targets = ["comments-list", "native-chapters", "inline-comments", "engagement-comments", "engagement-loading"].map(id => doc.getElementById(id));
+  targets.push(doc.querySelector("#langform-chapter-sheet [data-langform-chapter-list]"));
+  let measured = 0;
+  for (const element of doc.getElementById("player").querySelectorAll("*")) {
+    const original = element.getBoundingClientRect.bind(element);
+    element.getBoundingClientRect = function () { measured++; return original(); };
+  }
+  let styled = 0, queried = 0;
+  const getStyle = win.getComputedStyle.bind(win);
+  win.getComputedStyle = function (element) { styled++; return getStyle(element); };
+  const query = doc.querySelector.bind(doc);
+  doc.querySelector = function (selector) { queried++; return query(selector); };
+  let followIntervals = 0;
+  const originalInterval = win.setInterval.bind(win);
+  win.setInterval = function (fn, ms) {
+    if (ms === 350) followIntervals++;
+    return originalInterval(fn, ms);
+  };
+  for (const target of targets) {
+    target.dispatchEvent(new win.Event("pointerdown", { bubbles: true, composed: true }));
+    for (let i = 0; i < 5; i++) target.dispatchEvent(new win.Event("scroll"));
+  }
+  assert.notEqual(win.__langformChapterScrolling, true);
+  assert.equal(airplay.style.visibility, originalVisibility);
+  await new Promise(resolve => setTimeout(resolve, 230));
+  assert.equal(measured, 0, "vorher acht Player-Messungen nach einem einzigen Kommentar-Scroll");
+  assert.deepEqual({ styled, queried }, { styled: 0, queried: 0 }, "reale Engagement-Panels brauchen auch keine Stil- oder Dokumentsuche");
+  assert.equal(followIntervals, 0);
+  assert.equal(doc.querySelector("bottom-sheet-container").outerHTML, nativeMarkup);
+  assert.equal(doc.querySelector("panel-container").outerHTML, engagementMarkup);
+  assert.equal(airplay.style.visibility, originalVisibility);
+});
+
+test("native Player-Geste setzt Kapitel- und AirPlay-Messungen aus und holt sie einmal nach", function (t) {
+  const page = mobileChapterPage(t);
+  const { win, doc, video, timers, intervals } = page;
+  video.webkitShowPlaybackTargetPicker = function () {};
+  chapters.ensureAirPlay(win);
+  win.webkit = { messageHandlers: { langformPlayer: { postMessage() {} } } };
+  new Function("window", fs.readFileSync(path.join(__dirname, "../ios/Langform/Langform/PlayerRect.js"), "utf8"))(win);
+  const player = doc.getElementById("player");
+  video.dispatchEvent(new win.Event("pointerdown", { bubbles: true }));
+  const follow = [...intervals.values()].find(item => item.delay === 350);
+  assert.ok(follow);
+  assert.equal(win.__langformSetNativeDragging(true, "abcdefghijk"), true);
+  assert.equal(win.__langformIsNativeDragging(), true);
+  let measured = 0, styled = 0, queried = 0;
+  for (const element of [player, ...player.querySelectorAll("*")]) {
+    const original = element.getBoundingClientRect.bind(element);
+    element.getBoundingClientRect = function () { measured++; return original(); };
+  }
+  const getStyle = win.getComputedStyle.bind(win);
+  win.getComputedStyle = function (element) { styled++; return getStyle(element); };
+  const query = doc.querySelector.bind(doc);
+  doc.querySelector = function (selector) { queried++; return query(selector); };
+  function runTimers(delay) {
+    for (const [id, item] of [...timers]) {
+      if (item.delay !== delay) continue;
+      timers.delete(id);
+      item.callback();
+    }
+  }
+  // A pending viewport update and replaced chapter control both become due
+  // while native owns the same retained WebView.
+  page.chip().remove();
+  win.dispatchEvent(new win.Event("video-data-change"));
+  win.dispatchEvent(new win.Event("resize"));
+  runTimers(240);
+  runTimers(160);
+  for (let i = 0; i < 8; i++) follow.callback();
+  assert.deepEqual({ measured, styled, queried }, { measured: 0, styled: 0, queried: 0 });
+  assert.equal(page.chip(), null);
+  assert.equal(win.__langformSetNativeDragging(false, "wrong-video"), false);
+  assert.equal(win.__langformIsNativeDragging(), true);
+  assert.equal([...timers.values()].filter(item => item.delay === 160 || item.delay === 240).length, 0);
+  assert.equal(win.__langformSetNativeDragging(false, "abcdefghijk"), true);
+  assert.equal(win.__langformIsNativeDragging(), false);
+  assert.equal([...timers.values()].filter(item => item.delay === 160).length, 1);
+  assert.equal([...timers.values()].filter(item => item.delay === 240).length, 1);
+  win.__langformSetNativeDragging(false, "abcdefghijk");
+  assert.equal([...timers.values()].filter(item => item.delay === 160 || item.delay === 240).length, 2);
+  runTimers(160);
+  runTimers(240);
+  assert.ok(measured > 0);
+  assert.ok(page.chip(), "nach der Geste werden ersetzte Kapitel wieder gebunden");
+  assert.ok(doc.getElementById("langform-airplay"));
+  assert.equal([...timers.values()].filter(item => item.delay === 160 || item.delay === 240).length, 0);
+  win.__langformSetNativeDragging(true, "abcdefghijk");
+  win.dispatchEvent(new win.Event("pagehide"));
+  assert.equal(win.__langformIsNativeDragging(), false);
+});
+
+test("Kapitelliste zeigt den aktiven Eintrag und scrollt ausschließlich ihre eigene Liste", function (t) {
+  const dom = screenshotPlayerDom();
+  t.after(function () { dom.window.close(); });
+  const win = dom.window;
+  const doc = win.document;
+  const items = chapters.chaptersFromPlayer(playerWithChapters());
+  items[1].thumbnail = "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg";
+  const ui = chapters.renderChapterUi(doc, items, function () {});
+  chapters.syncChapterUi(doc, items, 100);
+  const sheet = doc.getElementById("langform-chapter-sheet");
+  const list = sheet.querySelector("[data-langform-chapter-list]");
+  const row = list.querySelector("[aria-current=true]");
+  Object.defineProperties(list, { clientHeight: { value: 160 }, scrollHeight: { value: 600 } });
+  list.scrollTop = 200;
+  placeBox(list, 0, 400, 471, 160);
+  placeBox(row, 0, 500, 471, 72);
+  win.scrollTo = function () { assert.fail("YouTube-Seite darf sich nicht verschieben"); };
+  row.scrollIntoView = function () { assert.fail("scrollIntoView kann die ganze Seite verschieben"); };
+  ui.open();
+  assert.equal(list.scrollTop, 256);
+  assert.equal(row.style.minHeight, "72px");
+  assert.equal(doc.activeElement, row);
+  row.blur(); // JSDOM also treats the focused element as :active.
+  assert.equal(win.getComputedStyle(row).backgroundColor, "rgba(255, 255, 255, 0.12)");
+  assert.equal(row.querySelector("img").getAttribute("loading"), "lazy");
+  assert.equal(row.querySelector("img").getAttribute("decoding"), "async");
+  assert.equal(doc.getElementById("langform-chapter-chip").getAttribute("aria-expanded"), "true");
+  assert.equal(doc.getElementById("v").getAttribute("style"), null);
+});
+
+function fakeSheetAnimations(sheet) {
+  const animations = [];
+  sheet.animate = function (frames, options) {
+    const animation = { frames, options, cancelled: false, cancel() { this.cancelled = true; } };
+    animations.push(animation);
+    return animation;
+  };
+  return animations;
+}
+
+test("Kapitel öffnen und schließen ohne Layoutanimation und ignorieren doppelte Auswahl während des Schließens", function (t) {
+  const dom = screenshotPlayerDom();
+  t.after(function () { dom.window.close(); });
+  const doc = dom.window.document;
+  const sought = [];
+  const ui = chapters.renderChapterUi(doc, chapters.chaptersFromPlayer(playerWithChapters()), seconds => sought.push(seconds));
+  const sheet = doc.getElementById("langform-chapter-sheet");
+  const animations = fakeSheetAnimations(sheet);
+  ui.open();
+  assert.equal(animations[0].options.duration, 280);
+  assert.equal(animations[0].options.fill, "both", "kein Rücksprung zum ruhenden Frame vor dem Abschluss");
+  animations[0].onfinish();
+  assert.equal(animations[0].cancelled, true, "kein bleibender Effekt beim Lesen");
+  const row = sheet.querySelector('[data-start="83"]');
+  row.click();
+  row.click();
+  assert.deepEqual(sought, [83]);
+  assert.equal(animations[1].options.duration, 180);
+  assert.equal(sheet.style.display, "flex", "Sheet bleibt für die kurze Ausblendung sichtbar");
+  assert.equal(sheet.style.pointerEvents, "none");
+  assert.equal(sheet.getAttribute("aria-hidden"), "false", "native Gesten bleiben während der Ausblendung gesperrt");
+  for (const animation of animations) {
+    for (const frame of animation.frames) assert.deepEqual(Object.keys(frame).sort(), ["transform"]);
+  }
+  animations[1].onfinish();
+  assert.equal(sheet.style.display, "none");
+  assert.equal(sheet.getAttribute("aria-hidden"), "true");
+  assert.equal(animations[1].cancelled, true);
+});
+
+test("laufende Kapitelbewegung gibt bei Viewport- oder Reduce-Motion-Wechsel sofort den ruhenden Zustand frei", function (t) {
+  for (const phase of ["opening", "closing"]) {
+    for (const reason of ["resize", "reduce", "pagehide"]) {
+      const dom = screenshotPlayerDom(); t.after(() => dom.window.close());
+      const win = dom.window, doc = win.document, listeners = new Set();
+      const preference = { matches: false,
+        addEventListener(name, callback) { listeners.add(callback); },
+        removeEventListener(name, callback) { listeners.delete(callback); } };
+      win.matchMedia = () => preference;
+      const ui = chapters.renderChapterUi(doc, chapters.chaptersFromPlayer(playerWithChapters()), function () {});
+      const sheet = doc.getElementById("langform-chapter-sheet"), animations = fakeSheetAnimations(sheet);
+      ui.open();
+      if (phase === "closing") { animations[0].onfinish(); ui.close(); }
+      const animation = animations.at(-1), staleFinish = animation.onfinish;
+      const list = sheet.querySelector("[data-langform-chapter-list]"); list.scrollTop = 180;
+      if (reason === "reduce") { preference.matches = true; listeners.forEach(callback => callback()); }
+      else win.dispatchEvent(new win.Event(reason));
+      staleFinish();
+      assert.equal(animation.cancelled, true);
+      assert.equal(sheet.style.display, phase === "closing" || reason === "pagehide" ? "none" : "flex");
+      assert.equal(sheet.style.pointerEvents, "");
+      assert.equal(list.scrollTop, 180);
+      chapters.renderChapterUi(doc, [], function () {});
+      assert.equal(listeners.size, 0, "entfernte Kapitelblätter behalten keinen Preference-Listener");
+    }
+  }
+});
+
+test("schnelles Wiederöffnen verwirft das alte Animationsende", function (t) {
+  const dom = screenshotPlayerDom();
+  t.after(function () { dom.window.close(); });
+  const doc = dom.window.document;
+  const ui = chapters.renderChapterUi(doc, chapters.chaptersFromPlayer(playerWithChapters()), function () {});
+  const sheet = doc.getElementById("langform-chapter-sheet");
+  const animations = fakeSheetAnimations(sheet);
+  ui.open();
+  ui.close();
+  const staleFinish = animations[1].onfinish;
+  ui.open();
+  assert.equal(animations[0].cancelled, true);
+  assert.equal(animations[1].cancelled, true);
+  staleFinish();
+  assert.equal(sheet.style.display, "flex");
+  assert.equal(sheet.style.pointerEvents, "");
+  animations[2].onfinish();
+  assert.equal(sheet.style.display, "flex");
+  assert.equal(doc.getElementById("langform-chapter-chip").getAttribute("aria-expanded"), "true");
+});
+
+test("Bewegung reduzieren und Escape schließen die Kapitel sofort ohne Animation", function (t) {
+  const dom = screenshotPlayerDom();
+  t.after(function () { dom.window.close(); });
+  const win = dom.window;
+  const doc = win.document;
+  win.matchMedia = query => ({ matches: query === "(prefers-reduced-motion: reduce)" });
+  const ui = chapters.renderChapterUi(doc, chapters.chaptersFromPlayer(playerWithChapters()), function () {});
+  const sheet = doc.getElementById("langform-chapter-sheet");
+  sheet.animate = function () { assert.fail("Reduce Motion darf keine Sheet-Animation starten"); };
+  ui.open();
+  assert.equal(sheet.style.display, "flex");
+  sheet.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  assert.equal(sheet.style.display, "none");
+  assert.equal(doc.activeElement, doc.getElementById("langform-chapter-chip"));
+  assert.equal(doc.getElementById("langform-chapter-chip").getAttribute("aria-expanded"), "false");
+});
+function initialDataChapters(owner = 'abcdefghijk') {
+  return {
+    currentVideoEndpoint: {watchEndpoint:{videoId:owner}},
+    playerOverlays: playerWithChapters().playerOverlays,
+  };
+}
+function emptyChapterPlayer() {
+  return {videoDetails:{videoId:'abcdefghijk',lengthSeconds:String(DURATION),shortDescription:'No timestamps here'}};
+}
+test('Kapitel aus aktueller Watch-Datenantwort bleiben verfügbar ohne Kapitel im Playerresponse', t => {
+  const dom=screenshotPlayerDom();t.after(()=>dom.window.close());
+  const win=dom.window;win.ytInitialPlayerResponse=emptyChapterPlayer();win.ytInitialData=initialDataChapters();
+  assert.deepEqual(chapters.chaptersFromPlayer(win.ytInitialPlayerResponse),[]);
+  chapters.refreshChapters(win);
+  assert.deepEqual(win.document.documentElement.__langformChapterList.map(item=>item.start),[0,83,724]);
+  assert.equal(win.document.documentElement.__langformChapterVideoID,'abcdefghijk');
+});
+test('Leere Kapitel werden nicht festgehalten wenn derselbe Response später hydriert', t => {
+  for(const source of ['player','initialData']) {
+    const dom=screenshotPlayerDom();t.after(()=>dom.window.close());const win=dom.window;
+    const player=emptyChapterPlayer();win.ytInitialPlayerResponse=player;
+    const initial={currentVideoEndpoint:{watchEndpoint:{videoId:'abcdefghijk'}}};win.ytInitialData=initial;
+    chapters.refreshChapters(win);assert.deepEqual(win.document.documentElement.__langformChapterList,[]);
+    if(source==='player')player.videoDetails.shortDescription='0:00 Intro\n1:23 Gespräch';
+    else initial.playerOverlays=playerWithChapters().playerOverlays;
+    chapters.refreshChapters(win);
+    assert.ok(win.document.documentElement.__langformChapterList.length>=2,source);
+    assert.equal(win.document.documentElement.__langformChapterVideoID,'abcdefghijk');
+  }
+});
+test('Watch-Fallback verlangt aktuellen primären Videobesitzer und übernimmt keine Empfehlungen', t => {
+  const cases=[initialDataChapters('other'),initialDataChapters(''),{playerOverlays:playerWithChapters().playerOverlays},
+    {currentVideoEndpoint:{watchEndpoint:{videoId:'abcdefghijk'}},contents:{secondaryResults:{related:playerWithChapters()}}}];
+  for(const initial of cases) {
+    const dom=screenshotPlayerDom();t.after(()=>dom.window.close());const win=dom.window;
+    win.ytInitialPlayerResponse=emptyChapterPlayer();win.ytInitialData=initial;
+    chapters.refreshChapters(win);
+    assert.deepEqual(win.document.documentElement.__langformChapterList,[]);
+    assert.equal(win.document.documentElement.__langformChapterVideoID,'');
+    assert.equal(win.__langformChapterCache,null);
+  }
+  const dom=screenshotPlayerDom();t.after(()=>dom.window.close());const win=dom.window;
+  win.ytInitialPlayerResponse=emptyChapterPlayer();win.ytInitialPlayerResponse.videoDetails.videoId='other';win.ytInitialData=initialDataChapters();
+  chapters.refreshChapters(win);
+  assert.deepEqual(win.document.documentElement.__langformChapterList,[],'auch gültige Watch-Daten umgehen keine fremde Playerantwort');
+});
+test('Watch-Makromarker prüfen ihre eigene Video-ID und publizieren echte Dezimalzeitstempel', t => {
+  const dom=screenshotPlayerDom();t.after(()=>dom.window.close());const win=dom.window;
+  win.ytInitialPlayerResponse=emptyChapterPlayer();
+  function item(title,start,owner) { return {macroMarkersListItemRenderer:{title:{simpleText:title},onTap:{watchEndpoint:{videoId:owner,startTimeSeconds:start}}}}; }
+  win.ytInitialData={currentVideoEndpoint:{watchEndpoint:{videoId:'abcdefghijk'}},engagementPanels:[{engagementPanelSectionListRenderer:{content:{macroMarkersListRenderer:{contents:[
+    item('Present moment alignment',0,'abcdefghijk'),item('Empowering your vision',95.88,'abcdefghijk'),item('The journey over the goal',204,'abcdefghijk'),item('Foreign chapter',120,'other')
+  ]}}}}]};
+  chapters.refreshChapters(win);
+  assert.deepEqual(win.document.documentElement.__langformChapterList.map(item=>[item.start,item.title]),[[0,'Present moment alignment'],[95.88,'Empowering your vision'],[204,'The journey over the goal']]);
+  win.ytInitialData.engagementPanels[0].engagementPanelSectionListRenderer.content.macroMarkersListRenderer.contents.forEach(entry=>{entry.macroMarkersListItemRenderer.onTap.watchEndpoint.videoId='other';});
+  // A replacement response represents a fresh hydrated data source.
+  win.ytInitialData={...win.ytInitialData};chapters.refreshChapters(win);
+  assert.deepEqual(win.document.documentElement.__langformChapterList,[]);
+});
+test('Erfolgreicher Watch-Fallbackcache wird bei neuer Datenantwort oder geänderter Besitzer-ID verworfen', t => {
+  const dom=screenshotPlayerDom();t.after(()=>dom.window.close());const win=dom.window;
+  win.ytInitialPlayerResponse=emptyChapterPlayer();win.ytInitialData=initialDataChapters();
+  chapters.refreshChapters(win);assert.equal(win.document.documentElement.__langformChapterList.length,3);
+  win.ytInitialData.currentVideoEndpoint.watchEndpoint.videoId='other';chapters.refreshChapters(win);
+  assert.deepEqual(win.document.documentElement.__langformChapterList,[]);
+  win.ytInitialData=initialDataChapters();chapters.refreshChapters(win);
+  assert.equal(win.document.documentElement.__langformChapterList.length,3);
+  win.ytInitialData={currentVideoEndpoint:{watchEndpoint:{videoId:'abcdefghijk'}}};chapters.refreshChapters(win);
+  assert.deepEqual(win.document.documentElement.__langformChapterList,[]);
+});
+test('Fehlende frühe Watch-Kapitel beenden den bestehenden begrenzten Hydrationretry nicht sofort', t => {
+  const dom=screenshotPlayerDom();t.after(()=>dom.window.close());const win=dom.window;
+  win.ytInitialPlayerResponse=emptyChapterPlayer();win.ytInitialData={currentVideoEndpoint:{watchEndpoint:{videoId:'abcdefghijk'}}};
+  let retry, cleared=0, serial=100;
+  win.setInterval=fn=>{retry=fn;return 71;};win.clearInterval=()=>{cleared++;};
+  win.setTimeout=()=>++serial;win.clearTimeout=()=>{};
+  chapters.armChapters(win);
+  assert.equal(cleared,0,'erste leere Antwort kann noch hydrieren');
+  assert.equal(win.__langformChapterRetry,71);
+  for(let i=0;i<25;i++)retry();
+  assert.equal(win.__langformChapterRetry,0,'bestehende maximal24 Versuche bleiben begrenzt');
+  assert.equal(cleared,1);
+});
+test('Mobile serialisierte Watch-Daten werden sicher gelesen ohne YouTubes Global zu verändern', t => {
+  const dom=screenshotPlayerDom();t.after(()=>dom.window.close());const win=dom.window;
+  win.ytInitialPlayerResponse=emptyChapterPlayer();const serialized=JSON.stringify(initialDataChapters());win.ytInitialData=serialized;
+  chapters.refreshChapters(win);
+  assert.deepEqual(win.document.documentElement.__langformChapterList.map(item=>item.start),[0,83,724]);
+  assert.equal(win.ytInitialData,serialized);
+});
+test('Serialisierte Kapitel bleiben bei fremdem Besitzer, ungültigem JSON oder zu großer Antwort leer', t => {
+  const sources=[JSON.stringify(initialDataChapters('other')),JSON.stringify({playerOverlays:playerWithChapters().playerOverlays}),'{incomplete',JSON.stringify(null),JSON.stringify([]),' '.repeat(2*1024*1024+1)];
+  for(const source of sources) {
+    const dom=screenshotPlayerDom();t.after(()=>dom.window.close());const win=dom.window;
+    win.ytInitialPlayerResponse=emptyChapterPlayer();win.ytInitialData=source;
+    chapters.refreshChapters(win);
+    assert.deepEqual(win.document.documentElement.__langformChapterList,[]);
+    assert.equal(win.document.documentElement.__langformChapterVideoID,'');
+    assert.equal(win.ytInitialData,source);
+  }
+});
+test('Identische serialisierte Watch-Antwort wird nur einmal geparst und Wechsel neu ausgewertet', t => {
+  const dom=screenshotPlayerDom();t.after(()=>dom.window.close());const win=dom.window;
+  win.ytInitialPlayerResponse=emptyChapterPlayer();
+  win.ytInitialData=JSON.stringify(initialDataChapters());
+  const parse=JSON.parse;let calls=0;
+  JSON.parse=function(value) {calls++;return parse(value);};
+  try {
+    chapters.refreshChapters(win);const first=calls;assert.ok(first>=1);
+    const parsed=win.__langformChapterDataCache.data;
+    chapters.refreshChapters(win);assert.equal(calls,first);assert.equal(win.__langformChapterDataCache.data,parsed);
+    win.ytInitialData=JSON.stringify(initialDataChapters('other'));
+    chapters.refreshChapters(win);assert.ok(calls>first);assert.deepEqual(win.document.documentElement.__langformChapterList,[]);
+    win.ytInitialData=initialDataChapters();chapters.refreshChapters(win);
+    assert.equal(win.__langformChapterDataCache,null,'bereits normalisierte Antwort braucht keinen Stringcache');
+    assert.equal(win.document.documentElement.__langformChapterList.length,3);
+  } finally {JSON.parse=parse;}
 });

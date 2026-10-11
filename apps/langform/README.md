@@ -1,5 +1,7 @@
 # Langform
 
+Features, Bugfixes und offene Abnahmen stehen im [gemeinsamen Projektbacklog](../../docs/VERBESSERUNGS_BACKLOG.md). Nach jeder Feature-Arbeit den zugehörigen Eintrag gemäß [Projektregel](../../AGENTS.md) aktualisieren.
+
 Persönliche Web-App für Tan Ipekkaya. Sie zeigt lange Videos und lässt Kurzvideos weg. Die Oberfläche ist deutsch und fühlt sich auf dem Telefon wie eine App an: Leiste mit Start, Suche und Verlauf, Suche direkt auf der Seite, ein Player, der beim Verlassen klein weiterläuft. Die Wiedergabe bleibt der offizielle Player von `youtube.com/embed`.
 
 ## Starten

@@ -93,6 +93,25 @@ test("ohne Nachrichtenkanal fängt das Skript nichts ab", function () {
   assert.equal(tap(dom, dom.window.document.getElementById("thumb")).defaultPrevented, false);
 });
 
+test("Player-Empfehlungen tragen Watch-Intent mit Quell-ID; Suche und Kanäle behalten den bestehenden Feed-Pfad", function (t) {
+  const { dom, posts } = page(`<!DOCTYPE html><body>
+    <a id="next" href="/watch?v=lmnopqrstuv">Next</a>
+    <a id="stamp" href="/watch?v=abcdefghijk&t=12">Chapter</a>
+    <a id="channel" href="/@kanal">Channel</a>
+    <ytm-header><button id="search" aria-label="Search">Search</button></ytm-header>
+    </body>`, "https://m.youtube.com/watch?v=abcdefghijk", ["langformWatchIntent", "langformOpenFeed", "langformPlayerRoute"]);
+  t.after(() => dom.window.close());
+  dom.window.eval(LINKS);
+  for (const id of ["next", "stamp", "channel", "search"]) assert.equal(tap(dom, dom.window.document.getElementById(id)).defaultPrevented, true);
+  assert.deepEqual(posts.slice(0, 2), [
+    {name:"langformWatchIntent",body:{href:"https://m.youtube.com/watch?v=lmnopqrstuv",sourceVideoID:"abcdefghijk"}},
+    {name:"langformWatchIntent",body:{href:"https://m.youtube.com/watch?v=abcdefghijk&t=12",sourceVideoID:"abcdefghijk"}},
+  ]);
+  assert.equal(posts[2].name,"langformOpenFeed");
+  assert.equal(posts[3].name,"langformPlayerRoute");
+  assert.equal(posts[3].body.kind,"search");
+});
+
 test("der Player meldet die Videofläche und ob es läuft, ohne das Video anzufassen", async function (t) {
   const { dom, posts } = page(
     `<!DOCTYPE html><body><div id="movie_player"><video id="v"></video></div></body>`,
@@ -116,9 +135,23 @@ test("der Player meldet die Videofläche und ob es läuft, ohne das Video anzufa
     y: 0,
     width: 390,
     height: 219.375,
+    viewportWidth: dom.window.innerWidth,
+    viewportHeight: dom.window.innerHeight,
     playing: true,
     hasVideo: true,
+    fullscreen: false,
+    playbackState: "playing",
+    playbackIssue: "",
     painted: false,
+    mediaReady: false,
+    mediaPresented: false,
+    frameObservationSupported: false,
+    playerVideoID: "",
+    navigationToken: "",
+    navigationTargetID: "",
+    navigationStarted: false,
+    navigationComplete: false,
+    navigationMediaLoaded: false,
     href: "https://m.youtube.com/watch?v=abcdefghijk",
   });
 
@@ -188,6 +221,13 @@ test("der Player misst nicht im Takt und nicht während des Scrollens", async fu
   let lookups = 0;
   const query = doc.querySelector.bind(doc);
   doc.querySelector = function () { lookups += 1; return query.apply(null, arguments); };
+  const player = doc.getElementById("movie_player");
+  const playerQueries = [];
+  const queryPlayer = player.querySelector.bind(player);
+  player.querySelector = function (selector) {
+    playerQueries.push(selector);
+    return queryPlayer(selector);
+  };
   const video = doc.getElementById("v");
   let measured = 0;
   let top = 0;
@@ -211,6 +251,10 @@ test("der Player misst nicht im Takt und nicht während des Scrollens", async fu
   await new Promise(function (resolve) { setTimeout(resolve, 400); });
   assert.equal(posts.length, 2);
   assert.equal(posts[1].body.y, -240);
-  assert.equal(lookups, 1, "das Video wird einmal gesucht");
+  assert.deepEqual(playerQueries, ["video"], "die erste Suche erfolgt gezielt im Hauptplayer");
+  assert.equal(lookups, 0, "ein vorhandenes Hauptmedium benötigt keine dokumentweite Suche");
+  for (let i = 0; i < 6; i++) win.__langformMeasureVideo();
+  assert.deepEqual(playerQueries, ["video"], "weitere Messungen verwenden den verbundenen Medienknoten aus dem Cache");
+  assert.equal(lookups, 0, "weitere Messungen starten keine dokumentweite Suche");
   assert.equal(video.getAttribute("style"), null);
 });

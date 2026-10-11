@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Feed, FeedSkeleton } from "@/components/feed";
 import { Button } from "@/components/ui/button";
 import { useAppShell } from "@/components/app-shell";
 import { fetchJson } from "@/lib/browser";
+import { isVideoList } from "@/lib/api-response";
 import type { Video } from "@/lib/types";
 
 export function HomeFeed() {
@@ -13,37 +14,41 @@ export function HomeFeed() {
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [pull, setPull] = useState(0);
-  const refreshRef = useRef<(fresh: boolean) => void>(() => {});
+  const controllerRef = useRef<AbortController | null>(null);
 
-  const load = (fresh: boolean) => {
-    void fetchJson<{ videos: Video[] }>(fresh ? "/api/home?fresh=1" : "/api/home")
-      .then((body) => {
-        setVideos(body.videos);
-        setError("");
-      })
-      .catch((cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : "Die Liste ist gerade nicht zu erreichen.");
-      })
-      .finally(() => setRefreshing(false));
-  };
-
-  useEffect(() => {
-    refreshRef.current = load;
-  });
-
-  useEffect(() => {
+  const load = useCallback((fresh: boolean) => {
+    if (controllerRef.current) return false;
     const controller = new AbortController();
-    void fetchJson<{ videos: Video[] }>("/api/home", controller.signal)
+    controllerRef.current = controller;
+    void fetchJson(fresh ? "/api/home?fresh=1" : "/api/home", controller.signal, isVideoList)
       .then((body) => {
+        if (controller.signal.aborted) return;
         setVideos(body.videos);
         setError("");
       })
       .catch((cause: unknown) => {
-        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        if (controller.signal.aborted) return;
         setError(cause instanceof Error ? cause.message : "Die Liste ist gerade nicht zu erreichen.");
+      })
+      .finally(() => {
+        if (controllerRef.current !== controller) return;
+        controllerRef.current = null;
+        setRefreshing(false);
       });
-    return () => controller.abort();
+    return true;
   }, []);
+
+  const refresh = useCallback(() => {
+    if (load(true)) setRefreshing(true);
+  }, [load]);
+
+  useEffect(() => {
+    load(false);
+    return () => {
+      controllerRef.current?.abort();
+      controllerRef.current = null;
+    };
+  }, [load]);
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -53,7 +58,7 @@ export function HomeFeed() {
     let distance = 0;
 
     const onStart = (event: TouchEvent) => {
-      if (el.scrollTop > 2) return;
+      if (el.scrollTop > 2 || controllerRef.current || event.touches.length !== 1) return;
       armed = true;
       startY = event.touches[0]?.clientY ?? 0;
       distance = 0;
@@ -73,9 +78,13 @@ export function HomeFeed() {
     };
     const onEnd = () => {
       if (armed && distance > 72) {
-        setRefreshing(true);
-        refreshRef.current(true);
+        refresh();
       }
+      armed = false;
+      distance = 0;
+      setPull(0);
+    };
+    const onCancel = () => {
       armed = false;
       distance = 0;
       setPull(0);
@@ -84,12 +93,14 @@ export function HomeFeed() {
     el.addEventListener("touchstart", onStart, { passive: true });
     el.addEventListener("touchmove", onMove, { passive: false });
     el.addEventListener("touchend", onEnd);
+    el.addEventListener("touchcancel", onCancel);
     return () => {
       el.removeEventListener("touchstart", onStart);
       el.removeEventListener("touchmove", onMove);
       el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onCancel);
     };
-  }, [scrollerRef]);
+  }, [scrollerRef, refresh]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -102,10 +113,8 @@ export function HomeFeed() {
           type="button"
           variant="outline"
           className="hidden h-11 px-3 md:inline-flex"
-          onClick={() => {
-            setRefreshing(true);
-            load(true);
-          }}
+          disabled={refreshing || (videos === null && !error)}
+          onClick={refresh}
         >
           Aktualisieren
         </Button>
@@ -127,10 +136,8 @@ export function HomeFeed() {
           <Button
             type="button"
             className="h-11 w-fit px-4"
-            onClick={() => {
-              setRefreshing(true);
-              load(true);
-            }}
+            disabled={refreshing}
+            onClick={refresh}
           >
             Erneut laden
           </Button>

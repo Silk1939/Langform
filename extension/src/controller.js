@@ -15,6 +15,9 @@
     var logic = ns.logic;
     var hide = ns.hide;
     var doc = win.document;
+    var fastStorage = null;
+    try { fastStorage = win.localStorage; }
+    catch (err) { /* Accessing the getter itself can fail when page storage is blocked. */ }
     var redirect = deps && deps.redirect ? deps.redirect : function (url) {
       win.location.replace(url);
     };
@@ -27,10 +30,16 @@
     var observer = null;
     var queued = [];
     var flushScheduled = false;
+    var flushTimer = 0;
     var scanning = false;
     var scrolling = false;
     var scrollTimer = 0;
     var lastRedirectKey = "";
+    var feedDeferred = false;
+
+    function feedActive() {
+      return win.__langformFeedActive !== false;
+    }
 
     function pageBase() {
       return win.location.href;
@@ -78,8 +87,20 @@
     var FULL_SCAN_GAP = 400;
     var fullScanTimer = 0;
     var lastFullScan = 0;
+    var fullScanSummaryNotified = false;
 
-    function requestFullScan() {
+    function requestFullScan(skipSummary) {
+      if (!feedActive()) {
+        feedDeferred = true;
+        return;
+      }
+      if (!skipSummary && !fullScanSummaryNotified) {
+        fullScanSummaryNotified = true;
+        // Summary has its own mutation, navigation and scroll scheduler. Let
+        // it coalesce this request with those events now: notifying only after
+        // our 400ms scan can start a second full decoration after its 300ms one.
+        pokeSummary();
+      }
       if (fullScanTimer) return;
       var wait = Math.max(0, lastFullScan + FULL_SCAN_GAP - Date.now());
       fullScanTimer = setTimeout(runFullScan, wait);
@@ -107,6 +128,10 @@
     function runFullScan() {
       fullScanTimer = 0;
       if (!enabled) return;
+      if (!feedActive()) {
+        feedDeferred = true;
+        return;
+      }
       if (watchPlaying()) {
         playbackDeferred = true;
         return;
@@ -116,6 +141,7 @@
         return;
       }
       fullScanPending = false;
+      queued = [];
       lastFullScan = Date.now();
       scanning = true;
       try {
@@ -123,7 +149,7 @@
       } finally {
         scanning = false;
       }
-      pokeSummary();
+      fullScanSummaryNotified = false;
     }
 
     var fullScanPending = false;
@@ -139,6 +165,12 @@
 
     function flushQueue() {
       flushScheduled = false;
+      flushTimer = 0;
+      if (!feedActive()) {
+        if (queued.length) feedDeferred = true;
+        queued = [];
+        return;
+      }
       if (scrolling || scanning) return;
       if (!enabled) {
         queued = [];
@@ -171,16 +203,23 @@
         scanning = false;
       }
       if (queued.length) scheduleFlush();
-      else pokeSummary();
+      // Summary observes the same additions and refreshes just their cards.
+      // A full summary poke here would scan the entire feed again.
     }
 
     function scheduleFlush() {
-      if (flushScheduled || scrolling) return;
+      if (!feedActive()) {
+        if (queued.length) feedDeferred = true;
+        queued = [];
+        return;
+      }
+      if (flushScheduled || scrolling || !queued.length) return;
       flushScheduled = true;
-      setTimeout(flushQueue, 0);
+      flushTimer = setTimeout(flushQueue, 0);
     }
 
     function noteScroll() {
+      if (!feedActive()) return;
       scrolling = true;
       if (scrollTimer) clearTimeout(scrollTimer);
       scrollTimer = setTimeout(function () {
@@ -191,12 +230,33 @@
       }, 140);
     }
 
-    function insidePlayer(node) {
+    function feedVisibilityChanged() {
+      if (!enabled) return;
+      if (feedActive()) {
+        if (feedDeferred) {
+          feedDeferred = false;
+          // Summary observes this same event and resumes its own dirty work.
+          requestFullScan(true);
+        }
+        return;
+      }
+      if (fullScanTimer || fullScanPending || queued.length || playbackDeferred) feedDeferred = true;
+      if (fullScanTimer) clearTimeout(fullScanTimer);
+      if (flushTimer) clearTimeout(flushTimer);
+      if (scrollTimer) clearTimeout(scrollTimer);
+      fullScanTimer = flushTimer = scrollTimer = 0;
+      fullScanPending = fullScanSummaryNotified = flushScheduled = scrolling = false;
+      queued = [];
+    }
+
+    function insidePlayerOrOurs(node) {
       var guard = 0;
       while (node && guard++ < 25) {
         if (node.nodeType === 1) {
           var tag = node.tagName;
           if (tag === "VIDEO" || tag === "YTD-PLAYER" || tag === "YTM-PLAYER" || node.id === "movie_player") return true;
+          var id = node.id || "";
+          if (id.indexOf("langform-") === 0 || id.indexOf("shorts-ausblenden-") === 0 || node.hasAttribute("data-langform-kurz")) return true;
         }
         var rootNode = node.getRootNode && node.getRootNode();
         node = node.parentElement || (rootNode && rootNode.host) || null;
@@ -206,10 +266,16 @@
 
     function queue(node) {
       if (!node || node.nodeType !== 1) return;
-      if (insidePlayer(node)) return;
+      if (insidePlayerOrOurs(node)) return;
       if (node.tagName === "INPUT" || node.tagName === "TEXTAREA") return;
       if (hide.isSearchControl && hide.isSearchControl(node)) return;
       if (fullScanTimer || fullScanPending) return;
+      // YouTube can report both a new card and its children in one batch.
+      // Scan their shared subtree once, even when its href changes repeatedly.
+      for (var i = queued.length - 1; i >= 0; i--) {
+        if (queued[i] === node || queued[i].contains(node)) return;
+        if (node.contains(queued[i])) queued.splice(i, 1);
+      }
       queued.push(node);
       if (queued.length > 40) {
         queued = [];
@@ -222,14 +288,18 @@
     function ensureObserver() {
       if (observer || !win.MutationObserver || !doc.documentElement) return;
       observer = new win.MutationObserver(function (records) {
-        if (!enabled || scanning) return;
+        if (!enabled || scanning || !win.document || !doc.documentElement) return;
+        if (!feedActive()) {
+          if (records.length) feedDeferred = true;
+          return;
+        }
         if (watchPlaying()) {
           playbackDeferred = true;
           return;
         }
         for (var i = 0; i < records.length; i++) {
           var record = records[i];
-          if (record.target && insidePlayer(record.target)) continue;
+          if (record.target && insidePlayerOrOurs(record.target)) continue;
           if (record.type === "childList") {
             var added = record.addedNodes;
             for (var j = 0; j < added.length; j++) queue(added[j]);
@@ -247,6 +317,7 @@
       doc.addEventListener("scroll", noteScroll, { passive: true, capture: true });
       doc.addEventListener("pause", afterPlayback, true);
       doc.addEventListener("ended", afterPlayback, true);
+      win.addEventListener("langform-feed-visibility", feedVisibilityChanged);
     }
 
     function stopObserver() {
@@ -256,9 +327,15 @@
       if (fullScanTimer) clearTimeout(fullScanTimer);
       fullScanTimer = 0;
       fullScanPending = false;
+      fullScanSummaryNotified = false;
+      if (flushTimer) clearTimeout(flushTimer);
+      flushTimer = 0;
+      flushScheduled = false;
+      feedDeferred = false;
       doc.removeEventListener("scroll", noteScroll, true);
       doc.removeEventListener("pause", afterPlayback, true);
       doc.removeEventListener("ended", afterPlayback, true);
+      win.removeEventListener("langform-feed-visibility", feedVisibilityChanged);
       playbackDeferred = false;
       if (!observer) return;
       observer.disconnect();
@@ -299,7 +376,7 @@
     }
 
     function seekPlayer(seconds) {
-      if (seconds == null || !isFinite(seconds) || seconds <= 0) return false;
+      if (seconds == null || !isFinite(seconds) || seconds < 0) return false;
       // A t=0 or t=1 written as playback starts is not a chapter the user chose.
       if (seconds <= 1 && playbackJustOpened()) return false;
       var movie = doc.getElementById("movie_player");
@@ -517,7 +594,15 @@
       if (allowRedirect) confirmed = true;
       ensureHistory();
       ensureObserver();
-      remember(hide.applyEnabled(doc, true, pageBase(), confirmed));
+      if (!feedActive()) {
+        hide.ensureStyle(doc);
+        feedDeferred = true;
+      } else if (watchPlaying()) {
+        hide.ensureStyle(doc);
+        playbackDeferred = true;
+      } else {
+        remember(hide.applyEnabled(doc, true, pageBase(), confirmed));
+      }
       pokeSummary();
     }
 
@@ -540,7 +625,7 @@
     }
 
     function applyStored(isOn) {
-      logic.writeFastFlag(win.localStorage, isOn);
+      logic.writeFastFlag(fastStorage, isOn);
       if (isOn) {
         arm(true);
         if (logic.isShortsPath(win.location.pathname)) goHome(win.location.pathname);
@@ -551,14 +636,16 @@
     }
 
     ensureHistory();
-    var flag = logic.readFastFlag(win.localStorage);
+    var flag = logic.readFastFlag(fastStorage);
     var plan = logic.initialPlan(flag, win.location.pathname);
     if (plan.veil) hide.setVeil(doc, true);
     if (plan.arm) arm(false);
 
+    var storageChanged = false;
     if (storage && storage.onChanged && storage.onChanged.addListener) {
       storage.onChanged.addListener(function (changes, area) {
         if (area !== "local" || !changes || !changes.enabled) return;
+        storageChanged = true;
         applyStored(changes.enabled.newValue !== false);
       });
     }
@@ -567,14 +654,18 @@
       try {
         storage.local.get("enabled", function (result) {
           var runtime = win.chrome && win.chrome.runtime;
-          if (runtime && runtime.lastError) {
+          var error = runtime && runtime.lastError;
+          // A toggle change delivered while this read was pending is newer
+          // than its snapshot. Never re-enable or redirect from that old read.
+          if (storageChanged) return;
+          if (error) {
             applyStored(flag !== "0");
             return;
           }
           applyStored(logic.enabledFromStorage(result));
         });
       } catch (err) {
-        applyStored(flag !== "0");
+        if (!storageChanged) applyStored(flag !== "0");
       }
     }
 

@@ -1,0 +1,24 @@
+{
+  "videoID": "aQp-iM0bCs4",
+  "url": "https://sponsor.ajay.app/api/skipSegments/5f6b?categories=%5B%22sponsor%22%5D&actionTypes=%5B%22skip%22%5D&service=YouTube",
+  "status": 200,
+  "candidateCount": 44,
+  "owner": {
+    "videoID": "aQp-iM0bCs4",
+    "segments": [
+      {
+        "category": "sponsor",
+        "actionType": "skip",
+        "segment": [
+          0,
+          31.861
+        ],
+        "UUID": "b772d4b75ca73ce63940fa982d051c031964160941efd93bd6ed1bbe9327a46e",
+        "videoDuration": 361,
+        "locked": 0,
+        "votes": 0,
+        "description": ""
+      }
+    ]
+  }
+}

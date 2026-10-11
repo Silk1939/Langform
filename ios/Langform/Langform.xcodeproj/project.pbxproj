@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 71;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -23,20 +23,12 @@
 		A10000000000000000000012 /* controller.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = controller.js; path = ../../extension/src/controller.js; sourceTree = SOURCE_ROOT; };
 		A10000000000000000000016 /* early.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = early.js; path = ../../extension/src/early.js; sourceTree = SOURCE_ROOT; };
 		A10000000000000000000017 /* summary.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = summary.js; path = ../../extension/src/summary.js; sourceTree = SOURCE_ROOT; };
-		A1000000000000000000001A /* page-captions.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = page-captions.js; path = ../../extension/src/page-captions.js; sourceTree = SOURCE_ROOT; };
+		A1000000000000000000001A /* page-captions.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = "page-captions.js"; path = "../../extension/src/page-captions.js"; sourceTree = SOURCE_ROOT; };
 		A1000000000000000000001C /* ads.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = ads.js; path = ../../extension/src/ads.js; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		A10000000000000000000002 /* Langform */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			explicitFileTypes = {
-			};
-			explicitFolders = (
-			);
-			path = Langform;
-			sourceTree = "<group>";
-		};
+		A10000000000000000000002 /* Langform */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Langform; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -108,6 +100,7 @@
 				TargetAttributes = {
 					A10000000000000000000008 = {
 						CreatedOnToolsVersion = 27.0;
+						ProvisioningStyle = Manual;
 					};
 				};
 			};
@@ -203,12 +196,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = E94E8C9CC2FF184832B68E4C02A332867D66F560;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 63;
 				DEVELOPMENT_TEAM = RFN59MUTQ3;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Langform;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -222,6 +217,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = de.ipekkaya.langform;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "8c01d0de-5bba-4c1a-8eae-c9e2e9ceb2b5";
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -238,11 +234,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = E94E8C9CC2FF184832B68E4C02A332867D66F560;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 63;
 				DEVELOPMENT_TEAM = RFN59MUTQ3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Langform;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -256,6 +254,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = de.ipekkaya.langform;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "8c01d0de-5bba-4c1a-8eae-c9e2e9ceb2b5";
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;

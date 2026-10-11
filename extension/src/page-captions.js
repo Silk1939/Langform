@@ -9,6 +9,8 @@
   if (root && !extensionIsolated(root)) api.install(root);
 
   function extensionIsolated(win) {
+    // Safari also exposes browser.runtime to web pages, without an extension
+    // ID. Checking only for `browser` disables the MAIN-world caption bridge.
     try {
       if (win.chrome && win.chrome.runtime && win.chrome.runtime.id) return true;
       if (win.browser && win.browser.runtime && win.browser.runtime.id) return true;
@@ -108,9 +110,10 @@
     addChapter(list, textOf(renderer.title), start / 1000, bestThumb(renderer));
   }
 
-  function addMacro(renderer, list) {
+  function addMacro(renderer, list, expectedID) {
     if (!renderer) return;
     var endpoint = renderer.onTap && renderer.onTap.watchEndpoint;
+    if (expectedID && endpoint && endpoint.videoId && endpoint.videoId !== expectedID) return;
     var start = endpoint && endpoint.startTimeSeconds;
     if (start == null) start = parseClock(textOf(renderer.timeDescription));
     addChapter(list, textOf(renderer.title), start, bestThumb(renderer));
@@ -148,7 +151,7 @@
     return list.length >= 2 ? list : [];
   }
 
-  function collectKnownChapters(player, renderers, macros) {
+  function collectKnownChapters(player, renderers, macros, expectedID) {
     var overlays = player && player.playerOverlays;
     var overlay = overlays && overlays.playerOverlayRenderer;
     var bar = overlay && overlay.decoratedPlayerBarRenderer;
@@ -170,7 +173,7 @@
       var content = section && section.content;
       var list = content && content.macroMarkersListRenderer && content.macroMarkersListRenderer.contents;
       if (!list) continue;
-      for (var c = 0; c < list.length; c++) addMacro(list[c] && list[c].macroMarkersListItemRenderer, macros);
+      for (var c = 0; c < list.length; c++) addMacro(list[c] && list[c].macroMarkersListItemRenderer, macros, expectedID);
     }
   }
 
@@ -187,6 +190,42 @@
     if (macros.length >= 2) return macros;
     var description = player && player.videoDetails && player.videoDetails.shortDescription;
     return chaptersFromDescription(description);
+  }
+
+  function readInitialData(win) {
+    var source = win.ytInitialData;
+    if (typeof source !== "string") {
+      win.__langformChapterDataCache = null;
+      return source && typeof source === "object" && !Array.isArray(source) ? source : null;
+    }
+    // Mobile YouTube can leave the watch response serialized. Bound parsing
+    // and memoize its exact value; never evaluate code or replace its global.
+    if (source.length > 2 * 1024 * 1024) { win.__langformChapterDataCache = null; return null; }
+    var cache = win.__langformChapterDataCache;
+    if (cache && cache.source === source) return cache.data;
+    var parsed = null;
+    try {
+      parsed = JSON.parse(source);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) parsed = null;
+    } catch (err) { /* an incomplete watch response can hydrate later */ }
+    win.__langformChapterDataCache = { source: source, data: parsed };
+    return parsed;
+  }
+
+  function initialDataVideoID(data) {
+    var endpoint = data && data.currentVideoEndpoint && data.currentVideoEndpoint.watchEndpoint;
+    return endpoint && typeof endpoint.videoId === "string" ? endpoint.videoId : "";
+  }
+
+  function chaptersFromInitialData(data, expectedID) {
+    if (!expectedID || initialDataVideoID(data) !== expectedID) return [];
+    var renderers = [], macros = [];
+    // Only current watch-player overlays and chapter engagement panels belong
+    // to this response. Never recursively walk recommendation results here.
+    collectKnownChapters(data, renderers, macros, expectedID);
+    renderers.sort(function (a, b) { return a.start - b.start; });
+    macros.sort(function (a, b) { return a.start - b.start; });
+    return renderers.length >= 2 ? renderers : macros.length >= 2 ? macros : [];
   }
 
   function barFractions(chapters, durationSeconds) {
@@ -289,6 +328,8 @@
   function findSeekBar(doc) {
     if (!doc) return null;
     var time = timePill(doc);
+    var player = playerRoot(doc);
+    var scope = player && (!time || player.contains(time)) ? player : null;
     var timeBox = time && boxOf(time);
     var live = !!(timeBox && timeBox.width > 8 && timeBox.height > 4);
     if (live) {
@@ -298,12 +339,15 @@
       var bestHeight = Infinity;
       queryDeep(doc, function (el) {
         if (el.getAttribute && el.getAttribute(CHAPTER_LAYER)) return false;
-        if (!visiblyShown(el)) return false;
         var box = boxOf(el);
         if (!box || box.width < 80 || box.height < 1 || box.height > 14) return false;
         if (box.top < timeBox.bottom - 8) return false;
         if (box.top > timeBox.bottom + 36) return false;
         if (box.width < timeBox.width + 24) return false;
+        // Resolve ancestor styles only for geometry that can actually win.
+        // Caption/recommendation nodes otherwise trigger thousands of redundant
+        // style reads during watch hydration and controls/caption changes.
+        if (!visiblyShown(el)) return false;
         var dist = Math.abs(box.top - timeBox.bottom);
         var nearer = dist + 0.5 < bestDist;
         var sameBand = Math.abs(dist - bestDist) <= 0.5;
@@ -314,20 +358,19 @@
           bestHeight = box.height;
         }
         return false;
-      });
+      }, scope);
       if (best) return best;
     }
     var picked = null;
     var pickedScore = 99;
     queryDeep(doc, function (el) {
-      if (!visiblyShown(el)) return false;
       var score = seekBarScore(el);
-      if (score && score < pickedScore) {
+      if (score && score < pickedScore && visiblyShown(el)) {
         picked = el;
         pickedScore = score;
       }
       return false;
-    });
+    }, scope);
     return picked;
   }
 
@@ -344,7 +387,7 @@
 
   function seekTo(win, seconds) {
     var doc = win && win.document;
-    if (!doc || seconds == null || !isFinite(seconds) || seconds <= 0) return false;
+    if (!doc || seconds == null || !isFinite(seconds) || seconds < 0) return false;
     if (seconds <= 1 && playbackJustOpened(doc)) return false;
     var movie = doc.getElementById("movie_player");
     if (movie && movie.tagName !== "VIDEO" && typeof movie.seekTo === "function") {
@@ -387,8 +430,12 @@
     return m + ":" + pad(s);
   }
 
-  function rememberChapters(doc, chapters) {
-    if (doc && doc.documentElement) doc.documentElement.__langformChapterList = chapters || [];
+  function rememberChapters(doc, chapters, videoID) {
+    if (!doc || !doc.documentElement) return;
+    var root = doc.documentElement, list = chapters || [];
+    if (typeof videoID === "string") root.__langformChapterVideoID = videoID;
+    else if (root.__langformChapterList !== list) root.__langformChapterVideoID = "";
+    root.__langformChapterList = list;
   }
 
   function clearChapterBar(bar) {
@@ -396,6 +443,8 @@
     var layers = bar.querySelectorAll("[" + CHAPTER_LAYER + "]");
     for (var i = 0; i < layers.length; i++) layers[i].remove();
     bar.removeAttribute("data-langform-chapter-sig");
+    bar.__langformFractions = [];
+    bar.__langformOnPreview = null;
   }
 
   function barTooTall(bar) {
@@ -421,6 +470,7 @@
     }
     var layer = doc.createElement("div");
     layer.setAttribute(CHAPTER_LAYER, "1");
+    layer.setAttribute("aria-hidden", "true");
     layer.style.cssText = "position:absolute;left:0;right:0;top:0;bottom:0;pointer-events:none;z-index:8;";
     for (var i = 0; i < fractions.length; i++) {
       if (!(fractions[i].fraction > 0.004)) continue;
@@ -428,17 +478,13 @@
       gap.setAttribute(CHAPTER_MARK, String(i));
       gap.setAttribute("data-start", String(fractions[i].start));
       gap.setAttribute("data-title", fractions[i].title);
-      gap.setAttribute("role", "button");
-      gap.setAttribute("aria-label", fractions[i].title);
       var left = (fractions[i].fraction * 100).toFixed(4) + "%";
-      gap.style.cssText = "position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;left:" + left + ";pointer-events:auto;background:#000;";
-      gap.addEventListener("click", function (event) {
-        if (event.preventDefault) event.preventDefault();
-        if (event.stopPropagation) event.stopPropagation();
-        var seconds = Number(event.currentTarget.getAttribute("data-start"));
-        if (seek) seek(seconds);
-        if (typeof bar.__langformOnPreview === "function") bar.__langformOnPreview(seconds);
-      });
+      var previous = i > 0 ? fractions[i - 1].fraction : 0;
+      var next = i + 1 < fractions.length ? fractions[i + 1].fraction : 1;
+      var gapLimit = Math.min(fractions[i].fraction - previous, next - fractions[i].fraction) * 35;
+      // Visual chapter gaps never steal a native scrub gesture. Named chapter
+      // jumps remain on the 44px chip and the chapter sheet's full-width rows.
+      gap.style.cssText = "position:absolute;top:0;bottom:0;width:min(3px," + gapLimit + "%);transform:translateX(-50%);left:" + left + ";pointer-events:none;background:#000;border-radius:1px;";
       layer.appendChild(gap);
     }
     bar.appendChild(layer);
@@ -639,6 +685,13 @@
     if (!doc) return;
     [CHIP_ID, SHEET_ID].forEach(function (id) {
       var el = doc.getElementById(id);
+      if (el && el.__langformSheetAnimation) {
+        el.__langformSheetAnimation.onfinish = null;
+        el.__langformSheetAnimation.cancel();
+        el.__langformSheetAnimation = null;
+      }
+      if (el && el.__langformSheetDispose) el.__langformSheetDispose();
+      if (el) el.__langformSheetOpen = false;
       if (el && el.parentNode) el.parentNode.removeChild(el);
     });
     if (doc.documentElement) doc.documentElement.removeAttribute("data-langform-chapter-ui");
@@ -684,6 +737,9 @@
     var middle = timeBox.top + timeBox.height / 2;
     var reach = Math.max(22, timeBox.height);
     var limit = width - 8;
+    var player = playerRoot(doc);
+    var time = doc.__langformTimePill;
+    var scope = player && time && player.contains(time) ? player : null;
     queryDeep(doc, function (el) {
       if (el.tagName !== "BUTTON" && el.getAttribute("role") !== "button") return false;
       var box = boxOf(el);
@@ -692,7 +748,7 @@
       if (!visiblyShown(el)) return false;
       if (box.left < limit) limit = box.left;
       return false;
-    });
+    }, scope);
     return limit;
   }
 
@@ -704,16 +760,20 @@
   }
 
   function parkChip(chip) {
-    chip.removeAttribute("data-langform-chip-placed");
-    chip.style.visibility = "hidden";
-    chip.style.pointerEvents = "none";
+    if (chip.hasAttribute("data-langform-chip-placed")) chip.removeAttribute("data-langform-chip-placed");
+    styleIfChanged(chip, "visibility", "hidden");
+    styleIfChanged(chip, "pointerEvents", "none");
+  }
+
+  function styleIfChanged(el, name, value) {
+    if (el.style[name] !== value) el.style[name] = value;
   }
 
   // The chip lives only in the time row: one line, cut with an ellipsis before
   // the first control to its right. Without a time row it is not shown at all.
   function placeChip(doc, chip) {
-    chip.style.minHeight = "44px";
-    chip.style.minWidth = "44px";
+    styleIfChanged(chip, "minHeight", "44px");
+    styleIfChanged(chip, "minWidth", "44px");
     var time = timePill(doc);
     if (!time || !time.parentNode) {
       if (chip.parentNode) chip.parentNode.removeChild(chip);
@@ -734,16 +794,16 @@
       parkChip(chip);
       return;
     }
-    chip.style.position = "fixed";
-    chip.style.left = left + "px";
-    chip.style.top = Math.round(timeBox.top + timeBox.height / 2) + "px";
-    chip.style.maxWidth = room + "px";
-    chip.style.transform = "translateY(-50%)";
-    chip.style.margin = "0";
-    chip.style.zIndex = "6";
-    chip.style.visibility = "";
-    chip.style.pointerEvents = "";
-    chip.setAttribute("data-langform-chip-placed", "1");
+    styleIfChanged(chip, "position", "fixed");
+    styleIfChanged(chip, "left", left + "px");
+    styleIfChanged(chip, "top", Math.round(timeBox.top + timeBox.height / 2) + "px");
+    styleIfChanged(chip, "maxWidth", room + "px");
+    styleIfChanged(chip, "transform", "translateY(-50%)");
+    styleIfChanged(chip, "margin", "0px");
+    styleIfChanged(chip, "zIndex", "6");
+    styleIfChanged(chip, "visibility", "");
+    styleIfChanged(chip, "pointerEvents", "");
+    if (chip.getAttribute("data-langform-chip-placed") !== "1") chip.setAttribute("data-langform-chip-placed", "1");
   }
 
   function placeSheet(doc, sheet) {
@@ -754,15 +814,143 @@
       var rect = player.getBoundingClientRect();
       if (rect && rect.bottom > 80 && (!height || rect.bottom < height - 80)) top = Math.round(rect.bottom);
     }
-    sheet.style.top = top + "px";
+    styleIfChanged(sheet, "top", top + "px");
   }
 
   function setSheetOpen(doc, open) {
     var sheet = doc.getElementById(SHEET_ID);
     if (!sheet) return;
-    if (open) placeSheet(doc, sheet);
-    sheet.style.display = open ? "flex" : "none";
-    sheet.setAttribute("aria-hidden", open ? "false" : "true");
+    open = !!open;
+    if (sheet.__langformSheetOpen === open) return;
+    sheet.__langformSheetOpen = open;
+    var chip = doc.getElementById(CHIP_ID);
+    if (chip) chip.setAttribute("aria-expanded", open ? "true" : "false");
+    var view = doc.defaultView;
+    var previous = sheet.__langformSheetAnimation;
+    var from = null;
+    if (previous && view) {
+      // Rapidly close/reopen from the visible frame, without jumping back to
+      // the first keyframe. No layout property is animated.
+      var visible = view.getComputedStyle(sheet);
+      from = { transform: visible.transform || "translateY(0)" };
+      previous.onfinish = null;
+      previous.cancel();
+      sheet.__langformSheetAnimation = null;
+    }
+    var wasVisible = sheet.style.display !== "none";
+    function finishClose() {
+      var restoreFocus = sheet.contains(doc.activeElement);
+      sheet.style.display = "none";
+      sheet.setAttribute("aria-hidden", "true");
+      sheet.style.pointerEvents = "";
+      sheet.__langformSheetAnimation = null;
+      if (restoreFocus && chip && chip.isConnected) chip.focus({ preventScroll: true });
+    }
+    if (open) {
+      placeSheet(doc, sheet);
+      sheet.style.display = "flex";
+      sheet.style.pointerEvents = "";
+      sheet.setAttribute("aria-hidden", "false");
+      revealCurrentChapter(sheet);
+    } else {
+      // A selected row cannot seek twice while the closing sheet is visible.
+      sheet.style.pointerEvents = "none";
+    }
+    var reduced = view && view.matchMedia && view.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced || typeof sheet.animate !== "function" || (!open && !wasVisible)) {
+      if (!open) finishClose();
+      return;
+    }
+    var rest = { transform: "translateY(0)" };
+    var edge = { transform: "translateY(100%)" };
+    var animation = sheet.animate([from || (open ? edge : rest), open ? rest : edge], {
+      duration: open ? 280 : 180,
+      easing: open ? "cubic-bezier(0.16,1,0.3,1)" : "cubic-bezier(0.7,0,0.84,0)",
+      fill: "both",
+    });
+    sheet.__langformSheetAnimation = animation;
+    animation.onfinish = function () {
+      if (sheet.__langformSheetAnimation !== animation) return;
+      sheet.__langformSheetAnimation = null;
+      if (!sheet.__langformSheetOpen) finishClose();
+      animation.onfinish = null;
+      animation.cancel();
+    };
+  }
+
+  function bindSheetMotion(sheet) {
+    var doc = sheet.ownerDocument, win = doc.defaultView;
+    if (!win) return;
+    var preference = win.matchMedia && win.matchMedia("(prefers-reduced-motion: reduce)");
+    function settle(restore) {
+      var animation = sheet.__langformSheetAnimation;
+      if (!animation) return;
+      animation.onfinish = null;
+      animation.cancel();
+      sheet.__langformSheetAnimation = null;
+      sheet.style.pointerEvents = "";
+      if (!sheet.__langformSheetOpen) {
+        var restoreFocus = restore !== false && sheet.contains(doc.activeElement);
+        sheet.style.display = "none";
+        sheet.setAttribute("aria-hidden", "true");
+        var chip = doc.getElementById(CHIP_ID);
+        if (restoreFocus && chip) chip.focus({ preventScroll: true });
+      }
+    }
+    function reduce() { if (preference.matches) settle(); }
+    function leave() {
+      sheet.__langformSheetOpen = false;
+      settle(false);
+      sheet.style.display = "none";
+      sheet.setAttribute("aria-hidden", "true");
+      var chip = doc.getElementById(CHIP_ID);
+      if (chip) chip.setAttribute("aria-expanded", "false");
+    }
+    win.addEventListener("resize", settle);
+    win.addEventListener("orientationchange", settle);
+    win.addEventListener("pagehide", leave);
+    if (win.visualViewport) win.visualViewport.addEventListener("resize", settle);
+    if (preference && preference.addEventListener) preference.addEventListener("change", reduce);
+    sheet.__langformSheetDispose = function () {
+      win.removeEventListener("resize", settle);
+      win.removeEventListener("orientationchange", settle);
+      win.removeEventListener("pagehide", leave);
+      if (win.visualViewport) win.visualViewport.removeEventListener("resize", settle);
+      if (preference && preference.removeEventListener) preference.removeEventListener("change", reduce);
+      sheet.__langformSheetDispose = null;
+    };
+  }
+
+  function chapterSheetOpen(sheet) {
+    return !!(sheet && (typeof sheet.__langformSheetOpen === "boolean" ? sheet.__langformSheetOpen : sheet.style.display !== "none"));
+  }
+
+  function revealCurrentChapter(sheet) {
+    var list = sheet.querySelector("[data-langform-chapter-list]");
+    var row = list && list.querySelector("[aria-current='true']");
+    if (!row) return;
+    row.focus({ preventScroll: true });
+    if (!list.clientHeight) return;
+    var rowBox = row.getBoundingClientRect();
+    var listBox = list.getBoundingClientRect();
+    var top = list.scrollTop + rowBox.top - listBox.top - (list.clientHeight - rowBox.height) / 2;
+    // Scroll only our list. scrollIntoView could also move YouTube's page and
+    // the playing video underneath the sheet.
+    list.scrollTop = Math.max(0, Math.min(top, list.scrollHeight - list.clientHeight));
+  }
+
+  function ensureChapterStyle(doc) {
+    if (doc.getElementById("langform-chapter-style")) return;
+    var style = doc.createElement("style");
+    style.id = "langform-chapter-style";
+    style.textContent = "#" + SHEET_ID + " [" + ROW_ATTR + "]{background:transparent;touch-action:manipulation}" +
+      "#" + SHEET_ID + " [" + ROW_ATTR + "][aria-current=true]{background:rgba(255,255,255,.12)}" +
+      "#" + SHEET_ID + " [" + ROW_ATTR + "]:active{background:rgba(255,255,255,.2)}" +
+      "#" + CHIP_ID + " > span,#" + SHEET_ID + " header button{transition:transform 100ms ease-out}" +
+      "#" + CHIP_ID + ":active > span,#" + SHEET_ID + " header button:active{transform:scale(.97)}" +
+      "@media(prefers-reduced-motion:reduce){#" + CHIP_ID + " > span,#" + SHEET_ID + " header button{transition:none}#" + CHIP_ID + ":active > span,#" + SHEET_ID + " header button:active{transform:none}}" +
+      "#" + SHEET_ID + " button:focus-visible{outline:2px solid #3ea6ff;outline-offset:-3px}";
+    (doc.head || doc.documentElement).appendChild(style);
   }
 
   function syncChapterUi(doc, chapters, seconds) {
@@ -822,10 +1010,13 @@
       return { native: true, drawn: false };
     }
     removeOurChrome(doc);
+    ensureChapterStyle(doc);
     var chip = doc.createElement("button");
     chip.id = CHIP_ID;
     chip.type = "button";
     chip.setAttribute("lang", "de");
+    chip.setAttribute("aria-haspopup", "dialog");
+    chip.setAttribute("aria-controls", SHEET_ID);
     chip.style.cssText = [
       "display:inline-flex",
       "align-items:center",
@@ -847,14 +1038,14 @@
     pill.style.cssText = [
       "display:inline-flex",
       "align-items:center",
-      "gap:4px",
+      "gap:6px",
       "box-sizing:border-box",
       "max-width:100%",
       "min-width:0",
       "height:28px",
-      "padding:0 8px 0 10px",
-      "border-radius:14px",
-      "background:rgba(20,20,20,.72)",
+      "padding:0 4px",
+      "border-radius:6px",
+      "background:transparent",
       "font:600 13px/1 system-ui,sans-serif",
       "overflow:hidden",
       "white-space:nowrap",
@@ -865,21 +1056,22 @@
     label.textContent = chapters[0].title;
     var chevron = doc.createElement("span");
     chevron.setAttribute("aria-hidden", "true");
-    chevron.textContent = ">";
-    chevron.style.cssText = "flex:none;";
+    chevron.textContent = "›";
+    chevron.style.cssText = "flex:none;font-size:20px;line-height:1;";
     pill.appendChild(label);
     pill.appendChild(chevron);
     chip.appendChild(pill);
     chip.addEventListener("click", function (event) {
       if (event.preventDefault) event.preventDefault();
       if (event.stopPropagation) event.stopPropagation();
+      if (!chip.isConnected) return;
       var sheet = doc.getElementById(SHEET_ID);
-      var open = sheet && sheet.style.display !== "none";
-      setSheetOpen(doc, !open);
+      var open = chapterSheetOpen(sheet);
       if (!open) {
         var video = doc.querySelector("video");
         syncChapterUi(doc, doc.documentElement.__langformChapterList || chapters, video ? video.currentTime : 0);
       }
+      setSheetOpen(doc, !open);
     });
 
     var sheet = doc.createElement("section");
@@ -887,6 +1079,13 @@
     sheet.setAttribute("lang", "de");
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-labelledby", "langform-chapter-heading");
+    sheet.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape" || !sheet.isConnected) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setSheetOpen(doc, false);
+      chip.focus({ preventScroll: true });
+    });
     sheet.style.cssText = [
       "position:fixed",
       "left:0",
@@ -916,23 +1115,26 @@
     close.addEventListener("click", function (event) {
       if (event.preventDefault) event.preventDefault();
       if (event.stopPropagation) event.stopPropagation();
+      if (!sheet.isConnected) return;
       setSheetOpen(doc, false);
     });
     header.appendChild(heading);
     header.appendChild(close);
     var list = doc.createElement("div");
-    list.style.cssText = "overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:0 0 calc(20px + env(safe-area-inset-bottom, 0px));";
+    list.setAttribute("data-langform-chapter-list", "1");
+    list.style.cssText = "flex:1 1 auto;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:0 0 calc(20px + env(safe-area-inset-bottom, 0px));";
     for (var i = 0; i < chapters.length; i++) {
       var row = doc.createElement("button");
       row.type = "button";
       row.setAttribute(ROW_ATTR, String(i));
       row.setAttribute("data-start", String(chapters[i].start));
-      row.style.cssText = "display:flex;align-items:center;gap:12px;width:100%;margin:0;padding:8px 16px;border:0;background:transparent;color:#fff;text-align:left;font:inherit;";
+      row.style.cssText = "display:flex;align-items:center;box-sizing:border-box;gap:12px;width:100%;min-height:72px;margin:0;padding:10px 16px;border:0;color:#fff;text-align:left;font:inherit;";
       if (chapters[i].thumbnail) {
         var img = doc.createElement("img");
-        img.src = chapters[i].thumbnail;
         img.alt = "";
+        img.setAttribute("loading", "lazy");
         img.setAttribute("decoding", "async");
+        img.src = chapters[i].thumbnail;
         img.style.cssText = "width:80px;height:45px;max-width:80px;max-height:45px;object-fit:cover;border-radius:6px;background:#222;flex:none;";
         row.appendChild(img);
       } else {
@@ -954,6 +1156,7 @@
       row.addEventListener("click", function (event) {
         if (event.preventDefault) event.preventDefault();
         if (event.stopPropagation) event.stopPropagation();
+        if (!sheet.isConnected || !chapterSheetOpen(sheet)) return;
         var seconds = Number(event.currentTarget.getAttribute("data-start"));
         if (seek) seek(seconds);
         syncChapterUi(doc, doc.documentElement.__langformChapterList || chapters, seconds);
@@ -965,6 +1168,7 @@
     sheet.appendChild(list);
     placeChip(doc, chip);
     (doc.body || doc.documentElement).appendChild(sheet);
+    bindSheetMotion(sheet);
     setSheetOpen(doc, false);
     syncChapterUi(doc, chapters, 0);
     doc.documentElement.setAttribute("data-langform-chapter-ui", chapterSig(chapters));
@@ -1299,19 +1503,28 @@
     if (doc.documentElement) doc.documentElement.setAttribute("data-langform-chapter-ui", "native");
   }
 
-  function leaveWatchChrome(win) {
+  function clearChapterState(win) {
     var doc = win.document;
     if (!doc || !doc.documentElement) return;
-    stopChapterRetry(win);
+    doc.documentElement.__langformChapterGeneration = (doc.documentElement.__langformChapterGeneration || 0) + 1;
     var bar = win.__langformSeekBar;
-    if (bar && bar.isConnected) clearChapterBar(bar);
+    if (bar) clearChapterBar(bar);
     win.__langformSeekBar = null;
     if (doc.getElementById(CHIP_ID) || doc.getElementById(SHEET_ID) || doc.documentElement.hasAttribute("data-langform-chapter-ui")) {
       removeOurChrome(doc);
     }
+    win.__langformChapterCache = null;
+    win.__langformChapterDataCache = null;
+    doc.__langformTimePill = null;
+    rememberChapters(doc, []);
+  }
+
+  function leaveWatchChrome(win) {
+    var doc = win.document;
+    stopChapterRetry(win);
+    clearChapterState(win);
     var airplay = doc.getElementById(AIRPLAY_ID);
     if (airplay && airplay.parentNode) airplay.parentNode.removeChild(airplay);
-    rememberChapters(doc, []);
   }
 
   function refreshChapters(win) {
@@ -1327,21 +1540,35 @@
     ensureAirPlay(win);
     var bar = win.__langformSeekBar;
     var player = win.ytInitialPlayerResponse;
+    // SPA navigation updates the URL before it replaces the response. Never
+    // put the previous video's chapter titles and seek positions on the new one.
+    if (!playerMatchesPage(win, player)) {
+      clearChapterState(win);
+      return;
+    }
     var video = doc.querySelector("#movie_player video, ytm-player video, ytd-player video, video");
     var duration = Number(player && player.videoDetails && player.videoDetails.lengthSeconds);
     if ((!duration || !isFinite(duration)) && video && isFinite(video.duration) && video.duration > 0) {
       duration = video.duration;
     }
+    var initialData = readInitialData(win);
+    var videoID = pageVideoKey(win, player);
     var cache = win.__langformChapterCache;
     var fractions;
-    if (cache && cache.player === player && cache.duration === duration && duration > 0) {
+    if (cache && cache.player === player && cache.initialData === initialData && cache.duration === duration && duration > 0 &&
+        cache.fractions.length >= 2 && (!cache.fromInitialData || initialDataVideoID(initialData) === videoID)) {
       fractions = cache.fractions;
     } else {
-      fractions = barFractions(chaptersFromPlayer(player), duration);
-      if (duration > 0) win.__langformChapterCache = { player: player, duration: duration, fractions: fractions };
+      var list = chaptersFromPlayer(player);
+      var fromInitialData = list.length < 2;
+      if (fromInitialData) list = chaptersFromInitialData(initialData, videoID);
+      fractions = barFractions(list, duration);
+      // An empty response can still hydrate in place. Do not memoize absence
+      // or stop the existing bounded retry before watch data has arrived.
+      win.__langformChapterCache = fractions.length >= 2 ?
+        { player: player, initialData: initialData, fromInitialData: fromInitialData, duration: duration, fractions: fractions } : null;
     }
     if (!fractions || fractions.length < 2) {
-      if (duration > 0 && playerMatchesPage(win, player)) stopChapterRetry(win);
       if (bar && bar.isConnected) clearChapterBar(bar);
       if (doc.getElementById(CHIP_ID) || doc.getElementById(SHEET_ID) || doc.documentElement.hasAttribute("data-langform-chapter-ui")) {
         removeOurChrome(doc);
@@ -1356,6 +1583,9 @@
     var placed = !!(chip && chip.isConnected && chip.getAttribute("data-langform-chip-placed") === "1");
     var barReady = !!(bar && bar.isConnected && bar.getAttribute("data-langform-chapter-sig") === barSig);
     var videoKey = pageVideoKey(win, player);
+    // Keep normalized chapters available to fullscreen even when YouTube owns
+    // the inline chapter chrome. The owner prevents reuse across navigation.
+    rememberChapters(doc, fractions, videoKey);
     if (marked !== "native" && chip && nativeChapterChrome(doc, true)) {
       dropChipForNative(doc);
       marked = "native";
@@ -1375,11 +1605,21 @@
     var found = findSeekBar(doc);
     if (!bar || !bar.isConnected || (found && found !== bar)) bar = found || bar;
     win.__langformSeekBar = bar;
-    rememberChapters(doc, fractions);
+    var chapterGeneration = doc.documentElement.__langformChapterGeneration || 0;
+    function currentChapters() {
+      return (doc.documentElement.__langformChapterGeneration || 0) === chapterGeneration &&
+        (doc.documentElement.__langformChapterList || []).length > 1 &&
+        pageVideoKey(win, null) === videoKey && playerMatchesPage(win, win.ytInitialPlayerResponse);
+    }
+    function seekChapter(seconds) {
+      return currentChapters() && seekTo(win, seconds);
+    }
     if (bar) {
-      bar.__langformOnPreview = function (seconds) { syncChapterUi(doc, fractions, seconds); };
       var drawn = bar.getAttribute("data-langform-chapter-sig") === barSig && (bar.querySelector("[" + CHAPTER_LAYER + "]") || barHasNativeGaps(bar));
-      if (!drawn) drawChapterBar(bar, fractions, function (seconds) { seekTo(win, seconds); });
+      if (!drawn) drawChapterBar(bar, fractions, seekChapter);
+      bar.__langformOnPreview = function (seconds) {
+        if (currentChapters()) syncChapterUi(doc, fractions, seconds);
+      };
     }
     if (marked === uiSig && chip && chip.isConnected) {
       if (chip.getAttribute("data-langform-chip-placed") !== "1") placeChip(doc, chip);
@@ -1389,12 +1629,12 @@
       dropChipForNative(doc);
     } else {
       var sheet = doc.getElementById(SHEET_ID);
-      var wasOpen = !!(sheet && sheet.style.display !== "none");
+      var wasOpen = chapterSheetOpen(sheet);
       if (!(win.__langformNativeChecked === player && player)) {
         win.__langformNativeChecked = player || null;
         win.__langformNativeHit = player ? nativeChapterChrome(doc) : null;
       }
-      var ui = renderChapterUi(doc, fractions, function (seconds) { seekTo(win, seconds); });
+      var ui = renderChapterUi(doc, fractions, seekChapter);
       if (ui && ui.native) {
         win.__langformNativeHit = nativeChapterChrome(doc);
         if (videoKey) win.__langformNativeVideo = videoKey;
@@ -1409,12 +1649,50 @@
     }
   }
 
+  function innerSheetInteraction(event) {
+    if (!event) return false;
+    var path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    if (!path.length) {
+      var node = event.target;
+      while (node && path.length < 40) {
+        path.push(node);
+        var root = node.getRootNode && node.getRootNode();
+        node = node.parentElement || (root && root.host) || null;
+      }
+    }
+    for (var i = 0; i < path.length; i++) {
+      var el = path[i];
+      if (!el || el.nodeType !== 1) continue;
+      var tag = el.tagName || "";
+      if (tag === "BOTTOM-SHEET-CONTAINER" || tag === "YTM-ENGAGEMENT-PANEL" || tag === "DIALOG" ||
+          tag.indexOf("YTM-COMMENT") === 0 || tag.indexOf("YTD-COMMENT") === 0 ||
+          el.id === "dialog-container" || el.id === SHEET_ID || el.id === "langform-kurzfassung" ||
+          el.getAttribute("role") === "dialog") return true;
+    }
+    return false;
+  }
+
   function armChapters(win) {
     if (!win || !win.document || win.__langformChapters) return;
     win.__langformChapters = true;
     var timer = 0;
     var scrollTimer = 0;
+    var placementTimer = 0;
+    var followTimer = 0;
+    var followTicks = 0;
+    var generation = 0;
+    var dragPlacementDeferred = false;
+    var dragChaptersDeferred = false;
+    function nativeDragging() {
+      return typeof win.__langformIsNativeDragging === "function" && win.__langformIsNativeDragging();
+    }
+    // Mobile start fires before the URL changes. Until its matching end,
+    // old media and geometry events must not put the previous chapters back.
+    var pendingVideoKey = null;
+    var videoKey = pageVideoKey(win, null);
     function run() {
+      if (pendingVideoKey !== null) return;
+      if (nativeDragging()) { dragChaptersDeferred = true; return; }
       try {
         refreshChapters(win);
       } catch (err) {
@@ -1422,9 +1700,11 @@
       }
     }
     function schedule() {
-      if (!onWatchPath(win) || win.__langformChapterScrolling) return;
+      if (pendingVideoKey !== null || !onWatchPath(win) || win.__langformChapterScrolling) return;
       if (timer) win.clearTimeout(timer);
+      var ticket = generation;
       timer = win.setTimeout(function () {
+        if (ticket !== generation) return;
         timer = 0;
         run();
       }, 240);
@@ -1432,9 +1712,11 @@
     // The retry only exists on a watch page. The feed never runs it.
     function watchRetry() {
       stopChapterRetry(win);
-      if (!onWatchPath(win)) return;
+      if (pendingVideoKey !== null || !onWatchPath(win)) return;
       var tries = 0;
+      var ticket = generation;
       win.__langformChapterRetry = win.setInterval(function () {
+        if (ticket !== generation) return;
         tries += 1;
         // Without a player after a few seconds, a tap or the next navigation starts it again.
         if (tries > 24 || !onWatchPath(win) || (tries > 6 && !playerRoot(win.document))) stopChapterRetry(win);
@@ -1444,63 +1726,149 @@
       }, 500);
     }
     function scheduleUnlessSettled() {
-      if (!onWatchPath(win) || chapterUiSettled(win.document)) return;
+      if (pendingVideoKey !== null || !onWatchPath(win) || chapterUiSettled(win.document)) return;
       schedule();
+    }
+    // Geometry can change without chapter data changing (scroll or rotation).
+    // Update only our existing overlays once the viewport has come to rest.
+    function refreshPlacement() {
+      placementTimer = 0;
+      if (pendingVideoKey !== null || !onWatchPath(win) || win.__langformChapterScrolling) return;
+      if (nativeDragging()) { dragPlacementDeferred = true; return; }
+      var doc = win.document;
+      try {
+        ensureAirPlay(win);
+        var chip = doc.getElementById(CHIP_ID);
+        if (chip) placeChip(doc, chip);
+        var sheet = doc.getElementById(SHEET_ID);
+        if (chapterSheetOpen(sheet)) placeSheet(doc, sheet);
+      } catch (err) {
+        /* the player controls can be replaced during rotation */
+      }
+    }
+    function schedulePlacement() {
+      if (pendingVideoKey !== null || !onWatchPath(win)) return;
+      if (placementTimer) win.clearTimeout(placementTimer);
+      var ticket = generation;
+      placementTimer = win.setTimeout(function () {
+        if (ticket === generation) refreshPlacement();
+      }, 160);
     }
     ["loadedmetadata", "durationchange", "playing"].forEach(function (name) {
       win.document.addEventListener(name, scheduleUnlessSettled, true);
     });
-    function onPageChange() {
+    function cancelNavigationWork() {
+      generation += 1;
+      if (timer) win.clearTimeout(timer);
+      if (scrollTimer) win.clearTimeout(scrollTimer);
+      if (placementTimer) win.clearTimeout(placementTimer);
+      if (followTimer) win.clearInterval(followTimer);
+      timer = scrollTimer = placementTimer = followTimer = followTicks = 0;
+      dragPlacementDeferred = dragChaptersDeferred = false;
+      win.__langformChapterScrolling = false;
+      stopChapterRetry(win);
+    }
+    function mobileEventKey(event) {
+      var href = event && event.detail && event.detail.href;
+      if (typeof href !== "string" || !href) return null;
+      try {
+        var url = new URL(href, win.location.href);
+        if (url.origin !== win.location.origin) return null;
+        return url.pathname === "/watch" || url.pathname.indexOf("/watch/") === 0 ? url.searchParams.get("v") || "" : "";
+      } catch (err) {
+        return null;
+      }
+    }
+    function onMobileStart(event) {
+      var nextKey = mobileEventKey(event);
+      if (nextKey === null || nextKey === (pendingVideoKey !== null ? pendingVideoKey : videoKey)) return;
+      cancelNavigationWork();
+      pendingVideoKey = nextKey;
+      clearChapterState(win);
+    }
+    function onPageChange(mobile) {
+      var nextKey = onWatchPath(win) ? pageVideoKey(win, null) : "";
+      var changed = nextKey !== videoKey || pendingVideoKey !== null;
+      if (changed) {
+        cancelNavigationWork();
+        videoKey = nextKey;
+        pendingVideoKey = null;
+        clearChapterState(win);
+      }
       if (!onWatchPath(win)) {
-        if (timer) win.clearTimeout(timer);
-        timer = 0;
+        if (!changed) cancelNavigationWork();
         leaveWatchChrome(win);
         return;
       }
+      if (mobile && !changed) {
+        if (!timer) scheduleUnlessSettled();
+        return;
+      }
       schedule();
-      watchRetry();
+      if (!mobile) watchRetry();
+    }
+    function onMobileEnd(event) {
+      var nextKey = onWatchPath(win) ? pageVideoKey(win, null) : "";
+      var eventKey = mobileEventKey(event);
+      if (eventKey !== nextKey || (pendingVideoKey !== null && pendingVideoKey !== nextKey)) return;
+      onPageChange(true);
     }
     if (onWatchPath(win)) {
-      run();
       watchRetry();
+      run();
     }
-    win.addEventListener("yt-navigate-finish", onPageChange);
-    win.addEventListener("popstate", onPageChange);
-    win.document.addEventListener("scroll", function () {
-      if (!onWatchPath(win)) return;
+    win.addEventListener("yt-navigate-finish", function () { onPageChange(false); });
+    win.addEventListener("popstate", function () { onPageChange(false); });
+    win.addEventListener("state-navigatestart", onMobileStart);
+    win.addEventListener("state-navigateend", onMobileEnd);
+    win.addEventListener("video-data-change", scheduleUnlessSettled);
+    win.document.addEventListener("scroll", function (event) {
+      // Scrolling comments or a chapter list does not move the player. Keep
+      // their touch stream free of unrelated geometry reads and AirPlay writes.
+      if (pendingVideoKey !== null || !onWatchPath(win) || innerSheetInteraction(event)) return;
       if (!win.__langformChapterScrolling) hideAirPlay(win.document.getElementById(AIRPLAY_ID));
       win.__langformChapterScrolling = true;
       if (scrollTimer) win.clearTimeout(scrollTimer);
+      var ticket = generation;
       scrollTimer = win.setTimeout(function () {
+        if (ticket !== generation) return;
         scrollTimer = 0;
         win.__langformChapterScrolling = false;
+        refreshPlacement();
         scheduleUnlessSettled();
       }, 180);
     }, { capture: true, passive: true });
     win.document.addEventListener("pointerdown", function (event) {
-      if (!onWatchPath(win)) return;
+      if (pendingVideoKey !== null || !onWatchPath(win)) return;
       var sheet = win.document.getElementById(SHEET_ID);
-      if (sheet && sheet.style.display !== "none" && event.target && !sheet.contains(event.target)) {
+      if (chapterSheetOpen(sheet) && event.target && !sheet.contains(event.target)) {
         var chip = win.document.getElementById(CHIP_ID);
         if (!chip || (event.target !== chip && !chip.contains(event.target))) setSheetOpen(win.document, false);
       }
-      followControls();
+      if (innerSheetInteraction(event)) return;
+      var player = playerRoot(win.document);
+      var path = typeof event.composedPath === "function" ? event.composedPath() : [];
+      if (player && (player.contains(event.target) || path.indexOf(player) !== -1)) followControls();
       scheduleUnlessSettled();
     }, { capture: true, passive: true });
     // A tap shows YouTube's chrome and it fades out a few seconds later.
     // AirPlay follows it for that long, reading the row and writing only our button.
-    var followTimer = 0;
-    var followTicks = 0;
     function followControls() {
+      if (pendingVideoKey !== null) return;
       followTicks = 0;
       if (followTimer) return;
+      var ticket = generation;
       followTimer = win.setInterval(function () {
+        if (ticket !== generation) return;
         followTicks += 1;
         if (followTicks > 16 || !onWatchPath(win)) {
           win.clearInterval(followTimer);
           followTimer = 0;
+          return;
         }
-        if (win.__langformChapterScrolling) return;
+        if (win.__langformChapterScrolling || chapterSheetOpen(win.document.getElementById(SHEET_ID)) ||
+            (typeof win.__langformHasOpenOverlay === "function" && win.__langformHasOpenOverlay())) return;
+        if (nativeDragging()) { dragPlacementDeferred = true; return; }
         try {
           ensureAirPlay(win);
           // A tap can bring up YouTube's own chapter chip next to ours.
@@ -1513,12 +1881,45 @@
         }
       }, 350);
     }
+    ["playing", "pause", "ended"].forEach(function (name) {
+      win.document.addEventListener(name, function (event) {
+        if (onWatchPath(win) && event.target && event.target.tagName === "VIDEO") followControls();
+      }, true);
+    });
+    win.addEventListener("resize", schedulePlacement);
+    if (win.visualViewport) win.visualViewport.addEventListener("resize", schedulePlacement);
+    // Native moves a retained WebView without changing its page layout. Leave
+    // the gesture free of control-row measurements, then use
+    // the existing coalesced timers for any work that actually became due.
+    win.addEventListener("langform-native-drag-end", function () {
+      if (dragPlacementDeferred) { dragPlacementDeferred = false; schedulePlacement(); }
+      if (dragChaptersDeferred) { dragChaptersDeferred = false; schedule(); }
+    });
   }
 
   function install(win) {
     if (!win || win.__langformPageCaptions) return;
     win.__langformPageCaptions = true;
     var nativeFetch = typeof win.fetch === "function" ? win.fetch.bind(win) : null;
+
+    // Called by the iPhone shell only for a link the user tapped. History
+    // updates never use this hook: YouTube writes t= while playback starts.
+    win.__langformSeekFromLink = function (href) {
+      var logic = win.ShortsAusblenden && win.ShortsAusblenden.logic;
+      if (!logic || !onWatchPath(win)) return false;
+      try {
+        var url = new URL(String(href || ""), win.location.href);
+        if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+        var currentId = logic.watchVideoId(win.location.href, win.location.href);
+        if (!currentId || logic.watchVideoId(url.href, win.location.href) !== currentId) return false;
+        var player = win.ytInitialPlayerResponse;
+        if (player && player.videoDetails && !playerMatchesPage(win, player)) return false;
+        var seconds = logic.timestampSeconds(url.href, win.location.href);
+        return seconds != null && seekTo(win, seconds);
+      } catch (err) {
+        return false;
+      }
+    };
 
     function filledPlayer(videoId) {
       var player = win.ytInitialPlayerResponse;

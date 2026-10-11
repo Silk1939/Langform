@@ -148,6 +148,10 @@ describe("Invidious wird zum UI-Modell", () => {
 });
 
 describe("Piped wird zum UI-Modell", () => {
+  it.each([{}, { title: "   " }, { message: "Upstream offline" }])("verwirft Videodaten ohne Titel statt eine erfolgreiche Ersatzantwort zu erfinden: %j", (payload) => {
+    expect(() => mapPipedStreams(payload, LONG_ID)).toThrow("Keine Video-Angaben");
+  });
+
   const longItem = {
     url: `/watch?v=${LONG_ID}`,
     type: "stream",

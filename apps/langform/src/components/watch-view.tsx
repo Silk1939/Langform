@@ -6,6 +6,7 @@ import { Feed, FeedSkeleton } from "@/components/feed";
 import { useAppShell } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { fetchJson } from "@/lib/browser";
+import { isWatchDetails } from "@/lib/api-response";
 import { formatViews, publishedLabel } from "@/lib/format";
 import { CHANNEL_ID } from "@/lib/ids";
 import type { WatchDetails } from "@/lib/types";
@@ -13,16 +14,22 @@ import type { WatchDetails } from "@/lib/types";
 export function WatchView({ id }: { id: string }) {
   const { openVideo, closeVideo, nowPlaying } = useAppShell();
   const seeded = nowPlaying?.id === id && nowPlaying.title !== "Langes Video" ? nowPlaying : null;
-  const [details, setDetails] = useState<WatchDetails | null>(null);
-  const [error, setError] = useState("");
+  const [result, setResult] = useState<{ id: string; details: WatchDetails } | null>(null);
+  const [failure, setFailure] = useState<{ id: string; message: string } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [relatedState, setRelatedState] = useState<{ id: string; status: "loading" | "error" | "done" } | null>(null);
+  const details = result?.id === id ? result.details : null;
+  const error = failure?.id === id ? failure.message : "";
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetchJson<WatchDetails>(`/api/watch/${id}`, controller.signal)
+    const matchesWatch = (body: unknown): body is WatchDetails => isWatchDetails(body, id);
+    void fetchJson(`/api/watch/${id}`, controller.signal, matchesWatch)
       .then((body) => {
         if (controller.signal.aborted) return;
-        setDetails(body);
-        if (body.blocked) closeVideo();
+        setResult({ id, details: body });
+        setFailure(null);
+        if (body.blocked) closeVideo(id);
         else {
           openVideo({
             id: body.video.id,
@@ -30,14 +37,26 @@ export function WatchView({ id }: { id: string }) {
             channelName: body.video.channelName,
             channelId: body.video.channelId,
           });
+          if (body.related.length === 0 || !body.video.channelName) {
+            setRelatedState({ id, status: "loading" });
+            void fetchJson(`/api/watch/${id}?related=1`, controller.signal, matchesWatch)
+              .then((enriched) => {
+                if (controller.signal.aborted) return;
+                setResult({ id, details: enriched });
+                setRelatedState({ id, status: "done" });
+              })
+              .catch(() => {
+                if (!controller.signal.aborted) setRelatedState({ id, status: "error" });
+              });
+          }
         }
       })
       .catch((cause: unknown) => {
-        if (cause instanceof DOMException && cause.name === "AbortError") return;
-        setError(cause instanceof Error ? cause.message : "Die Angaben sind gerade nicht zu erreichen.");
+        if (controller.signal.aborted) return;
+        setFailure({ id, message: cause instanceof Error ? cause.message : "Die Angaben sind gerade nicht zu erreichen." });
       });
     return () => controller.abort();
-  }, [id, openVideo, closeVideo]);
+  }, [id, attempt, openVideo, closeVideo]);
 
   if (details?.blocked) {
     return (
@@ -66,7 +85,15 @@ export function WatchView({ id }: { id: string }) {
 
   return (
     <div className="flex flex-col gap-5">
-      {error ? <p className="text-sm text-muted-foreground">{error}</p> : null}
+      {error ? (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">{error}</p>
+          <Button type="button" className="h-11 w-fit px-4" onClick={() => {
+            setFailure(null);
+            setAttempt((value) => value + 1);
+          }}>Erneut laden</Button>
+        </div>
+      ) : null}
       <h1 className="font-heading text-3xl leading-tight text-balance md:text-4xl">
         {title || "Langes Video"}
       </h1>
@@ -99,8 +126,13 @@ export function WatchView({ id }: { id: string }) {
         </h2>
         {!details && !error ? <FeedSkeleton /> : null}
         {details && details.related.length > 0 ? <Feed videos={details.related} /> : null}
-        {details && details.related.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Dazu liegen gerade keine langen Vorschläge vor.</p>
+        {details && details.related.length === 0 && relatedState?.id === id && relatedState.status === "loading" ? <FeedSkeleton /> : null}
+        {details && details.related.length === 0 && !(relatedState?.id === id && relatedState.status === "loading") ? (
+          <p className="text-sm text-muted-foreground">
+            {relatedState?.id === id && relatedState.status === "error"
+              ? "Die Vorschläge sind gerade nicht zu erreichen."
+              : "Dazu liegen gerade keine langen Vorschläge vor."}
+          </p>
         ) : null}
       </section>
     </div>

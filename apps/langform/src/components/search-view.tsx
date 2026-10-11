@@ -4,36 +4,48 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "next/navigation";
 import { Feed, FeedSkeleton } from "@/components/feed";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { fetchJson } from "@/lib/browser";
+import { isSuggestions, isVideoList } from "@/lib/api-response";
 import { emptySnapshot, parseQueries, queriesSnapshot, rememberQuery, subscribeQueries, useOnClient } from "@/lib/recent";
 import type { Video } from "@/lib/types";
 
 export function SearchView() {
   const params = useSearchParams();
   const initial = params.get("q") ?? "";
+  return <SearchResults key={initial} initial={initial} />;
+}
+
+function SearchResults({ initial }: { initial: string }) {
   const onClient = useOnClient();
   const recentRaw = useSyncExternalStore(subscribeQueries, queriesSnapshot, emptySnapshot);
   const recent = onClient ? parseQueries(recentRaw) : [];
   const [draft, setDraft] = useState(initial);
   const [query, setQuery] = useState(initial.trim());
-  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestions, setSuggestions] = useState<{ query: string; items: string[] } | null>(null);
   const [result, setResult] = useState<{ query: string; videos: Video[] } | null>(null);
-  const [error, setError] = useState("");
+  const [failure, setFailure] = useState<{ query: string; message: string } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [openSuggestions, setOpenSuggestions] = useState(false);
   const debounceRef = useRef(0);
+  const searchActive = Boolean(draft.trim() && query);
+  const error = searchActive && failure?.query === query ? failure.message : "";
+
+  useEffect(() => () => window.clearTimeout(debounceRef.current), []);
 
   useEffect(() => {
     const trimmed = draft.trim();
     if (!trimmed) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      void fetchJson<{ suggestions: string[] }>(`/api/suggest?q=${encodeURIComponent(trimmed)}`, controller.signal)
-        .then((body) =>
-          setSuggestions(body.suggestions.filter((item) => item.toLowerCase() !== trimmed.toLowerCase())),
-        )
-        .catch((cause: unknown) => {
-          if (cause instanceof DOMException && cause.name === "AbortError") return;
-          setSuggestions([]);
+      void fetchJson(`/api/suggest?q=${encodeURIComponent(trimmed)}`, controller.signal, isSuggestions)
+        .then((body) => {
+          if (controller.signal.aborted) return;
+          setSuggestions({ query: trimmed, items: body.suggestions.filter((item) => item.toLowerCase() !== trimmed.toLowerCase()) });
+        })
+        .catch(() => {
+          if (controller.signal.aborted) return;
+          setSuggestions(null);
         });
     }, 160);
     return () => {
@@ -45,17 +57,18 @@ export function SearchView() {
   useEffect(() => {
     if (!query) return;
     const controller = new AbortController();
-    void fetchJson<{ videos: Video[] }>(`/api/search?q=${encodeURIComponent(query)}`, controller.signal)
+    void fetchJson(`/api/search?q=${encodeURIComponent(query)}`, controller.signal, isVideoList)
       .then((body) => {
+        if (controller.signal.aborted) return;
         setResult({ query, videos: body.videos });
-        setError("");
+        setFailure(null);
       })
       .catch((cause: unknown) => {
-        if (cause instanceof DOMException && cause.name === "AbortError") return;
-        setError(cause instanceof Error ? cause.message : "Die Suche ist gerade nicht zu erreichen.");
+        if (controller.signal.aborted) return;
+        setFailure({ query, message: cause instanceof Error ? cause.message : "Die Suche ist gerade nicht zu erreichen." });
       });
     return () => controller.abort();
-  }, [query]);
+  }, [query, attempt]);
 
   function schedule(next: string) {
     window.clearTimeout(debounceRef.current);
@@ -63,17 +76,20 @@ export function SearchView() {
   }
 
   function choose(next: string) {
+    window.clearTimeout(debounceRef.current);
     const trimmed = next.trim();
     setDraft(trimmed);
     setQuery(trimmed);
     setOpenSuggestions(false);
-    setSuggestions([]);
+    setSuggestions(null);
+    setFailure(null);
+    if (trimmed === query && error) setAttempt((value) => value + 1);
     if (trimmed) rememberQuery(trimmed);
   }
 
-  const shownSuggestions = draft.trim() ? suggestions : [];
-  const videos = draft.trim() && query ? result?.videos ?? null : null;
-  const waiting = Boolean(draft.trim() && query) && result?.query !== query && !error;
+  const shownSuggestions = suggestions?.query === draft.trim() ? suggestions.items : [];
+  const videos = searchActive && result?.query === query ? result.videos : null;
+  const waiting = searchActive && result?.query !== query && !error;
 
   return (
     <div className="flex flex-col gap-4">
@@ -95,7 +111,7 @@ export function SearchView() {
           onChange={(event) => {
             const value = event.target.value;
             setDraft(value);
-            if (!value.trim()) setSuggestions([]);
+            if (!value.trim()) setSuggestions(null);
             setOpenSuggestions(true);
             schedule(value);
           }}
@@ -148,9 +164,16 @@ export function SearchView() {
         </section>
       ) : null}
 
-      {error ? <p className="text-sm text-muted-foreground">{error}</p> : null}
-      {waiting && !videos ? <FeedSkeleton /> : null}
-      {waiting && videos ? <p className="text-sm text-primary">Suche …</p> : null}
+      {error ? (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">{error}</p>
+          <Button type="button" className="h-11 w-fit px-4" onClick={() => {
+            setFailure(null);
+            setAttempt((value) => value + 1);
+          }}>Erneut laden</Button>
+        </div>
+      ) : null}
+      {waiting ? <FeedSkeleton /> : null}
       {draft.trim() && query && videos && result?.query === query && videos.length === 0 ? (
         <p className="text-muted-foreground">Nichts Langes zu „{query}“.</p>
       ) : null}
@@ -158,7 +181,7 @@ export function SearchView() {
         <Feed
           videos={videos}
           onOpen={() => {
-            if (draft.trim()) rememberQuery(draft);
+            rememberQuery(query);
           }}
         />
       ) : null}

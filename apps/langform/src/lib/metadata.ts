@@ -1,9 +1,9 @@
 import "server-only";
 
 import { firstUseful } from "@/lib/failover";
+import { createAsyncCache } from "@/lib/async-cache";
 import { CHANNEL_ID, VIDEO_ID, channelIdFromUrl } from "@/lib/ids";
 import {
-  firstYoutubeTitle,
   mapInvidiousChannel,
   mapInvidiousList,
   mapInvidiousVideo,
@@ -35,7 +35,7 @@ export const PIPED_INSTANCES = [
 
 const TIMEOUT_MS = 7000;
 const CACHE_MS = 3 * 60 * 1000;
-const memory = new Map<string, { at: number; value: unknown }>();
+const cache = createAsyncCache(CACHE_MS, 200);
 
 type Source<T> = {
   name: string;
@@ -68,13 +68,7 @@ function withTimeout(parent?: AbortSignal): AbortSignal {
 }
 
 async function memo<T>(key: string, load: () => Promise<T>, fresh = false): Promise<T> {
-  if (!fresh) {
-    const hit = memory.get(key);
-    if (hit && Date.now() - hit.at < CACHE_MS) return hit.value as T;
-  }
-  const value = await load();
-  memory.set(key, { at: Date.now(), value });
-  return value;
+  return cache.load(key, load, fresh);
 }
 
 function invidiousSources<T>(
@@ -306,13 +300,14 @@ async function withRelated(details: WatchDetails): Promise<WatchDetails> {
   };
 }
 
-async function watchFromLookup(id: string): Promise<WatchDetails> {
+async function watchFromLookup(id: string, signal: AbortSignal): Promise<WatchDetails> {
   const found = await firstUseful(
     [
       ...pipedSources(`/search?q=${encodeURIComponent(id)}&filter=videos`, mapPipedList),
       ...invidiousSources(`/api/v1/search?q=${encodeURIComponent(id)}&type=video&region=DE`, mapInvidiousList),
     ],
     (videos) => videos.some((video) => video.id === id),
+    { signal },
   );
   const video = found.find((item) => item.id === id);
   if (!video) throw new Error("Keine Video-Angaben");
@@ -327,11 +322,11 @@ async function watchFromLookup(id: string): Promise<WatchDetails> {
   };
 }
 
-async function composedWatch(id: string): Promise<WatchDetails> {
+async function composedWatch(id: string, signal: AbortSignal): Promise<WatchDetails> {
   const oembed = mapOEmbed(
     await getJson(
       `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${id}`)}&format=json`,
-      AbortSignal.timeout(TIMEOUT_MS),
+      withTimeout(signal),
     ),
   );
   if (!oembed) throw new Error("Keine Video-Angaben");
@@ -366,27 +361,11 @@ export async function loadWatch(id: string): Promise<WatchDetails> {
         { part: "snippet,contentDetails,statistics", id },
         signal,
       );
-      const words = firstYoutubeTitle(videoPayload).split(/\s+/).slice(0, 6).join(" ");
-      const relatedPayload = words
-        ? await youtubeGet(
-            "search",
-            {
-              part: "snippet",
-              type: "video",
-              maxResults: "12",
-              q: words,
-              regionCode: "DE",
-              relevanceLanguage: "de",
-            },
-            signal,
-          )
-        : { items: [] };
-      const relatedIds = searchIds(relatedPayload).filter((item) => item !== id);
-      const relatedVideos = await youtubeVideos(relatedIds, signal);
       const details = mapYoutubeWatch(videoPayload, { items: [] });
-      return { ...details, related: relatedVideos.filter((video) => video.id !== id).slice(0, 12) };
+      if (details.video.id !== id) throw new Error("Falsche Video-ID");
+      return details;
     });
-    if (fromYoutube) return withRelated(fromYoutube);
+    if (fromYoutube) return fromYoutube;
 
     const details = await firstUseful(
       [
@@ -400,11 +379,16 @@ export async function loadWatch(id: string): Promise<WatchDetails> {
           load: async (signal: AbortSignal) =>
             mapPipedStreams(await getJson(`${base}/streams/${id}`, withTimeout(signal)), id),
         })),
-        { name: "oembed", load: async () => composedWatch(id) },
-        { name: "lookup", load: async () => watchFromLookup(id) },
+        { name: "oembed", load: async (signal) => composedWatch(id, signal) },
+        { name: "lookup", load: async (signal) => watchFromLookup(id, signal) },
       ],
-      (value) => value.video.title.length > 0,
+      (value) => value.video.id === id && value.video.title.length > 0,
     );
-    return withRelated(details);
+    return details;
   });
+}
+
+export async function loadWatchWithRelated(id: string): Promise<WatchDetails> {
+  if (!VIDEO_ID.test(id)) throw new Error("Unbekanntes Video");
+  return memo(`watch-related:${id}`, async () => withRelated(await loadWatch(id)));
 }

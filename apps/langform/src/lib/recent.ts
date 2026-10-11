@@ -4,6 +4,24 @@ import { VIDEO_ID } from "@/lib/ids";
 const KEY = "langform.recent";
 const MAX = 16;
 
+function readStorage(key: string): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStorage(key: string, value: unknown, eventName: string): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+    window.dispatchEvent(new Event(eventName));
+  } catch {
+    // Verlauf ist optional. Gesperrter oder voller Speicher darf keine Aktion blockieren.
+  }
+}
+
 export type RecentWatch = {
   id: string;
   title: string;
@@ -65,8 +83,7 @@ export function readQueries(): string[] {
 export function rememberQuery(query: string): string[] {
   if (typeof window === "undefined") return [];
   const items = nextQueries(readQueries(), query);
-  window.localStorage.setItem(QUERY_KEY, JSON.stringify(items));
-  window.dispatchEvent(new Event("langform-queries"));
+  writeStorage(QUERY_KEY, items, "langform-queries");
   return items;
 }
 
@@ -89,13 +106,11 @@ export function subscribeQueries(onChange: () => void) {
 }
 
 export function historySnapshot(): string {
-  if (typeof window === "undefined") return "";
-  return window.localStorage.getItem(KEY) ?? "";
+  return readStorage(KEY);
 }
 
 export function queriesSnapshot(): string {
-  if (typeof window === "undefined") return "";
-  return window.localStorage.getItem(QUERY_KEY) ?? "";
+  return readStorage(QUERY_KEY);
 }
 
 function subscribeNoop() {
@@ -137,6 +152,5 @@ export function rememberWatch(entry: Omit<RecentWatch, "watchedAt">): void {
   if (!VIDEO_ID.test(entry.id) || !entry.title.trim()) return;
   const next: RecentWatch = { ...entry, title: entry.title.trim(), watchedAt: Date.now() };
   const items = [next, ...readRecent().filter((item) => item.id !== entry.id)].slice(0, MAX);
-  window.localStorage.setItem(KEY, JSON.stringify(items));
-  window.dispatchEvent(new Event("langform-history"));
+  writeStorage(KEY, items, "langform-history");
 }

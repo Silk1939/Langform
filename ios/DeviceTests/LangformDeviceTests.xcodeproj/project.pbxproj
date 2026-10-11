@@ -1,0 +1,65 @@
+// !$*UTF8*$!
+{
+    archiveVersion = 1;
+    classes = {};
+    objectVersion = 56;
+    objects = {
+        B00000000000000000000001 = { isa = PBXBuildFile; fileRef = B00000000000000000000002; };
+        B00000000000000000000002 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceAccessibilityTests.swift; sourceTree = "<group>"; };
+        B00000000000000000000003 = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LangformDeviceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+        B00000000000000000000004 = { isa = PBXGroup; children = (B00000000000000000000005, B00000000000000000000006); sourceTree = "<group>"; };
+        B00000000000000000000005 = { isa = PBXGroup; children = (B00000000000000000000002); path = LangformDeviceTests; sourceTree = "<group>"; };
+        B00000000000000000000006 = { isa = PBXGroup; children = (B00000000000000000000003); name = Products; sourceTree = "<group>"; };
+        B00000000000000000000007 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+        B00000000000000000000008 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        B00000000000000000000009 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        B0000000000000000000000A = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = B0000000000000000000000D;
+            buildPhases = (B00000000000000000000007, B00000000000000000000008, B00000000000000000000009);
+            buildRules = ();
+            dependencies = ();
+            name = LangformDeviceTests;
+            productName = LangformDeviceTests;
+            productReference = B00000000000000000000003;
+            productType = "com.apple.product-type.bundle.ui-testing";
+        };
+        B0000000000000000000000B = {
+            isa = PBXProject;
+            attributes = { BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2700; LastUpgradeCheck = 2700; TargetAttributes = { B0000000000000000000000A = { CreatedOnToolsVersion = 27.0; ProvisioningStyle = Manual; }; }; };
+            buildConfigurationList = B0000000000000000000000C;
+            compatibilityVersion = "Xcode 14.0";
+            developmentRegion = de;
+            hasScannedForEncodings = 0;
+            knownRegions = (de, en, Base);
+            mainGroup = B00000000000000000000004;
+            productRefGroup = B00000000000000000000006;
+            projectDirPath = "";
+            projectRoot = "";
+            targets = (B0000000000000000000000A);
+        };
+        B0000000000000000000000C = { isa = XCConfigurationList; buildConfigurations = (B0000000000000000000000E, B0000000000000000000000F); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        B0000000000000000000000D = { isa = XCConfigurationList; buildConfigurations = (B00000000000000000000010, B00000000000000000000011); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        B0000000000000000000000E = {
+            isa = XCBuildConfiguration;
+            buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; };
+            name = Debug;
+        };
+        B0000000000000000000000F = {
+            isa = XCBuildConfiguration;
+            buildSettings = { CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; SWIFT_OPTIMIZATION_LEVEL = "-O"; };
+            name = Release;
+        };
+        B00000000000000000000010 = {
+            isa = XCBuildConfiguration;
+            buildSettings = { CODE_SIGN_STYLE = Manual; CODE_SIGN_IDENTITY = E94E8C9CC2FF184832B68E4C02A332867D66F560; DEVELOPMENT_TEAM = RFN59MUTQ3; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = de.ipekkaya.langform.devicechecks; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = iphoneos; SUPPORTS_MACCATALYST = NO; TARGETED_DEVICE_FAMILY = 1; SWIFT_VERSION = 5.0; };
+            name = Debug;
+        };
+        B00000000000000000000011 = {
+            isa = XCBuildConfiguration;
+            buildSettings = { CODE_SIGN_STYLE = Manual; CODE_SIGN_IDENTITY = E94E8C9CC2FF184832B68E4C02A332867D66F560; DEVELOPMENT_TEAM = RFN59MUTQ3; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = de.ipekkaya.langform.devicechecks; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = iphoneos; SUPPORTS_MACCATALYST = NO; TARGETED_DEVICE_FAMILY = 1; SWIFT_VERSION = 5.0; };
+            name = Release;
+        };
+    };
+    rootObject = B0000000000000000000000B;
+}

@@ -16,8 +16,9 @@ type Loader<T> = {
 export function firstUseful<T>(
   loaders: Array<Loader<T>>,
   accept: (value: T) => boolean,
-  options?: { empty?: T },
+  options?: { empty?: T; signal?: AbortSignal },
 ): Promise<T> {
+  if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
   if (loaders.length === 0) {
     return Promise.reject(new MetadataError(["keine Quelle"]));
   }
@@ -29,10 +30,20 @@ export function firstUseful<T>(
   let sawValue = false;
 
   return new Promise((resolve, reject) => {
+    const cleanup = () => options?.signal?.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      controller.abort(options?.signal?.reason);
+      cleanup();
+      reject(controller.signal.reason);
+    };
+    options?.signal?.addEventListener("abort", onAbort, { once: true });
     const finish = () => {
       pending -= 1;
       if (pending === 0 && !settled) {
         settled = true;
+        cleanup();
         if (sawValue && options && "empty" in options) resolve(options.empty as T);
         else reject(new MetadataError(causes));
       }
@@ -45,6 +56,7 @@ export function firstUseful<T>(
           if (settled) return;
           if (accept(value)) {
             settled = true;
+            cleanup();
             controller.abort();
             resolve(value);
             return;

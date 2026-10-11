@@ -1,0 +1,80 @@
+{
+  "source": {
+    "url": "https://m.youtube.com/watch?v=x-ZRLIdXBRU",
+    "conditions": "Unauthenticated shipping-UA mobile HTML, not live app",
+    "observed": "2026-10-09",
+    "originalInitialDataType": "serialized JSON string",
+    "note": "Minimal structural excerpt; no tracking, playback URLs or unrelated recommendations."
+  },
+  "player": {
+    "videoDetails": {
+      "videoId": "x-ZRLIdXBRU",
+      "lengthSeconds": "312",
+      "shortDescription": "No timestamp lines in observed description."
+    }
+  },
+  "initialData": {
+    "currentVideoEndpoint": {
+      "watchEndpoint": {
+        "videoId": "x-ZRLIdXBRU"
+      }
+    },
+    "playerOverlays": {
+      "playerOverlayRenderer": {
+        "decoratedPlayerBarRenderer": {
+          "decoratedPlayerBarRenderer": {
+            "playerBar": {
+              "multiMarkersPlayerBarRenderer": {
+                "markersMap": [
+                  {
+                    "key": "AUTO_CHAPTERS",
+                    "value": {
+                      "chapters": [
+                        {
+                          "chapterRenderer": {
+                            "title": {
+                              "runs": [
+                                {
+                                  "text": "Present moment alignment"
+                                }
+                              ]
+                            },
+                            "timeRangeStartMillis": 0
+                          }
+                        },
+                        {
+                          "chapterRenderer": {
+                            "title": {
+                              "runs": [
+                                {
+                                  "text": "Empowering your vision"
+                                }
+                              ]
+                            },
+                            "timeRangeStartMillis": 95880
+                          }
+                        },
+                        {
+                          "chapterRenderer": {
+                            "title": {
+                              "runs": [
+                                {
+                                  "text": "The journey over the goal"
+                                }
+                              ]
+                            },
+                            "timeRangeStartMillis": 204000
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

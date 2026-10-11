@@ -215,7 +215,8 @@ export function mapPipedStreams(payload: unknown, videoId: string): WatchDetails
   if (error && !text(record.title)) throw new Error(error.slice(0, 160));
   if (!VIDEO_ID.test(videoId)) throw new Error("Keine Video-ID");
   const durationSeconds = numberValue(record.duration);
-  const title = text(record.title) || "Ohne Titel";
+  const title = text(record.title);
+  if (!title) throw new Error("Keine Video-Angaben");
   const video = blankVideo({
     id: videoId,
     title,

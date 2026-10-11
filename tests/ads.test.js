@@ -219,3 +219,55 @@ test("ohne Timer: das Skript prüft bei einer neuen Werbung, nicht im Takt", asy
   assert.equal(page.log.pause, 0);
   win.close();
 });
+
+test("eine Werbung ohne Playerklasse stellt nach dem Entfernen ihres Overlays den Ton wieder her", async function () {
+  const page = watchPage("html5-video-player", '<div class="ytp-ad-player-overlay">Werbung</div>');
+  page.setDuration(10);
+  ads.install(page.win);
+  assert.equal(page.video.muted, true);
+  assert.deepEqual(page.log.times, [10]);
+  page.doc.querySelector(".ytp-ad-player-overlay").remove();
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  assert.equal(page.video.muted, false);
+  assert.deepEqual(page.log.seekTo, []);
+  assert.equal(page.log.pause, 0);
+  page.win.close();
+});
+
+test("ein ersetzter Werbebereich wird ohne neue Metadaten beobachtet", async function () {
+  const page = watchPage("html5-video-player");
+  page.setDuration(14);
+  ads.install(page.win);
+  const replacement = page.doc.createElement("div");
+  replacement.className = "video-ads";
+  page.doc.querySelector(".video-ads").replaceWith(replacement);
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  replacement.innerHTML = '<div class="ytp-ad-player-overlay">Werbung</div>';
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  assert.equal(page.video.muted, true);
+  assert.deepEqual(page.log.times, [14]);
+  replacement.innerHTML = "";
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  assert.equal(page.video.muted, false);
+  page.win.close();
+});
+
+test("ein verborgenes erstes Overlay verdeckt kein zweites sichtbares Werbe-Overlay", function (t) {
+  const page = watchPage("html5-video-player", '<div class="ytp-ad-player-overlay" hidden>Vorige Werbung</div><div class="ytp-ad-preview-container">Aktuelle Werbung</div>');
+  t.after(function () { page.win.close(); });
+  page.setDuration(12);
+  assert.equal(ads.isAdShowing(page.player), true);
+  assert.equal(ads.handle(page.win), "jump");
+  assert.equal(page.video.muted, true);
+});
+
+test("ein per hidden beendetes Werbe-Overlay stellt den Ton ohne neues Medienereignis zurück", async function (t) {
+  const page = watchPage("html5-video-player", '<div class="ytp-ad-player-overlay">Werbung</div>');
+  t.after(function () { page.win.close(); });
+  page.setDuration(12);
+  ads.install(page.win);
+  assert.equal(page.video.muted, true);
+  page.doc.querySelector(".ytp-ad-player-overlay").hidden = true;
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  assert.equal(page.video.muted, false);
+});
