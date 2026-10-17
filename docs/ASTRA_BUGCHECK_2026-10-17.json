@@ -1,7 +1,7 @@
 {
   "date": "2026-10-17",
   "repository": "https://github.com/Silk1939/Langform",
-  "status": "reviewed_and_tested_for_publication",
+  "status": "published_and_anonymous_clone_verified",
   "baseline_commit": "bffca2a654d8be6b22c981ef6569225497df420a",
   "review": {
     "model": "gpt-6-astra",
@@ -136,6 +136,11 @@
   ],
   "publication": {
     "target_branch": "main",
-    "verified": false
-  }
+    "verified": true,
+    "source_commit": "3f5c08469abe005fc9a014d0a0873a85af62b6d1",
+    "files": 401,
+    "anonymous_clone": true,
+    "bytes_and_executable_modes_match": true
+  },
+  "simulator_restored_to_initial_shutdown": true
 }
