@@ -6,10 +6,12 @@ import { CHANNEL_ID, VIDEO_ID, channelIdFromUrl } from "@/lib/ids";
 import {
   mapInvidiousChannel,
   mapInvidiousList,
+  mapInvidiousLookup,
   mapInvidiousVideo,
   mapOEmbed,
   mapPipedChannel,
   mapPipedList,
+  mapPipedLookup,
   mapPipedStreams,
   mapYoutubeChannel,
   mapYoutubeVideos,
@@ -300,28 +302,6 @@ async function withRelated(details: WatchDetails): Promise<WatchDetails> {
   };
 }
 
-async function watchFromLookup(id: string, signal: AbortSignal): Promise<WatchDetails> {
-  const found = await firstUseful(
-    [
-      ...pipedSources(`/search?q=${encodeURIComponent(id)}&filter=videos`, mapPipedList),
-      ...invidiousSources(`/api/v1/search?q=${encodeURIComponent(id)}&type=video&region=DE`, mapInvidiousList),
-    ],
-    (videos) => videos.some((video) => video.id === id),
-    { signal },
-  );
-  const video = found.find((item) => item.id === id);
-  if (!video) throw new Error("Keine Video-Angaben");
-  return {
-    video,
-    related: found.filter((item) => item.id !== id).slice(0, 12),
-    blocked: isShort({
-      title: video.title,
-      durationSeconds: video.durationSeconds,
-      url: `/watch?v=${id}`,
-    }),
-  };
-}
-
 async function composedWatch(id: string, signal: AbortSignal): Promise<WatchDetails> {
   const oembed = mapOEmbed(
     await getJson(
@@ -365,26 +345,42 @@ export async function loadWatch(id: string): Promise<WatchDetails> {
       if (details.video.id !== id) throw new Error("Falsche Video-ID");
       return details;
     });
-    if (fromYoutube) return fromYoutube;
-
-    const details = await firstUseful(
-      [
-        ...INVIDIOUS_INSTANCES.map((base) => ({
-          name: `invidious ${base}`,
-          load: async (signal: AbortSignal) =>
-            mapInvidiousVideo(await getJson(`${base}/api/v1/videos/${id}?region=DE`, withTimeout(signal))),
-        })),
-        ...PIPED_INSTANCES.map((base) => ({
-          name: `piped ${base}`,
-          load: async (signal: AbortSignal) =>
-            mapPipedStreams(await getJson(`${base}/streams/${id}`, withTimeout(signal)), id),
-        })),
-        { name: "oembed", load: async (signal) => composedWatch(id, signal) },
-        { name: "lookup", load: async (signal) => watchFromLookup(id, signal) },
-      ],
-      (value) => value.video.id === id && value.video.title.length > 0,
+    const matches = (value: WatchDetails) => value.video.id === id && value.video.title.length > 0;
+    const classified = (value: WatchDetails) => value.blocked || (
+      typeof value.video.durationSeconds === "number"
+      && Number.isFinite(value.video.durationSeconds)
+      && value.video.durationSeconds >= 0
     );
-    return details;
+    if (fromYoutube && classified(fromYoutube)) return fromYoutube;
+
+    // Start every bounded source together. An answer without Short signals or
+    // duration stays available as a fallback, but cannot cancel classification.
+    let fallback: WatchDetails | null = fromYoutube;
+    const sources: Source<WatchDetails>[] = [
+      ...invidiousSources(`/api/v1/videos/${id}?region=DE`, mapInvidiousVideo),
+      ...pipedSources(`/streams/${id}`, (payload) => mapPipedStreams(payload, id)),
+      ...pipedSources(`/search?q=${encodeURIComponent(id)}&filter=videos`, (payload) => mapPipedLookup(payload, id)),
+      ...invidiousSources(`/api/v1/search?q=${encodeURIComponent(id)}&type=video&region=DE`, (payload) => mapInvidiousLookup(payload, id)),
+      { name: "oembed", load: (signal) => composedWatch(id, signal) },
+    ];
+    try {
+      return await firstUseful(
+        sources.map((source) => ({
+          name: source.name,
+          load: async (signal) => {
+            const value = await source.load(signal);
+            if (matches(value) && !classified(value) && !fallback) fallback = value;
+            return value;
+          },
+        })),
+        (value) => matches(value) && classified(value),
+      );
+    } catch (error) {
+      // Preserve the existing unknown-duration policy once all evidence sources
+      // finish or reach their seven-second deadline. Failed results are not cached.
+      if (fallback) return fallback;
+      throw error;
+    }
   });
 }
 

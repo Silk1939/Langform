@@ -21,8 +21,12 @@ test('Native Playables-Policy blockiert Route/Spielorigin auch im Unterframe und
   const methods = ['func setFeedActivity(', 'func appEnteredBackground(', 'func appBecameActive(']
     .map(signature => declaration(source, signature)).join('\n');
   const policy = declaration(source, 'func webView(\n        _ webView: WKWebView,\n        decidePolicyFor navigationAction:');
+  for (const callback of ['didCommit', 'didFinish']) {
+    assert.match(declaration(source, 'func webView(_ webView: WKWebView, ' + callback), /setFeedActivity\(webView, active: webView === feed\)/);
+  }
   const code = `
 import Foundation
+class UIApplication { static let shared = UIApplication(); enum State { case active, inactive, background }; var applicationState = State.active }
 enum YouTubeWebView {
   ${['isYouTube','isWatchPage','isPlayablePage','isPlayableResource','isAccountPage','isAccountTransition'].map(name => declaration(source, 'static func ' + name + '(')).join('\n')}
 }
@@ -90,6 +94,8 @@ class Stage {
   }
 }
 func expect(_ value:Bool,_ message:String) { if !value { print("FAILED: " + message); exit(1) } }
+func enterBackground(_ stage:Stage) { UIApplication.shared.applicationState = .background; stage.appEnteredBackground() }
+func enterForeground(_ stage:Stage) { UIApplication.shared.applicationState = .active; stage.appBecameActive() }
 let s = Stage()
 for host in ["m.youtube.com","www.youtube.com","youtube.com"] {
   for path in ["/playables","/playables/saved","/playables/UgkxGame","/playable/old"] {
@@ -112,29 +118,54 @@ s.setFeedActivity(s.feed,active:true)
 let hidden = s.feedTabs[1]!.webView
 s.setFeedActivity(hidden,active:false)
 expect(hidden.media.last == true && hidden.scripts.contains(where:{$0.contains("__langformDiscardPlayables")}),"tab hide discards game contexts beyond native media suspension")
-s.appEnteredBackground()
+enterBackground(s)
 expect(!s.rotationHeld && s.rotationCancellations == 1,"background lifecycle relinquishes the Stage rotation coordinator")
 expect(s.feedTabs.values.allSatisfy({$0.mediaSuspended == true && $0.webView.media.last == true}),"background suspends all retained feed previews")
 expect(s.feedTabs.values.allSatisfy({$0.webView.suspensionDepth == 1}),"already inactive subscriptions must not acquire a second background hold")
 let heldCounts = s.feedTabs.mapValues { $0.webView.media.count }
 let visibilityCounts = s.feedTabs.mapValues { $0.webView.scripts.filter { $0.contains("langform-feed-visibility") }.count }
-for _ in 0..<3 { s.appEnteredBackground() }
+for _ in 0..<3 { enterBackground(s) }
 expect(s.feedTabs.allSatisfy({$0.value.webView.media.count == heldCounts[$0.key] && $0.value.webView.suspensionDepth == 1}),"repeated background is balanced for active and inactive tabs")
 expect(s.feedTabs.allSatisfy({$0.value.active == false && $0.value.webView.scripts.filter { $0.contains("langform-feed-visibility") }.count == visibilityCounts[$0.key]}),"background stops feed script activity once without changing visible feed identity")
 expect(s.feed.scripts.contains(where:{$0.contains("__langformDiscardPlayables")}) && s.player!.scripts.contains(where:{$0.contains("__langformDiscardPlayables")}),"background purges game frames in both surfaces")
 expect(s.player!.media.isEmpty,"background game cleanup does not pause the owned video")
-s.appBecameActive()
+enterForeground(s)
 expect(s.motionSynchronizations == 1,"foreground also refreshes current motion preferences")
 expect(s.feedTabs[0]!.mediaSuspended == false && s.feedTabs[1]!.mediaSuspended == true,"foreground restores only the active feed preview policy")
 expect(s.feedTabs[0]!.webView.suspensionDepth == 0 && hidden.suspensionDepth == 1,"foreground releases exactly the active tab's hold")
-s.activeTab = 1; s.appBecameActive()
+s.activeTab = 1; enterForeground(s)
 expect(hidden.suspensionDepth == 0 && s.feedTabs[0]!.webView.suspensionDepth == 1,"activating formerly inactive subscriptions releases the sole retained hold")
-for _ in 0..<2 { s.appEnteredBackground(); s.appEnteredBackground(); s.appBecameActive() }
+for _ in 0..<2 { enterBackground(s); enterBackground(s); enterForeground(s) }
 expect(hidden.suspensionDepth == 0 && s.feedTabs[0]!.webView.suspensionDepth == 1,"repeated background/foreground never leaks an inactive-tab hold")
 s.mode = .mini; s.setFeedActivity(s.feed,active:true)
 expect(s.feedTabs[1]!.mediaSuspended == true && hidden.suspensionDepth == 1,"miniplayer still suspends feed previews exactly once")
 s.mode = .closed; s.setFeedActivity(s.feed,active:true)
 expect(hidden.suspensionDepth == 0,"closing miniplayer releases exactly the matching hold")
+// A late navigation/renderer callback must not undo the background hold.
+// Execute the shipping activity method used by both source-asserted delegates.
+for mode in [Stage.Mode.closed, .loading, .expanded, .mini] {
+  for phase in [UIApplication.State.background, .inactive] {
+    let late = Stage(); late.mode = mode
+    enterBackground(late)
+    UIApplication.shared.applicationState = phase
+    for resetDocumentActivity in [false, true] {
+      if resetDocumentActivity { late.feedTabs[0]!.active = nil }
+      late.setFeedActivity(late.feed, active:true)
+      expect(late.feedTabs[0]!.active == false && late.feedTabs[0]!.mediaSuspended == true,
+             "late didFinish/didCommit cannot wake feed before foreground")
+      expect(late.feed.suspensionDepth == 1 && late.feed.media == [true],
+             "late callbacks neither release nor stack the background media hold")
+    }
+    expect(late.player!.media.isEmpty, "feed lifecycle gate never suspends owned player")
+    enterForeground(late)
+    expect(late.feedTabs[0]!.active == (mode == .closed || mode == .mini),
+           "foreground restores scan activity only when feed is uncovered")
+    expect(late.feedTabs[0]!.mediaSuspended == (mode != .closed),
+           "foreground preserves player ownership of media")
+    expect(late.feedTabs[1]!.active == false && late.feedTabs[1]!.webView.suspensionDepth == 1,
+           "foreground never activates a hidden tab")
+  }
+}
 print("NATIVE_PLAYABLES_POLICY_OK")
 `;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'langform-playables-policy-'));

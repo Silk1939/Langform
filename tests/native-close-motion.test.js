@@ -46,7 +46,7 @@ class DispatchQueue {
   func run() { let next = pending; pending = []; for work in next where !work.cancelled { work.action() } }
 }
 class ProcessInfo { static let processInfo = ProcessInfo(); var isLowPowerModeEnabled = false; enum Thermal { case nominal }; var thermalState = Thermal.nominal }
-class UIApplication { static let shared = UIApplication(); enum State { case active }; var applicationState = State.active }
+class UIApplication { static let shared = UIApplication(); enum State { case active, background }; var applicationState = State.active }
 class UIPanGestureRecognizer { enum State { case began, ended, cancelled }; var state = State.began }
 enum FeedTab: Hashable {
   case home, subscriptions, you
@@ -255,7 +255,11 @@ for reason in ["reduce", "offwindow", "loading", "hidden"] {
 }
 
 let background = Stage(); background.closePlayer(); let interrupted = background.dismisser!
+UIApplication.shared.applicationState = .background
 background.appEnteredBackground()
+expect(background.state.active == false && background.state.mediaSuspended == true && background.feed.mediaSuspensionDepth == 1,
+       "finishing close during background cannot reactivate feed scripts or previews")
+UIApplication.shared.applicationState = .active
 expect(background.card.isHidden && background.dismisser == nil && background.player.loads == [Stage.blankURL],
        "background finalizes already-closed live surface")
 interrupted.finish()

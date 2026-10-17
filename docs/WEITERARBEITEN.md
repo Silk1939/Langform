@@ -29,7 +29,7 @@ npm run lint --prefix apps/langform
 npm run build --prefix apps/langform
 ```
 
-`npm test` führt zuerst die gemeinsamen Regressionen und danach die Web-App-Tests aus. Swift-/WebKit-Fälle benötigen macOS und vollständiges Xcode; bestimmte Medienfälle zusätzlich `ffmpeg`. Fehlgeschlagene und übersprungene Fälle getrennt festhalten. Die frische Exportkopie vom17.10. besteht2.266 Root-/87 Webtests, Web-Lint, Produktionsbuild und den gezielten Simulatorfall35. [Prüfstand](GITHUB_UEBERGABE_PRUEFUNG_2026-10-17.json). Zwei bestätigte Fehler sind korrigiert. Der transitive Abhängigkeitsbefund LF-74 bleibt offen; Details und nächste Schritte stehen ausschließlich im Backlog. Historische Zahlen gelten nur für den jeweils dokumentierten Stand.
+`npm test` führt zuerst die gemeinsamen Regressionen und danach die Web-App-Tests aus. Swift-/WebKit-Fälle benötigen macOS und vollständiges Xcode; bestimmte Medienfälle zusätzlich `ffmpeg`. Fehlgeschlagene und übersprungene Fälle getrennt festhalten. Die zweite, mit Astra geprüfte Exportkopie vom17.10. besteht2.270 Root-/108 Webtests, Web-Lint, Produktionsbuild und zwei separate Simulatorfälle37/32. [Aktueller Prüfstand](ASTRA_BUGCHECK_2026-10-17.json). Drei weitere bestätigte Fehler sind korrigiert; Transkript zusätzlich im echten WebKit geprüft. Der transitive Abhängigkeitsbefund LF-74 bleibt offen; Details und nächste Schritte stehen ausschließlich im Backlog. Historische Zahlen gelten nur für den jeweils dokumentierten Stand.
 
 Für die iPhone-App Xcode 27 und eine installierte iOS-Simulatorlaufzeit verwenden. Ohne Geräte-/Apple-Signierung bauen und anschließend den passenden Simulatorlauf ausführen:
 

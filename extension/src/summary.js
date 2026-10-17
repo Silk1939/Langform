@@ -2194,7 +2194,11 @@
       schedule(win);
     });
     win.addEventListener("popstate", function () {
-      schedule(win);
+      // Transcript's later lifecycle listener invalidates the old action in
+      // this same event. Native browser events can run microtasks between
+      // listeners, so use the next task to rebind after all cleanup listeners.
+      // The playing watch page still defers the full feed scan.
+      win.setTimeout(function () { schedule(win); }, 0);
     });
     function afterPlayback() {
       if (!win.__langformKurzDeferred) return;

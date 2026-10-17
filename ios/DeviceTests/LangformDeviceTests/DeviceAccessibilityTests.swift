@@ -1641,12 +1641,22 @@ final class DeviceAccessibilityTests: XCTestCase {
         record(app,name:"37-before-first-personal-tab")
         try XCTUnwrap(tab(["Mein YouTube","You","Du"])).tap()
         let signedOut = app.descendants(matching:.any).matching(NSPredicate(format:"label == %@","Du bist nicht angemeldet")).firstMatch
-        XCTAssertTrue(waitUntil(8) { signedOut.exists && signedOut.isHittable })
+        let accountSwitch = app.descendants(matching:.any).matching(NSPredicate(format:"label == %@","Konto wechseln")).firstMatch
+        let history = app.descendants(matching:.any).matching(NSPredicate(format:"label == %@","Verlauf")).firstMatch
+        func personalContentReady() -> Bool {
+            (signedOut.exists && signedOut.isHittable) ||
+                (accountSwitch.exists && accountSwitch.isHittable && history.exists && history.isHittable)
+        }
+        // Keep the user's existing account state. Both original page variants
+        // must expose their actual content rather than just the native tab bar.
+        XCTAssertTrue(waitUntil(8) { personalContentReady() })
+        let wasSignedOut = signedOut.exists && signedOut.isHittable
         record(app,name:"37-first-cached-personal-tab")
         try XCTUnwrap(tab(["Startseite","Home"])).tap()
         XCTAssertTrue(waitUntil(5) { tab(["Mein YouTube","You","Du"]) != nil })
         try XCTUnwrap(tab(["Mein YouTube","You","Du"])).tap()
-        XCTAssertTrue(waitUntil(5) { signedOut.exists && signedOut.isHittable })
+        XCTAssertTrue(waitUntil(5) { personalContentReady() })
+        XCTAssertEqual(signedOut.exists && signedOut.isHittable, wasSignedOut, "Tabwechsel darf den Kontozustand nicht austauschen.")
         record(app,name:"37-reused-personal-tab")
     }
 

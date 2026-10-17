@@ -165,7 +165,7 @@ export function mapChannelSearchId(payload: unknown, authorName: string): string
   return "";
 }
 
-function pipedVideo(item: unknown): Video | null {
+function pipedVideo(item: unknown, keepShort = false): Video | null {
   const record = asRecord(item);
   if (!record) return null;
   const type = text(record.type).toLowerCase();
@@ -176,7 +176,7 @@ function pipedVideo(item: unknown): Video | null {
   const title = text(record.title) || "Ohne Titel";
   const durationSeconds = numberValue(record.duration);
   if (
-    isShort({
+    !keepShort && isShort({
       title,
       url: url || `/watch?v=${id}`,
       durationSeconds,
@@ -239,6 +239,36 @@ export function mapPipedStreams(payload: unknown, videoId: string): WatchDetails
       isShort: record.isShort === true,
     }),
   };
+}
+
+// Lookup results must retain the selected video's Short signals while related
+// cards continue through the ordinary filtered list mappers.
+export function mapInvidiousLookup(payload: unknown, videoId: string): WatchDetails {
+  const items = listFrom(payload, ["videos", "recommendedVideos"]);
+  const item = items.map(asRecord).find((record) => record && text(record.videoId) === videoId);
+  if (!item) throw new Error("Keine Video-Angaben");
+  return mapInvidiousVideo({ ...item, recommendedVideos: items });
+}
+
+export function mapPipedLookup(payload: unknown, videoId: string): WatchDetails {
+  const items = listFrom(payload, ["items", "relatedStreams"]);
+  for (const item of items) {
+    const record = asRecord(item);
+    const video = pipedVideo(item, true);
+    if (!record || !video || video.id !== videoId) continue;
+    return {
+      video,
+      related: mapPipedList(items).filter((entry) => entry.id !== videoId).slice(0, RELATED_LIMIT),
+      blocked: isShort({
+        title: video.title,
+        url: text(record.url),
+        durationSeconds: video.durationSeconds,
+        type: text(record.type),
+        isShort: record.isShort === true,
+      }),
+    };
+  }
+  throw new Error("Keine Video-Angaben");
 }
 
 export function mapPipedChannel(payload: unknown, fallbackId: string): { channel: ChannelInfo; videos: Video[] } {

@@ -1265,10 +1265,13 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
 
     private func setFeedActivity(_ webView: WKWebView, active: Bool) {
         guard let state = feedState(for: webView) else { return }
-        if !active { state.refresh?.cancel() }
+        // Navigation and animation completions can arrive after backgrounding.
+        // Only foreground ownership may release the feed's suspension hold.
+        let foregroundActive = active && UIApplication.shared.applicationState == .active
+        if !foregroundActive { state.refresh?.cancel() }
         // Feed navigation and scanning remain available under the miniplayer,
         // but preview videos must not run a second decoder beside the player.
-        let mediaSuspended = !active || mode != .closed || dismisser != nil
+        let mediaSuspended = !foregroundActive || mode != .closed || dismisser != nil
         if state.mediaSuspended != mediaSuspended {
             state.mediaSuspended = mediaSuspended
             webView.setAllMediaPlaybackSuspended(mediaSuspended, completionHandler: nil)
@@ -1278,7 +1281,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         }
         // A newly uncovered feed can have queued DOM work. Keep that work out
         // of the player's drag/spring; reactivate it when the card comes to rest.
-        let effectiveActive = active && mode != .expanded && mode != .loading && !cardMoving
+        let effectiveActive = foregroundActive && mode != .expanded && mode != .loading && !cardMoving
         guard state.active != effectiveActive else { return }
         state.active = effectiveActive
         // The separate player never receives the feed's activity flag.

@@ -34,6 +34,7 @@ test("Native Player hält schmutzige Feeds während Drag, Feder und Crop ruhig u
   const exercise = `
 import Foundation
 import CoreGraphics
+class UIApplication { static let shared = UIApplication(); enum State { case active }; var applicationState = State.active }
 enum UIAccessibility { static var isReduceMotionEnabled = false }
 enum UIView { static func performWithoutAnimation(_ action: () -> Void) { action() } }
 enum StartupDiagnostics { static func mark(_ name: String) {} }

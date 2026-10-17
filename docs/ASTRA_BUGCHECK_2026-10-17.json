@@ -1,0 +1,141 @@
+{
+  "date": "2026-10-17",
+  "repository": "https://github.com/Silk1939/Langform",
+  "status": "reviewed_and_tested_for_publication",
+  "baseline_commit": "bffca2a654d8be6b22c981ef6569225497df420a",
+  "review": {
+    "model": "gpt-6-astra",
+    "independent_reviewers": 3,
+    "confirmed_product_bugs_fixed": 3,
+    "cross_reviewed": true,
+    "fixes": [
+      {
+        "backlog": "LF-68",
+        "problem": "Late feed navigation or close completion reactivated feed work/media after backgrounding.",
+        "files": [
+          "ios/Langform/Langform/YouTubeWebView.swift"
+        ],
+        "change": "Require active foreground for feed activity and release of its existing suspension hold; owned player remains independent."
+      },
+      {
+        "backlog": "LF-48",
+        "problem": "Duration-less metadata cancelled a pending confirmed Short classification.",
+        "files": [
+          "apps/langform/src/lib/metadata.ts",
+          "apps/langform/src/lib/map.ts"
+        ],
+        "change": "Race all bounded evidence sources concurrently, retain unknown/negative-duration fallback until exhaustion, preserve target Short signals in lookup responses."
+      },
+      {
+        "backlog": "LF-60",
+        "problem": "Repeated playing-page history navigation removed the transcript action after its rebinding.",
+        "files": [
+          "extension/src/summary.js"
+        ],
+        "change": "Rebind in next task after all popstate lifecycle listeners; preserve stale-response rejection and playback."
+      }
+    ]
+  },
+  "verification": {
+    "root": {
+      "passed": 2270,
+      "failed": 0,
+      "skipped": 0
+    },
+    "web": {
+      "passed": 108,
+      "failed": 0,
+      "skipped": 0
+    },
+    "web_lint": "passed",
+    "web_production_build": "passed",
+    "simulator_cases_separate_bundles": [
+      {
+        "case": "test37PrefetchedPersonalTabReusesLivePage",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "runtime_warnings": 0
+      },
+      {
+        "case": "test32EarlyPlayingSilentWatchContinuesThroughHome",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "runtime_warnings": 0
+      }
+    ],
+    "code_signing_allowed": false,
+    "real_webkit_transcript_action_counts": {
+      "microtask_candidate": [
+        1,
+        0,
+        0
+      ],
+      "final_task_fix": [
+        1,
+        1,
+        1
+      ]
+    },
+    "targeted_extension": {
+      "passed": 104,
+      "failed": 0,
+      "skipped": 0
+    },
+    "targeted_web": {
+      "passed": 56,
+      "failed": 0
+    },
+    "initial_full_run": {
+      "passed": 2267,
+      "failed": 2,
+      "skipped": 0,
+      "web_not_started": true,
+      "isolated_unchanged_recheck": "35/35 passed",
+      "cause": "Not established; final full run passed without concurrent build."
+    },
+    "initial_simulator37": {
+      "passed": 0,
+      "failed": 1,
+      "reason": "Test required signed-out text while the retained account was signed in.",
+      "correction": "Assert original signed-out content or both signed-in account/history controls, and unchanged account state on revisit; account untouched."
+    },
+    "resources": {
+      "matched": 44,
+      "total": 44,
+      "source_built_installed_equal": true
+    }
+  },
+  "snapshot": {
+    "tested_files": 400,
+    "manifest_sha256": "88fdaaa12f6eab9f74401f33eae528642d70d9d754b49b8a39a9ff4e598db606",
+    "public_qa_fixtures": 2
+  },
+  "installation": {
+    "source_build": "72",
+    "new_physical_iphone_install": false,
+    "new_safari_install": false,
+    "last_confirmed_iphone_build": "71 (2026-10-16)",
+    "personal_acceptance": false
+  },
+  "known_limits": [
+    "LF-33 fullscreen shrink remains open",
+    "LF-56 zoom/exit remains open",
+    "LF-70 prior caption/provider finding remains open",
+    "LF-67 Bluetooth/audio cause remains open",
+    "LF-74 transitive dependency advisory remains open",
+    "No heard audio, physical finger, motion quality or user acceptance claimed."
+  ],
+  "private_material_excluded": [
+    "raw local QA",
+    "account screenshots and logs",
+    "environment secrets",
+    "signing material",
+    "build products"
+  ],
+  "publication": {
+    "target_branch": "main",
+    "verified": false
+  }
+}
