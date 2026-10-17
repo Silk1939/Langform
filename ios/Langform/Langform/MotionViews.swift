@@ -4,18 +4,21 @@ import ImageIO
 
 /// Presses are local to the control. UIKit still owns highlighting and actions.
 final class MotionButton: UIButton {
-    private let feedback = UIImpactFeedbackGenerator(style: .soft)
+    typealias HapticRole = LangformMotion.HapticRole
+    var hapticRole: HapticRole = .none
 
     override var isHighlighted: Bool {
         didSet {
             guard oldValue != isHighlighted else { return }
-            if isHighlighted && window != nil { feedback.prepare() }
+            if isHighlighted && isEnabled && window != nil && !isHidden && alpha > 0.01 {
+                LangformMotion.Haptics.prepare(hapticRole)
+            }
             // Stage layout owns the control's frame, so scale only its content
             // layers. Hit area and frame geometry stay stable during a press.
-            let pose = isHighlighted && !UIAccessibility.isReduceMotionEnabled
-                ? CATransform3DMakeScale(0.90, 0.90, 1) : CATransform3DIdentity
-            UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : (isHighlighted ? 0.10 : 0.24),
-                           delay: 0, usingSpringWithDamping: isHighlighted ? 1 : 0.72,
+            let pose = isHighlighted && !LangformMotion.reduceSpatialMotion
+                ? CATransform3DMakeScale(LangformMotion.Scale.icon, LangformMotion.Scale.icon, 1) : CATransform3DIdentity
+            UIView.animate(withDuration: LangformMotion.reduceSpatialMotion ? 0 : (isHighlighted ? LangformMotion.Duration.pressIn : LangformMotion.Duration.pressOut),
+                           delay: 0, usingSpringWithDamping: 1,
                            initialSpringVelocity: 0,
                            options: [.beginFromCurrentState, .allowUserInteraction]) {
                 self.layer.sublayerTransform = pose
@@ -26,8 +29,8 @@ final class MotionButton: UIButton {
     override func sendAction(_ action: Selector, to target: Any?, for event: UIEvent?) {
         // Only a real touch action earns a tactile beat. State updates,
         // accessibility activation and diagnostic calls never buzz on their own.
-        if event?.type == .touches, isEnabled, window != nil {
-            feedback.impactOccurred(intensity: 0.55)
+        if event?.type == .touches, isEnabled, window != nil, !isHidden, alpha > 0.01 {
+            LangformMotion.Haptics.send(hapticRole)
         }
         super.sendAction(action, to: target, for: event)
     }
@@ -40,12 +43,11 @@ final class MotionButton: UIButton {
     /// Animate only a visible state change, not initial setup or background
     /// playback reports. The action and accessibility label change immediately.
     func replaceSymbol(_ image: UIImage?) {
-        guard window != nil, !isHidden, alpha > 0.01,
-              !UIAccessibility.isReduceMotionEnabled else {
+        guard window != nil, !isHidden, alpha > 0.01 else {
             setImage(image, for: .normal)
             return
         }
-        UIView.transition(with: self, duration: 0.16,
+        UIView.transition(with: self, duration: LangformMotion.Duration.fade,
                           options: [.transitionCrossDissolve, .beginFromCurrentState, .allowUserInteraction]) {
             self.setImage(image, for: .normal)
         }

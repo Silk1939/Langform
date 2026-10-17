@@ -213,6 +213,63 @@ function interactivePlayer(t, withToggle = true, withLinks = false) {
   });
 }
 
+function endedReplayPlayer(t) {
+  const page = interactivePlayer(t);
+  const state = { ended: true, id: "abcdefghijk", ad: false, cancelled: 0, navigated: 0, starts: 0, order: [] };
+  page.setPlaying(false);
+  page.video.currentTime = 19.014;
+  Object.defineProperty(page.video, "ended", { get: () => state.ended });
+  Object.defineProperty(page.video, "duration", { get: () => 19.014 });
+  Object.defineProperty(page.video, "readyState", { get: () => 4 });
+  page.root.getVideoData = () => ({ video_id: state.id, isAd: state.ad });
+  const sharedOwner = page.doc.createElement("div");
+  sharedOwner.id = "player-container-id";
+  page.root.replaceWith(sharedOwner);
+  sharedOwner.appendChild(page.root);
+  const customControls = page.doc.createElement("ytm-custom-control");
+  const originalControls = page.doc.createElement("div");
+  originalControls.className = "player-controls-content";
+  // Exact live mobile path from the 14 October natural-end DOM probe. These
+  // controls are siblings of movie_player in its existing shared container.
+  originalControls.innerHTML = '<player-endscreen class="ytwPlayerEndscreenHost"><div class="ytwPlayerEndscreenContainer">' +
+    '<div class="ytwPlayerEndscreenPlayerEndscreen"><div class="ytwPlayerEndscreenButtonContainer">' +
+    '<ytm-button-renderer class="ytwPlayerEndscreenActionButton"><button class="ytSpecButtonShapeNextHost ytSpecButtonShapeNextTonal">Abbrechen</button>' +
+    '</ytm-button-renderer></div></div></div></player-endscreen>';
+  const cancel = originalControls.querySelector("button");
+  cancel.id = "original-autonav-cancel";
+  customControls.appendChild(originalControls);
+  sharedOwner.appendChild(customControls);
+  // This reproduces the separate YouTube countdown: starting or pausing the
+  // same medium does not terminate its already scheduled next-video action.
+  const countdown = page.win.setTimeout(function () {
+    state.navigated++;
+    state.id = "lmnopqrstuv";
+    page.win.history.replaceState({}, "", "/watch?v=lmnopqrstuv");
+  }, 10000);
+  cancel.addEventListener("click", function () {
+    state.cancelled++;
+    state.order.push("cancel");
+    page.win.clearTimeout(countdown);
+  });
+  function start() {
+    state.starts++;
+    state.order.push("play");
+    state.ended = false;
+    page.video.currentTime = 0.084;
+    page.setPlaying(true);
+    page.emit("playing");
+  }
+  page.root.playVideo = start;
+  page.video.play = function () { start(); return Promise.resolve(); };
+  return Object.assign(page, {
+    state, cancel, originalControls, sharedOwner,
+    passCountdown: function () {
+      const pending = page.timers.get(countdown);
+      if (pending) { page.timers.delete(countdown); pending.callback(); }
+    },
+  });
+}
+
 test("freie Videotaps ändern laufend und pausiert nur YouTubes eigene Controls", function (t) {
   const page = interactivePlayer(t);
   [true, false].forEach(function (playing) {
@@ -993,6 +1050,338 @@ test("natives Start führt ein wirkungsloses playVideo einmal am selben pausiert
   assert.equal(requests, 1, "Medienereignisse starten keinen neuen Auftrag");
 });
 
+function endedSwipePlayer(t, touch = false) {
+  const page = endedReplayPlayer(t);
+  const { win, video, root, state } = page;
+  let time = video.currentTime;
+  Object.defineProperty(page.doc, "hidden", { value: false, configurable: true });
+  video.src = "https://example.test/current-main.mp4";
+  Object.defineProperties(video, {
+    currentSrc: { get: () => video.src },
+    videoWidth: { value: 640 }, videoHeight: { value: 480 },
+    currentTime: { get: () => time, set: value => { state.order.push("seek"); time = value; state.ended = false; } },
+  });
+  const container = page.doc.createElement("div");
+  container.className = "html5-video-container";
+  root.prepend(container); container.appendChild(video);
+  root.getBoundingClientRect = () => ({ left: 0, top: 110, width: 390, height: 219 });
+  video.getBoundingClientRect = () => ({ left: 50, top: state.ended ? -568 : 110, width: 290, height: 219 });
+  if (!touch) win.PointerEvent = win.MouseEvent;
+  win.eval(fs.readFileSync(path.join(appDir, "PlaybackSwipe.js"), "utf8"));
+  page.swipeEnded = () => {
+    const surface = page.doc.getElementById("surface");
+    if (touch) {
+      for (const [type, x] of [["touchstart", 250], ["touchmove", 150], ["touchend", 150]]) {
+        const event = new win.Event(type, { bubbles: true, cancelable: true });
+        const point = { identifier: 1, clientX: x, clientY: 175, target: surface };
+        Object.defineProperties(event, { touches: { value: type === "touchend" ? [] : [point] }, changedTouches: { value: [point] } });
+        surface.dispatchEvent(event);
+      }
+    } else {
+      for (const [type, x] of [["pointerdown", 250], ["pointermove", 150], ["pointerup", 150]]) {
+        const event = new win.Event(type, { bubbles: true, cancelable: true });
+        Object.assign(event, { pointerType: "touch", pointerId: 1, isPrimary: true, button: 0, clientX: x, clientY: 175 });
+        surface.dispatchEvent(event);
+      }
+    }
+  };
+  return page;
+}
+
+for (const touch of [false, true]) test(`bewusster Ende-Seek beendet den Original-Next-Countdown und bleibt pausiert; touch=${touch}`, t => {
+  const page = endedSwipePlayer(t, touch);
+  page.swipeEnded();
+  assert.ok(Math.abs(page.video.currentTime - 4.014) < .001, "der echte Swipe führt genau einen -15-s-Seek aus");
+  page.passCountdown();
+  assert.equal(page.state.navigated, 0, "der bestehende Next-Timer darf keine neue Quelle öffnen");
+  assert.equal(page.state.id, "abcdefghijk");
+  assert.equal(page.video.paused, true);
+  assert.equal(page.state.starts, 0);
+  assert.deepEqual(page.state.order, ["cancel", "seek"]);
+});
+
+for (const mutation of ["source", "route", "throw"]) test(`Ende-Seek prüft nach Original-Cancel erneut seinen Besitzer: ${mutation}`, t => {
+  const page = endedSwipePlayer(t);
+  if (mutation === "throw") page.cancel.click = () => { throw new Error("detached cancel"); };
+  else page.cancel.addEventListener("click", () => {
+    if (mutation === "source") page.video.src = "https://example.test/replacement.mp4";
+    else page.win.history.replaceState({}, "", "/watch?v=lmnopqrstuv");
+  });
+  page.swipeEnded();
+  assert.equal(page.video.currentTime, 19.014, "Callbacks dürfen keinen Seek im überholten Hauptmedium auslösen");
+  assert.equal(page.state.starts, 0);
+  assert.equal(page.doc.getElementById("langform-playback-swipe-status"), null);
+});
+
+test("ein normaler pausierter Seek beendet keinen unangeforderten Next-Countdown", t => {
+  const page = endedSwipePlayer(t); page.state.ended = false;
+  page.swipeEnded();
+  assert.equal(page.state.cancelled, 0);
+  page.passCountdown();
+  assert.equal(page.state.navigated, 1);
+  assert.equal(page.state.starts, 0);
+});
+
+test("explizites Replay beendet den Original-Countdown vor Start; Pause danach bleibt auf demselben Video", function (t) {
+  for (const mode of ["inline", "custom-fullscreen"]) {
+    for (const request of ["play", "toggle"]) {
+      const page = endedReplayPlayer(t);
+      if (mode === "custom-fullscreen") {
+        page.win.__langformFullscreen = { isOpen: () => true,
+          getZoomContext: () => ({ id: "abcdefghijk", root: page.root, video: page.video }) };
+        page.originalControls.setAttribute("inert", "");
+        page.originalControls.style.visibility = "hidden";
+      }
+      const result = request === "play" ? page.win.__langformPlay("abcdefghijk") : page.win.__langformTogglePlayback("abcdefghijk");
+      assert.equal(result, true, mode + "/" + request);
+      assert.equal(page.state.starts, 1);
+      assert.equal(page.video.ended, false);
+      assert.equal(page.video.currentTime, 0.084);
+      page.video.currentTime = 2.567;
+      assert.equal(page.win.__langformTogglePlayback("abcdefghijk"), true);
+      assert.equal(page.video.paused, true);
+      page.passCountdown();
+      assert.equal(page.state.navigated, 0, mode + "/" + request + ": der ursprüngliche Zehnsekundentimer darf nicht auf das nächste Video wechseln");
+      assert.equal(page.state.id, "abcdefghijk");
+      assert.equal(page.video.currentTime, 2.567);
+      assert.equal(page.state.cancelled, 1, "anschließendes Pause cancelt keinen weiteren Countdown");
+      assert.deepEqual(page.state.order, ["cancel", "play"], mode + "/" + request + ": Cancel muss vor dem Replay ankommen");
+    }
+  }
+});
+
+function miniEndedReplayPlayer(t) {
+  const page=endedReplayPlayer(t),style=page.doc.createElement("style");
+  style.id="langform-viewport-layout";
+  style.textContent="html[data-langform-mini-video]:not([data-langform-fullscreen]) .player-controls-content { visibility:hidden!important;pointer-events:none!important; }";
+  page.doc.head.appendChild(style);
+  page.win.__langformStageInsets={nativeMini:true};
+  page.doc.documentElement.setAttribute("data-langform-mini-video","native");
+  return page;
+}
+test("Mini-Replay cancels only its own hidden original countdown before play and restores the mini CSS marker", async t=>{
+  const page=miniEndedReplayPlayer(t),html=page.doc.documentElement;
+  assert.equal(page.win.getComputedStyle(page.cancel).visibility,"hidden");
+  page.cancel.addEventListener("click",()=>assert.equal(html.getAttribute("data-langform-mini-video"),"native","restore before calling original code"));
+  const mutations=[];const observer=new page.win.MutationObserver(rows=>mutations.push(...rows));observer.observe(html,{attributes:true,attributeFilter:["data-langform-mini-video"]});
+  assert.equal(page.win.__langformTogglePlayback("abcdefghijk"),true);page.passCountdown();await Promise.resolve();observer.disconnect();
+  assert.deepEqual(page.state.order,["cancel","play"]);assert.equal(page.state.navigated,0);assert.equal(page.state.id,"abcdefghijk");
+  assert.equal(html.getAttribute("data-langform-mini-video"),"native");assert.equal(page.win.getComputedStyle(page.cancel).visibility,"hidden");
+  assert.ok(mutations.length<=2,"one bounded synchronous visibility lease, no retry or observer loop");
+});
+for (const branch of ["control", "video", "both"]) test(`Mini-Replay accepts effective visible descendants of visibility-hidden ancestors (${branch})`, t => {
+  const p=miniEndedReplayPlayer(t);
+  if(branch!=="video") { p.originalControls.style.visibility="hidden";p.cancel.style.visibility="visible"; }
+  if(branch!=="control") { p.root.style.visibility="hidden";p.video.style.visibility="visible"; }
+  assert.equal(p.win.__langformTogglePlayback("abcdefghijk"),true);
+  p.passCountdown();
+  assert.deepEqual(p.state.order,["cancel","play"]);
+  assert.equal(p.state.navigated,0);
+  assert.equal(p.doc.documentElement.getAttribute("data-langform-mini-video"),"native");
+});
+for (const boundary of ["hidden", "inert", "display", "opacity"]) test(`Visible descendants cannot override non-visibility replay protection (${boundary})`, t => {
+  const p=miniEndedReplayPlayer(t);
+  p.originalControls.style.visibility="hidden";p.cancel.style.visibility="visible";
+  if(boundary==="hidden")p.originalControls.hidden=true;
+  if(boundary==="inert")p.originalControls.setAttribute("inert","");
+  if(boundary==="display")p.originalControls.style.display="none";
+  if(boundary==="opacity")p.originalControls.style.opacity="0";
+  p.win.__langformTogglePlayback("abcdefghijk");
+  assert.equal(p.state.cancelled,0);
+  assert.equal(p.doc.documentElement.getAttribute("data-langform-mini-video"),"native");
+});
+for(const boundary of ["native-flag-missing","html-marker-missing","hidden","inert","display","opacity","foreign-visibility","root-hidden","disabled","aria-disabled","style-throws","source-during-read","mini-ends-during-read"])test(`Mini-Replay keeps foreign visibility and lifecycle guards (${boundary})`,t=>{
+  const p=miniEndedReplayPlayer(t),html=p.doc.documentElement;
+  if(boundary==="native-flag-missing")p.win.__langformStageInsets.nativeMini=false;
+  if(boundary==="html-marker-missing"){html.removeAttribute("data-langform-mini-video");p.originalControls.style.visibility="hidden";}
+  if(boundary==="hidden")p.cancel.hidden=true;
+  if(boundary==="inert")p.originalControls.setAttribute("inert","");
+  if(boundary==="display")p.originalControls.style.display="none";
+  if(boundary==="opacity")p.originalControls.style.opacity="0";
+  if(boundary==="foreign-visibility")p.originalControls.style.visibility="hidden";
+  if(boundary==="root-hidden")p.root.style.visibility="hidden";
+  if(boundary==="disabled")p.cancel.disabled=true;
+  if(boundary==="aria-disabled")p.cancel.setAttribute("aria-disabled","true");
+  if(["style-throws","source-during-read","mini-ends-during-read"].includes(boundary)){
+    const original=p.win.getComputedStyle.bind(p.win);p.win.getComputedStyle=node=>{
+      if(!html.hasAttribute("data-langform-mini-video")){
+        if(boundary==="style-throws")throw Error("style unavailable");
+        if(boundary==="source-during-read")p.video.src="https://example.test/new-media";
+        if(boundary==="mini-ends-during-read")p.win.__langformStageInsets.nativeMini=false;
+      }return original(node);
+    };
+  }
+  p.win.__langformTogglePlayback("abcdefghijk");assert.equal(p.state.cancelled,0);
+  if(["style-throws","source-during-read"].includes(boundary))assert.equal(p.state.starts,0);
+  if(boundary!=="html-marker-missing" && boundary!=="mini-ends-during-read")assert.equal(html.getAttribute("data-langform-mini-video"),"native");
+  if(boundary==="mini-ends-during-read")assert.equal(html.hasAttribute("data-langform-mini-video"),false);
+});
+
+test("nur bewusster Replay-Auftrag beendet Autoplay; Ende, Status und normale Medienereignisse lassen die Originalentscheidung bestehen", function (t) {
+  const page = endedReplayPlayer(t);
+  for (const name of ["ended", "pause", "timeupdate", "resize"]) { page.emit(name); page.frame(); }
+  assert.equal(page.win.__langformMeasureVideo().playbackState, "ended");
+  assert.equal(page.state.cancelled, 0);
+  page.passCountdown();
+  assert.equal(page.state.navigated, 1, "ohne explizites Replay bleibt YouTubes bestehendes Autoplay aktiv");
+  assert.equal(page.state.starts, 0);
+});
+
+test("Replay-Cancel endet vor dem direkten Medienstart und dem bestehenden einmaligen API-Fallback", function (t) {
+  for (const mode of ["direct-media", "api-fallback"]) {
+    const page = endedReplayPlayer(t);
+    if (mode === "direct-media") delete page.root.playVideo;
+    else page.root.playVideo = function () { page.state.order.push("player-api"); };
+    let settings = 0;
+    page.root.setOption = function () { settings++; };
+    assert.equal(page.win.__langformPlay("abcdefghijk"), true, mode);
+    assert.deepEqual(page.state.order, mode === "direct-media" ? ["cancel", "play"] : ["cancel", "player-api", "play"], mode);
+    assert.equal(page.state.starts, 1);
+    assert.equal(page.state.cancelled, 1);
+    page.passCountdown();
+    assert.equal(page.state.navigated, 0);
+    assert.equal(settings, 0, "der ausdrückliche Replay-Auftrag verändert keine globale Playeroption");
+  }
+});
+
+test("bewusster Replay-Cancel direkt nach Drag erreicht ausschließlich das Originalcontrol; Restklicks bleiben gesperrt", function (t) {
+  const page = endedReplayPlayer(t);
+  page.win.__langformSetNativeDragging(true, "abcdefghijk");
+  page.win.__langformSetNativeDragging(false, "abcdefghijk");
+  assert.equal(page.win.__langformPlay("abcdefghijk"), true);
+  assert.equal(page.state.cancelled, 1, "die native bewusste Replayaktion darf ihren eigenen Original-Cancelclick nicht als Dragrest verschlucken");
+  assert.equal(page.state.starts, 1);
+  assert.equal(page.click("surface").defaultPrevented, true);
+  assert.equal(page.counts().controls, 0, "ein anderer unmittelbar folgender Flächenrest bleibt weiterhin gesperrt");
+  page.cancel.click();
+  assert.equal(page.state.cancelled, 1, "die scoped Ausnahme gilt nach der internen Cancelausführung nicht mehr für dieselbe Originalbuttoninstanz");
+  page.passCountdown();
+  assert.equal(page.state.navigated, 0);
+});
+
+test("Replay-Cancel bleibt am beendeten identischen Hauptvideo und Originalcontrol gebunden", function (t) {
+  for (const condition of ["paused", "running", "initial", "missing-id", "stale-id", "player-id", "unknown-player-id", "ad", "truthy-ad", "ad-showing", "ad-interrupting", "native-drag", "pagehide", "missing-control", "other-root", "nested-root", "main-video-order", "lookalike", "no-owner", "foreign-yt-owner", "wrong-endscreen-parent", "ambiguous-control", "noncancel-label", "disabled", "disabled-fieldset", "aria-disabled", "hidden", "inert", "hidden-root", "hidden-ancestor", "zero-opacity", "custom-transition", "custom-other-root", "custom-other-video", "custom-other-id"]) {
+    const page = endedReplayPlayer(t);
+    let expectedID = "abcdefghijk";
+    if (condition === "paused" || condition === "running") page.state.ended = false;
+    if (condition === "running") page.setPlaying(true);
+    if (condition === "missing-id") expectedID = undefined;
+    if (condition === "stale-id") expectedID = "lmnopqrstuv";
+    if (condition === "player-id") page.state.id = "lmnopqrstuv";
+    if (condition === "unknown-player-id") page.state.id = "";
+    if (condition === "ad") page.state.ad = true;
+    if (condition === "truthy-ad") page.state.ad = 1;
+    if (condition === "ad-showing" || condition === "ad-interrupting") page.root.classList.add(condition);
+    if (condition === "native-drag") page.win.__langformSetNativeDragging(true, "abcdefghijk");
+    if (condition === "pagehide") page.win.dispatchEvent(new page.win.Event("pagehide"));
+    if (condition === "missing-control") page.cancel.remove();
+    if (condition === "other-root") {
+      const otherRoot = page.doc.createElement("div");
+      otherRoot.id = "recommendation-player";
+      page.doc.body.appendChild(otherRoot);
+      otherRoot.appendChild(page.originalControls);
+    }
+    if (condition === "nested-root") {
+      const nestedRoot = page.doc.createElement("div");
+      nestedRoot.id = "movie_player";
+      page.root.appendChild(nestedRoot);
+      nestedRoot.appendChild(page.originalControls);
+    }
+    if (condition === "main-video-order") {
+      page.win.__langformMeasureVideo();
+      page.root.prepend(page.doc.createElement("video"));
+    }
+    if (condition === "lookalike") page.cancel.className = "unrelated-cancel-button";
+    if (condition === "no-owner") page.sharedOwner.id = "unowned-container";
+    if (condition === "foreign-yt-owner") {
+      const otherPlayer = page.doc.createElement("ytm-player");
+      page.sharedOwner.appendChild(otherPlayer);
+      otherPlayer.appendChild(page.originalControls);
+    }
+    if (condition === "wrong-endscreen-parent") page.originalControls.querySelector("player-endscreen").className = "unrelated-endscreen";
+    if (condition === "ambiguous-control") page.cancel.parentElement.appendChild(page.cancel.cloneNode(true));
+    if (condition === "noncancel-label") page.cancel.textContent = "Jetzt abspielen";
+    if (condition === "disabled") page.cancel.disabled = true;
+    if (condition === "disabled-fieldset") {
+      const fieldset = page.doc.createElement("fieldset");
+      fieldset.disabled = true;
+      page.originalControls.replaceWith(fieldset);
+      fieldset.appendChild(page.originalControls);
+    }
+    if (condition === "aria-disabled") page.cancel.setAttribute("aria-disabled", "true");
+    if (condition === "hidden") page.originalControls.hidden = true;
+    if (condition === "inert") page.originalControls.setAttribute("inert", "");
+    if (condition === "hidden-root") page.root.style.display = "none";
+    if (condition === "hidden-ancestor") page.doc.body.style.visibility = "hidden";
+    if (condition === "zero-opacity") page.originalControls.style.opacity = "0";
+    if (condition.indexOf("custom-") === 0) {
+      page.originalControls.style.visibility = "hidden";
+      page.originalControls.setAttribute("inert", "");
+      page.win.__langformFullscreen = { isOpen: () => true, getZoomContext: () => condition === "custom-transition" ? null : {
+        id: condition === "custom-other-id" ? "lmnopqrstuv" : "abcdefghijk",
+        root: condition === "custom-other-root" ? page.doc.createElement("div") : page.root,
+        video: condition === "custom-other-video" ? page.doc.createElement("video") : page.video,
+      } };
+    }
+    page.win.__langformPlay(expectedID, condition === "initial");
+    assert.equal(page.state.cancelled, 0, condition);
+    assert.ok(page.timers.size > 0, condition + ": die unangeforderte Countdownentscheidung wird erhalten");
+    page.passCountdown();
+    assert.equal(page.state.navigated, 1, condition);
+  }
+});
+
+test("fehlgeschlagener interner Replay-Cancel gibt weder Start noch eine bleibende Klickausnahme frei", function (t) {
+  const page = endedReplayPlayer(t);
+  const click = page.cancel.click;
+  page.cancel.click = function () { throw new Error("cancel control detached during activation"); };
+  page.win.__langformSetNativeDragging(true, "abcdefghijk");
+  page.win.__langformSetNativeDragging(false, "abcdefghijk");
+  assert.equal(page.win.__langformPlay("abcdefghijk"), false);
+  assert.equal(page.state.starts, 0);
+  page.cancel.click = click;
+  page.cancel.click();
+  assert.equal(page.state.cancelled, 0, "auch beim Fehler endet die interne exakte Klickausnahme sofort");
+  assert.equal(page.win.__langformPlay("abcdefghijk"), true, "ein neuer bewusster Replayauftrag bleibt möglich");
+  assert.equal(page.state.cancelled, 1);
+  assert.equal(page.state.starts, 1);
+  page.passCountdown();
+  assert.equal(page.state.navigated, 0);
+});
+
+test("nach Original-Replay-Cancel verhindert ein synchroner Zielwechsel jede Wiedergabe", function (t) {
+  for (const condition of ["route", "player-id", "unknown-player-id", "media", "main-video-order", "source", "current-source", "root", "owner", "ad", "truthy-ad", "ad-showing", "ad-interrupting", "native-drag", "pagehide"]) {
+    const page = endedReplayPlayer(t);
+    let currentSource = "blob:original-main-source";
+    if (condition === "current-source") Object.defineProperty(page.video, "currentSrc", { get: () => currentSource });
+    page.cancel.addEventListener("click", function () {
+      if (condition === "route") page.win.history.replaceState({}, "", "/watch?v=lmnopqrstuv");
+      if (condition === "player-id") page.state.id = "lmnopqrstuv";
+      if (condition === "unknown-player-id") page.state.id = "";
+      if (condition === "media") page.video.replaceWith(page.doc.createElement("video"));
+      if (condition === "main-video-order") page.root.prepend(page.doc.createElement("video"));
+      if (condition === "source") page.video.src = "https://media.example/replacement.mp4";
+      if (condition === "current-source") currentSource = "blob:replacement-main-source";
+      if (condition === "root") page.root.id = "previous-player";
+      if (condition === "owner") {
+        const replacementOwner = page.doc.createElement("div");
+        replacementOwner.id = "player-container-id";
+        page.doc.body.appendChild(replacementOwner);
+        replacementOwner.appendChild(page.root);
+      }
+      if (condition === "ad") page.state.ad = true;
+      if (condition === "truthy-ad") page.state.ad = 1;
+      if (condition === "ad-showing" || condition === "ad-interrupting") page.root.classList.add(condition);
+      if (condition === "native-drag") page.win.__langformSetNativeDragging(true, "abcdefghijk");
+      if (condition === "pagehide") page.win.dispatchEvent(new page.win.Event("pagehide"));
+    });
+    assert.equal(page.win.__langformPlay("abcdefghijk"), false, condition);
+    assert.equal(page.state.cancelled, 1, condition);
+    assert.equal(page.state.starts, 0, condition + ": das Ende des Original-Callbacks ist keine neue Startfreigabe");
+    assert.equal(page.timers.size, 0, condition + ": kein Startdeadline für ein gewechseltes Ziel");
+  }
+});
+
 test("Start-Fallback greift weder laufendes Medium noch Werbung oder einen synchronen Playerwechsel an", function (t) {
   for (const condition of ["already-running", "api-started", "ad", "ad-class", "route", "player-id", "media", "root", "native-drag"]) {
     const page = interactivePlayer(t);
@@ -1453,4 +1842,30 @@ test("vorbereitete Startseite verwendet keinen Routerpfad aus einem suspendierte
   page.win.history.replaceState({}, "", "/");
   assert.equal(page.win.__langformNavigateWatch("https://m.youtube.com/watch?v=lmnopqrstuv", "", "warm-1"), false);
   assert.deepEqual(page.routes, []);
+});
+
+test("separate gebundene Root-Seekfläche lässt die 4:3-Medienbox unverändert und ihre Rücknahme wird separat gemeldet", function (t) {
+  const page = interactivePlayer(t);
+  page.root.getVideoData = () => ({ video_id: "abcdefghijk" });
+  page.video.getBoundingClientRect = () => ({ left: 50, top: 110, width: 301, height: 226 });
+  let area = { x: 0, y: 110, width: 402, height: 226, videoID: "abcdefghijk" };
+  page.win.__langformPlaybackSwipe = { getSeekRect: (video, id) => {
+    assert.equal(video, page.video); assert.equal(id, "abcdefghijk"); return area;
+  } };
+  page.emit("playing"); page.frame();
+  assert.equal(page.posts.at(-1).x, 50); assert.equal(page.posts.at(-1).width, 301);
+  assert.deepEqual(page.posts.at(-1).seekRect, area);
+  const count = page.posts.length;
+  area = null; page.emit("resize"); page.frame();
+  assert.equal(page.posts.length, count + 1, "blockierter/Zoom-Kontext gibt trotz gleicher Medienbox eine neue Full-Meldung");
+  assert.equal(page.posts.at(-1).seekRect, null);
+  assert.equal(page.posts.at(-1).x, 50); assert.equal(page.posts.at(-1).width, 301);
+});
+
+test("explizites natives Playback widerruft einen alten Ende-Seek-Pauseintent vor der Playeraktion",function(t){
+ const page=interactivePlayer(t),order=[];page.setPlaying(false);
+ page.win.__langformPlaybackSwipe={cancelEndedSeekGuard:id=>{assert.equal(id,'abcdefghijk');order.push('revoke');}};
+ page.root.playVideo=()=>{order.push('play');page.setPlaying(true);};
+ assert.equal(page.win.__langformPlay('abcdefghijk'),true);assert.deepEqual(order,['revoke','play']);
+ assert.equal(page.win.__langformPlay('lmnopqrstuv'),false);assert.deepEqual(order,['revoke','play'],'fremde alte Nativeabsicht widerruft nichts');
 });

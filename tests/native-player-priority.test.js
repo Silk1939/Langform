@@ -216,6 +216,10 @@ enum YouTubeWebView {
   ${["isYouTube", "isWatchPage", "videoID"].map(name => shipping("static func " + name + "(")).join("\n")}
 }
 class Stage: UIView {
+  // Only shouldReceive's contact reset is relevant to this priority fixture;
+  // typed source-bound admissions are exercised in native-player-interaction.
+  var fullscreenEntryAdmission: Int?
+  var fullscreenEntryAdmissionRevoked = false
   enum Mode { case expanded, mini, loading, closed }
   var mode=Mode.expanded, feedOpening:Int?, startupVideoID:String?="abcdefghijk"
   var player:Web! = Web(), card=UIView(), closeButton=UIView(), miniPlaybackButton=UIView(), startPlaybackButton=UIView()
@@ -226,7 +230,7 @@ class Stage: UIView {
   var revealer:NSObject?,settler:NSObject?,dismisser:NSObject?,settlingBetweenModes=false
   var loadTicket=1,viewportGeneration=0
   var videoRect=CGRect(x:0,y:110,width:402,height:226)
-  var videoSeekGeometry:(rect:CGRect,videoID:String,ticket:Int,viewport:Int)?
+  var videoSeekGeometry:(rect:CGRect,seek:CGRect,videoID:String,ticket:Int,viewport:Int)?
   var dragPosition:PlayerGesturePolicy.Position? { mode == .expanded ? .expanded : (mode == .mini ? .mini:nil) }
   ${properties}
   ${owns || "func videoSeekOwnsEdgeContact(_ contact:CGPoint)->Bool{return false}"}
@@ -313,6 +317,26 @@ expect(!s.gestureRecognizer(s.cardTap,shouldReceive:UITouch(CGPoint(x:8,y:177),s
 expect(s.gestureRecognizer(s.drag,shouldReceive:UITouch(CGPoint(x:100,y:177))),"ordinary vertical native picture pan remains eligible")
 s.customFullscreenID="abcdefghijk"
 expect(!s.gestureRecognizer(s.drag,shouldReceive:UITouch(CGPoint(x:100,y:177))),"custom fullscreen keeps vertical and Zoom ownership")
+let fourThree=Stage();fourThree.videoRect=CGRect(x:50,y:110,width:301,height:226)
+fourThree.rememberVideoSeekGeometry(fourThree.videoRect,videoID:"abcdefghijk",playerVideoID:"abcdefghijk",hasVideo:true,viewport:fourThree.player.bounds.size,seekRect:CGRect(x:0,y:110,width:402,height:226))
+expect(!fourThree.receives(CGPoint(x:8,y:177)),"free left 4:3 sidebar belongs to JS Seek rather than native Back")
+expect(fourThree.receives(CGPoint(x:8,y:100)),"header outside confirmed root retains Back")
+expect(fourThree.videoRect==CGRect(x:50,y:110,width:301,height:226),"Seek area never changes the display crop")
+fourThree.videoRect.origin.x=51
+expect(!fourThree.videoSeekOwnsEdgeContact(CGPoint(x:8,y:177)),"changed media fingerprint revokes even unchanged root Seek area")
+for kind in ["null","outside-viewport","disjoint-playing","nonfinite"] {
+ let q=Stage();q.videoRect=CGRect(x:50,y:110,width:301,height:226)
+ var area:CGRect?=nil
+ if kind=="outside-viewport" {area=CGRect(x:-20,y:110,width:422,height:226)}
+ if kind=="disjoint-playing" {area=CGRect(x:0,y:450,width:402,height:226)}
+ if kind=="nonfinite" {area=CGRect(x:0,y:CGFloat.nan,width:402,height:226)}
+ q.rememberVideoSeekGeometry(q.videoRect,videoID:"abcdefghijk",playerVideoID:"abcdefghijk",hasVideo:true,viewport:q.player.bounds.size,seekRect:area)
+ expect(q.receives(CGPoint(x:8,y:177)),kind+" does not invent sidebar priority")
+ expect(q.videoSeekOwnsEdgeContact(CGPoint(x:60,y:177)),kind+" retains default media priority for Zoom/pan")
+}
+let ended=Stage();ended.videoRect=CGRect(x:0,y:-568,width:402,height:226)
+ended.rememberVideoSeekGeometry(ended.videoRect,videoID:"abcdefghijk",playerVideoID:"abcdefghijk",hasVideo:true,viewport:ended.player.bounds.size,seekRect:CGRect(x:0,y:110,width:402,height:226),allowDisjointSeek:true)
+expect(!ended.receives(CGPoint(x:8,y:177)),"confirmed ended root protects fresh Seek despite offscreen media")
 if !failures.isEmpty {print("NATIVE_VIDEO_SEEK_PRIORITY_FAILED: "+String(failures.count));exit(1)}
 print("NATIVE_VIDEO_SEEK_PRIORITY_OK")
 `;

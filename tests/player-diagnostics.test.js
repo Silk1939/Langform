@@ -57,6 +57,14 @@ test("Playerdiagnose unterscheidet Pufferzustand und Pause vor/nach einem Tipp o
   assert.doesNotMatch(JSON.stringify(p.rows), /private_id|Private title|never emit|youtube\.com|clientX/);
 });
 
+test('Player diagnostic reports original hidden separately from masked visibility and native inactivity',t=>{
+  const p=page(t);let originalHidden=false;
+  p.win.__langformRealVisibility={hidden:()=>originalHidden,inactive:()=>true};
+  Object.defineProperty(p.doc,'hidden',{value:false,configurable:true});
+  p.emit('playing');p.run(160);assert.equal(p.rows.at(-1).hidden,false,'native inactivity is not document hidden');
+  originalHidden=true;p.emit('pause');p.run(160);assert.equal(p.rows.at(-1).hidden,true,'masked page visibility does not hide the original document state');
+});
+
 test("Playerdiagnose erkennt gesperrte Seiteninputs und fehlende Vollbild-UI ohne ihre Eingaben zu verändern", t => {
   const p = page(t);
   const root = p.doc.getElementById("movie_player");
@@ -159,4 +167,45 @@ test("Opt-in APItrace erfasst nur feste Methodennamen und endet mit der Diagnose
   assert.equal(p.win.__langformRecordFullscreenAPI, undefined);
   record('webkitEnterFullscreen', true); p.run(160);
   assert.equal(p.rows.length, 1);
+});
+
+test('audio diagnostic rows observe media/API disagreement, decode and track state without mutating playback',t=>{
+  const p=page(t),root=p.doc.getElementById('movie_player');let apiMuted=false,decoded=2000;
+  for(const [key,value] of Object.entries({muted:true,volume:.65,playbackRate:2}))Object.defineProperty(p.video,key,{get:()=>value,set:()=>assert.fail('diagnostic wrote '+key)});
+  Object.defineProperty(p.video,'webkitAudioDecodedByteCount',{get:()=>decoded});
+  Object.defineProperty(p.video,'audioTracks',{value:[{enabled:true},{enabled:false}]});
+  root.isMuted=()=>apiMuted;root.getVolume=()=>65;root.mute=root.unMute=root.setVolume=()=>assert.fail('no sound commands');
+  Object.defineProperty(p.win.navigator,'audioSession',{value:{state:'active',type:'playback'}});
+  p.emit('ratechange');p.run(160);const first=p.rows.at(-1);
+  assert.equal(first.muted,true);assert.equal(first.apiMuted,false);assert.equal(first.volume,.65);assert.equal(first.apiVolume,65);assert.equal(first.rate,2);
+  assert.equal(first.audioDecoded,2000);assert.equal(first.audioTracks,2);assert.equal(first.audioEnabled,1);assert.equal(first.audioSession,'active');
+  apiMuted=true;decoded=4000;p.emit('volumechange');p.run(160);
+  assert.equal(p.rows.at(-1).apiMuted,true);assert.equal(p.rows.at(-1).audioDecoded,4000);assert.equal(p.rows.at(-1).currentTime,1);
+});
+
+test('audio observation exports stream/node ordinals while discarding source URLs and optional private labels',t=>{
+  const p=page(t);let source='https://private.example/stream?secret=one';
+  Object.defineProperty(p.video,'currentSrc',{get:()=>source});
+  Object.defineProperty(p.win.navigator,'audioSession',{value:{state:'private-session-name',type:'private-mode-name'}});
+  p.emit('playing');p.run(160);const first=p.rows.at(-1);
+  source='blob:secret-source-two';p.emit('canplay');p.run(160);const second=p.rows.at(-1);
+  assert.equal(second.mediaToken,first.mediaToken);assert.equal(second.sourceToken,first.sourceToken+1);
+  const replacement=p.doc.createElement('video');p.video.replaceWith(replacement);p.emit('canplay',replacement);p.run(160);const third=p.rows.at(-1);
+  assert.equal(third.mediaToken,second.mediaToken+1);assert.equal(third.sourceToken,second.sourceToken+1);
+  assert.equal(first.audioSession,'unknown');assert.equal(first.audioSessionType,'unknown');
+  assert.doesNotMatch(JSON.stringify(p.rows),/secret|private|https:\/\/|blob:/);
+});
+
+test('throwing optional audio APIs stay unknown and audio listeners stop at the existing deadline',t=>{
+  const p=page(t),root=p.doc.getElementById('movie_player');root.isMuted=()=>{throw Error('missing API');};root.getVolume=()=>NaN;
+  Object.defineProperty(p.video,'audioTracks',{get:()=>{throw Error('not supported');}});
+  p.emit('volumechange');p.run(160);const row=p.rows.at(-1);
+  assert.equal(row.apiMuted,undefined);assert.equal(row.apiVolume,-1);assert.equal(row.audioTracks,-1);assert.equal(row.audioEnabled,-1);assert.equal(row.audioDecoded,-1);
+  p.run(90000);p.emit('ratechange');p.emit('volumechange');p.run(160);assert.equal(p.rows.length,1);
+});
+
+test('normal launches without the diagnostic bridge do not even read media audio state',t=>{
+  const p=page(t,false);
+  for(const key of ['muted','volume','playbackRate','currentSrc'])Object.defineProperty(p.video,key,{get:()=>assert.fail('normal diagnostic read '+key)});
+  p.emit('ratechange');p.emit('volumechange');assert.equal(p.rows.length,0);assert.equal(p.timers.size,0);
 });

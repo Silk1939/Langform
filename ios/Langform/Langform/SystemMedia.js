@@ -55,6 +55,8 @@
         return !!(win.__langformPlay && win.__langformPlay(expected));
       }
       if (command === 'pause' || command === 'toggle') {
+        if (win.__langformWatchBackgroundAudio && typeof win.__langformWatchBackgroundAudio.explicitAction==='function')
+          win.__langformWatchBackgroundAudio.explicitAction(expected);
         if (!video.paused) { if (typeof root.pauseVideo === 'function') root.pauseVideo(); else video.pause(); }
       } else if (command === 'skip' || command === 'position') {
         var duration = Number(video.duration), amount = Number(value);

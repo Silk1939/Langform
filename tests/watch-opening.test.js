@@ -5,7 +5,8 @@ const path = require('node:path');
 const { JSDOM } = require('jsdom');
 const directory = path.join(__dirname, '../ios/Langform/Langform');
 const opening = fs.readFileSync(path.join(directory, 'WatchOpening.js'), 'utf8');
-const links = fs.readFileSync(path.join(directory, 'WebViewLinks.js'), 'utf8');
+const linksDirectory = fs.existsSync(path.join(directory, 'WebViewLinks.js')) ? directory : path.join(__dirname, '../../../../../ios/Langform/Langform');
+const links = fs.readFileSync(path.join(linksDirectory, 'WebViewLinks.js'), 'utf8');
 
 function setup(t, options = {}) {
   const dom = new JSDOM(`<ytm-app><ytm-video-with-context-renderer><a href="/watch?v=abcdefghijk"><img id="thumbnail" src="https://i.ytimg.com/vi/abcdefghijk/hq720.jpg"></a></ytm-video-with-context-renderer><ytm-pivot-bar-renderer>Tabs</ytm-pivot-bar-renderer></ytm-app>`, {
@@ -26,6 +27,7 @@ function setup(t, options = {}) {
     naturalHeight:{get(){return 720;}},currentSrc:{get(){return this.src;}},
   });
   win.Element.prototype.getBoundingClientRect=function(){
+    if(this.classList.contains('lf-opening-picture')&&presentation){const n=presentation.match(/-?(?:\d*\.)?\d+/g).map(Number),width=parseFloat(this.style.width),height=parseFloat(this.style.height);return {x:n[4],y:n[5],left:n[4],top:n[5],width,height,right:n[4]+width,bottom:n[5]+height};}
     return {x:0,y:420,left:0,top:420,width:402,height:226.125,right:402,bottom:646.125};
   };
   win.Element.prototype.animate=function(frames,timing){
@@ -113,7 +115,7 @@ test('Unterbrechen übernimmt genau die Präsentationsposition und meldet erst n
   assert.equal(env.win.__langformWatchOpeningControl('reverse',token),true);
   const reverse=env.flight();
   assert.equal(env.matrixReads(),1,'one takeover measurement, no per-frame layout loop');
-  assert.equal(reverse.frames[0].transform,'translate(0px,270px) scale(1,1)');
+  assert.equal(reverse.frames[0].transform,'translate(0px,270px)');
   assert.equal(env.messages.some(m=>m.kind==='cancelled'),false);
   reverse.finish();
   assert.equal(env.messages.at(-1).kind,'cancelled');
@@ -133,7 +135,7 @@ test('Bewegung reduzieren verwendet nur die kurze Überblendung am Ziel',t=>{
 
 test('Abbruch übernimmt auch die laufende Überblendung und Tableistenposition',t=>{
   const env=setup(t),token=env.win.__langformBeginWatchOpening(env.image,'/watch?v=abcdefghijk');
-  const originalEffects=env.animations.filter(a=>!a.node.classList.contains('lf-opening-picture'));
+  const originalEffects=env.animations.filter(a=>!a.node.classList.contains('lf-opening-picture')&&!a.node.classList.contains('lf-opening-visual'));
   env.backgroundPresentation({wash:'0.37',app:'0.63',bar:'matrix(1, 0, 0, 1, 0, 34)'});
   env.win.__langformWatchOpeningControl('reverse',token);
   assert.ok(originalEffects.every(a=>!a.cancelled),'running background styles remain until replacement effects own them');

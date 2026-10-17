@@ -12,6 +12,13 @@ function declaration(source, signature) {
   while (depth && end < source.length) { depth += (source[end] === '{') - (source[end] === '}'); end++; }
   return source.slice(start, end);
 }
+function messageBranch(source, name) {
+  const marker = `case "${name}":`;
+  const start = source.indexOf(marker) + marker.length;
+  const end = source.indexOf('\n        case ', start);
+  assert.ok(start >= marker.length && end > start, name);
+  return source.slice(start, end);
+}
 
 test('Shipping Downloadbridge schützt späte Quellen und den Offlinebesitz der Systemmedien', { skip: process.platform !== 'darwin', timeout: 60000 }, t => {
   const native = path.join(__dirname, '../ios/Langform/Langform');
@@ -22,8 +29,8 @@ test('Shipping Downloadbridge schützt späte Quellen und den Offlinebesitz der 
   const cancelDownload = declaration(source, 'private func cancelDownloadSourceRequest(').replace('private func', 'func');
   const loading = declaration(source, 'private func setDownloadSourceLoading(').replace('private func', 'func');
   const command = declaration(source, 'private func systemPlaybackCommand(').replace('private func', 'func');
-  const handler = source.slice(source.indexOf('case "langformSystemMedia":') + 'case "langformSystemMedia":'.length, source.indexOf('case "langformFeedSearch":'));
-  const downloadHandler = source.slice(source.indexOf('case "langformDownloads":') + 'case "langformDownloads":'.length, source.indexOf('case "langformSystemMedia":'));
+  const handler = messageBranch(source, 'langformSystemMedia');
+  const downloadHandler = messageBranch(source, 'langformDownloads');
   assert.ok(downloadHandler.includes('requestDownloads()'), 'extract the actual incoming download branch');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'langform-download-bridge-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -69,6 +76,8 @@ class Stage {
   var downloadSourceResolver=DownloadSourceResolver(), downloadSourceRequestGeneration=0, downloadSourceLoading=false
   var sourceLoading:Bool {player?.downloadLoading == true}
   var customFullscreenID:String?, playerOverlayOpen=false
+  var backgroundTransitions:[String]=[]
+  func watchBackgroundCategoryTransition(_ phase:String){backgroundTransitions.append(phase)}
   func feedState(for view:WebView)->FeedState? {nil}
   var onDownloads:((DownloadSource?,String?,@escaping(Bool)->Void)->Void)?
   ${request}
@@ -121,6 +130,7 @@ stage.requestDownloads();a.replies.removeFirst()(available("abcdefghijk"),nil)
 expect(accepted==nil,"wrong source ID rejected by native policy")
 ownership?(true)
 expect(stage.systemMediaSuspendedForOffline && stage.systemMedia.clears==1 && a.pauses==1,"offline playback pauses all WebKit media and removes remote owner")
+expect(stage.backgroundTransitions.last=="cancel","offline ownership also retires the previous background lease")
 stage.receive(Message(webView:a,body:["kind":"state","playing":true]))
 expect(stage.systemMedia.received==0 && stage.systemMediaSuspendedForOffline,"late playing callback cannot steal offline system card")
 let commandCount=a.commands.count

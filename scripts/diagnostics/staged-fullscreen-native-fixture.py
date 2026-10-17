@@ -9,9 +9,9 @@ def declaration(text,signature):
     while depth and end<len(text):
         depth+=(text[end]=='{')-(text[end]=='}');end+=1
     return text[start:end]
-names=['fullscreenPlayerViewport','applyFullscreenSurface','beginNativeRotation','cancelNativeRotation','requestFullscreenExitMotion','releaseFullscreenExitViewport','cancelFullscreenExitMotion','fullscreenExitMotionReady']
+names=['pendingPhysicalFullscreenExitSource','fullscreenPlayerViewport','applyFullscreenSurface','beginNativeRotation','cancelNativeRotation','requestFullscreenExitMotion','releaseFullscreenExitViewport','cancelFullscreenExitMotion','fullscreenExitMotionReady']
 chunks='\n'.join(declaration(source,'func '+name+'(') for name in names)
-structs='\n'.join(declaration(source,'private struct '+name).replace('private struct','struct') for name in ['CustomFullscreenEnter','CustomFullscreenExit'])
+structs='\n'.join(declaration(source,'private struct '+name).replace('private struct','struct') for name in ['CustomFullscreenEnter','CustomFullscreenExit','PendingPhysicalFullscreenExit'])
 controller=declaration(source,'final class PlayerStageController:');layout=declaration(declaration(source,'override func layoutSubviews()'),'if let player {')
 swift=r'''
 import UIKit
@@ -27,9 +27,14 @@ final class Stage:UIView,WKScriptMessageHandler{
  var mode=Mode.expanded,progress:CGFloat=0,dragging=false,playerFullscreen=true
  var customFullscreenID:String?="abcdefghijk",loadTicket=1,nativeRotationGeneration=0
  __STRUCTS__
- var customFullscreenEnter:CustomFullscreenEnter?,customFullscreenExit:CustomFullscreenExit?
+ var customFullscreenEnter:CustomFullscreenEnter?,customFullscreenExit:CustomFullscreenExit?,pendingPhysicalFullscreenExit:PendingPhysicalFullscreenExit?
  var activeRotationCoordinator:UIViewControllerTransitionCoordinator?
  var fullscreenCardRotationGeneration:Int?,nativeRotationTarget:CGSize?,nativeRotationDeadlineMilliseconds:Double?,nativeRotationCSSCurve:String?,fullscreenExitMotionTimeout:DispatchWorkItem?
+ // Shipping motion may reference its opt-in diagnostics; this fixture keeps
+ // them disabled and samples real UIKit/WK geometry with its own display link.
+ var fullscreenGeometryTrace:(videoID:String,token:String,ticket:Int,beganAt:TimeInterval,rows:Int)?
+ var fullscreenGeometryDirection="exit"
+ func startFullscreenPresentation(videoID:String,token:String,direction:String){}
  var player:WKWebView?,card=UIView(),closeButton=UIView(),miniPlaybackButton=UIView(),collapseButton=UIView()
  var playerLayoutSize=CGSize.zero,playerInsetsChanged=false,ackBefore:(([String:Any])->Void)?,nativeFinished=0
  override init(frame:CGRect){super.init(frame:frame);let c=WKWebViewConfiguration();c.allowsInlineMediaPlayback=true;c.mediaTypesRequiringUserActionForPlayback=[];c.userContentController.add(self,name:"ready");player=WKWebView(frame:.zero,configuration:c);card.clipsToBounds=true;card.backgroundColor = .black;addSubview(card);card.addSubview(player!);player!.scrollView.contentInsetAdjustmentBehavior = .never;player!.scrollView.isScrollEnabled=false}
@@ -37,7 +42,10 @@ final class Stage:UIView,WKScriptMessageHandler{
  func updateChrome(){};func updatePlaybackControls(){};func resetPlayerForViewportChange(){}
  func measureVideo(after:Double,_ done:()->Void){done()};func apply(_ t:CGFloat){_ = applyFullscreenSurface(t)}
  func confirmCustomFullscreenEnter(afterRotation:Bool=false){}
+ // This fixture supplies an already-active native coordinator; scene requests are covered by native-pre-rotation-fullscreen.test.js.
+ func requestFullscreenExitPortrait() {}
  func confirmCustomFullscreenExit(afterRotation:Bool=false){if afterRotation{nativeFinished += 1}}
+ func finishPhysicalRotationIntent(){}
  override func layoutSubviews(){super.layoutSubviews();__LAYOUT__}
  func userContentController(_ controller:WKUserContentController,didReceive message:WKScriptMessage){guard let body=message.body as? [String:Any]else{return};ackBefore?(body);fullscreenExitMotionReady(body)}
  __CHUNKS__

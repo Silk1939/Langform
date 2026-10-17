@@ -54,13 +54,17 @@ final class PlayerStage: UIView {
     enum Mode { case closed, expanded }; var mode = Mode.expanded
     var player: WKWebView? = WKWebView(), card = UIView()
     var fullscreenCardRotationGeneration: Int?, nativeRotationTarget: CGSize?, nativeRotationDeadlineMilliseconds: Double?, nativeRotationCSSCurve: String?, fullscreenExitMotionTimeout: DispatchWorkItem?
-    struct Pending { var token: String; var waitingForRotation = false;var sourceViewport:CGSize?;var motionViewport:CGSize?;var motionGeneration:Int?;var cancellingMotion=false;var allowsCurrentOrientation=false;var rotationDeadlineMilliseconds:Double?;var rotationCSSCurve:String? }
+    struct Pending { var token: String; var videoID="abcdefghijk";var ticket=1;var motionReady=false;var preRotationMotion=false;var portraitRequested=false; var waitingForRotation = false;var sourceViewport:CGSize?;var motionViewport:CGSize?;var motionGeneration:Int?;var cancellingMotion=false;var allowsCurrentOrientation=false;var rotationDeadlineMilliseconds:Double?;var rotationCSSCurve:String? }
+    ${declaration(source, 'private struct PendingPhysicalFullscreenExit').replace('private struct', 'struct')}
+    var pendingPhysicalFullscreenExit:PendingPhysicalFullscreenExit?
+    var customFullscreenID:String?
     var customFullscreenEnter: Pending?, customFullscreenExit: Pending?
     var activeRotationCoordinator: UIViewControllerTransitionCoordinator?
     func start() {}; func reload() {}; func stop() { cancelNativeRotation() }
     func confirmCustomFullscreenEnter(afterRotation: Bool = false) {}
     func confirmCustomFullscreenExit(afterRotation: Bool = false) {}
-    func requestFullscreenExitMotion(viewport:CGSize,deadline:Double) {}
+    func finishPhysicalRotationIntent() {}
+    func requestFullscreenExitMotion(viewport:CGSize,deadline:Double,curve:String?=nil) {}
     func cancelFullscreenExitMotion() {}
     ${rotation}
 }

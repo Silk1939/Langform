@@ -1,0 +1,102 @@
+LANGFORM SAFARI – INSTALLATION AUF DEINEM MAC
+
+Du brauchst für dieses fertige Paket weder Xcode noch Claude, einen Apple-
+Entwickleraccount oder einen API-Schlüssel. Claude kann dir bei den Schritten
+helfen, ist aber keine Voraussetzung.
+
+Die App heißt „Langform Safari“. In Safari heißt die Erweiterung weiterhin
+„Shorts ausblenden“. Sie arbeitet auf www.youtube.com und m.youtube.com.
+
+VORAUSSETZUNGEN
+
+Das Paket enthält eine App für Intel und Apple Silicon. Ihr technisches
+Mindestziel ist macOS 12. Verwende die neueste Safari-Version, die dein Mac
+anbietet. Die Installation auf deinem konkreten Mac ist noch zu prüfen.
+
+Für die automatische Kurzfassung braucht dein Mac zusätzlich macOS 26 oder
+neuer und ein verfügbares lokales Apple-Intelligence-Modell. Das setzt einen
+kompatiblen Mac voraus, beispielsweise mit M1 oder neuer. Auf einem Intel-Mac
+gibt es diese lokalen Kurzfassungen nicht. Shorts ausblenden ist davon
+unabhängig. Claude wird nicht als Modell der Erweiterung verwendet.
+
+INSTALLIEREN – EMPFOHLENER WEG
+
+1. Entpacke das ZIP vollständig. Starte die App nicht direkt im ZIP.
+
+2. Ziehe „Langform Safari.app“ in den Ordner „Programme“ auf deinem Mac.
+   Alternativ kannst du in deinem Benutzerordner einen Ordner „Applications“
+   anlegen und die App dort ablegen. Behalte genau eine installierte Kopie.
+   Falls dort schon eine Langform-Safari-App liegt, sichere sie vor dem Ersetzen.
+
+3. Öffne die abgelegte App einmal. Das Paket ist eine Testversion und wurde
+   nicht von Apple notarisiert. Falls macOS das Öffnen blockiert:
+   Systemeinstellungen → Datenschutz & Sicherheit → Sicherheit öffnen und
+   bei dieser App „Dennoch öffnen“ wählen. Bestätige mit deinem Mac-Passwort.
+   Der Knopf erscheint nach dem Öffnungsversuch für ungefähr eine Stunde.
+   Diese Ausnahme gilt für die App; schalte Gatekeeper nicht allgemein aus.
+
+4. Öffne Safari → Einstellungen → Erweitert und aktiviere
+   „Funktionen für Webentwickler anzeigen“.
+
+5. In Safari 17 oder neuer: Einstellungen → Entwickler →
+   „Nicht signierte Erweiterungen erlauben“ aktivieren.
+   In älteren Safari-Versionen findest du den Punkt im Menü „Entwickler“ /
+   „Entwickeln“. Je nach Sprache heißt er „Allow Unsigned Extensions“.
+   Safari kann hierfür dein Mac-Passwort verlangen.
+
+6. Safari → Einstellungen → Erweiterungen → „Shorts ausblenden“ aktivieren.
+   Erlaube den Zugriff auf www.youtube.com und m.youtube.com, wenn Safari
+   danach fragt. Lade bereits offene YouTube-Tabs anschließend neu.
+
+7. Prüfe auf YouTube, ob die Shorts-Regale ausgeblendet werden. Öffne danach
+   einen direkten /shorts/-Link: Er sollte auf die YouTube-Startseite führen.
+
+WICHTIG NACH EINEM SAFARI-NEUSTART
+
+Apple setzt „Nicht signierte Erweiterungen erlauben“ zurück, wenn du Safari
+vollständig beendest. Aktiviere den Punkt nach dem nächsten Safari-Start
+erneut und prüfe dann die Erweiterung. Das bloße Schließen eines Fensters
+ist nicht dasselbe wie Safari mit Cmd-Q zu beenden.
+
+OPTIONALER INSTALLATIONSHELFER
+
+„Installieren.command“ kopiert die App aus diesem Paket nach
+~/Applications/Langform Safari.app und öffnet sie sowie diese Anleitung.
+Eine vorhandene App wird zuerst unter
+~/Library/Application Support/Langform Safari/Backups/ gesichert.
+Die Sicherung endet auf .app.not-registered, damit sie keine zweite aktive
+App-Kopie ist. Der Helfer braucht kein sudo und ändert weder Safari-
+Einstellungen noch Gatekeeper, Zertifikate oder deinen Apple-Account.
+
+Du kannst den Helfer per Doppelklick starten. Wenn macOS das Skript blockiert,
+verwende den empfohlenen manuellen Weg oben. Die Safari-Schritte bleiben
+auch mit dem Helfer erforderlich.
+
+WENN ETWAS NICHT KLAPPT
+
+– Erweiterung fehlt: App am endgültigen Ort einmal öffnen; anschließend
+  „Nicht signierte Erweiterungen erlauben“ prüfen und Safari-Einstellungen
+  erneut öffnen. Keine zweite Kopie der App starten.
+– Shorts bleiben sichtbar: Erweiterung und YouTube-Zugriff prüfen, Tab neu laden.
+– Kurzfassung meldet ein fehlendes Modell: Apple Intelligence und die
+  Kompatibilität des Macs prüfen. Nach Aktivierung kann der Modelldownload
+  dauern. Shorts ausblenden bleibt davon unabhängig.
+– Eine Malware-Meldung oder eine beschädigte App: Installation stoppen und
+  das Paket erneut beim Absender anfordern. Schutzmechanismen nicht umgehen.
+
+DEINSTALLIEREN
+
+Deaktiviere die Erweiterung in Safari und verschiebe die installierte
+„Langform Safari.app“ in den Papierkorb. Danach kannst du die Entwickler-
+Funktionen wieder ausschalten, wenn du sie sonst nicht brauchst.
+
+OFFIZIELLE APPLE-ANLEITUNGEN
+
+Safari-Testinstallation und Rücksetzen der Option:
+https://developer.apple.com/documentation/safariservices/running-your-safari-web-extension
+Verteilung als Testversion bzw. mit Developer ID und Notarisierung:
+https://developer.apple.com/documentation/safariservices/distributing-your-safari-web-extension
+Öffnen einer blockierten App:
+https://support.apple.com/en-gb/guide/mac-help/mh40617/27/mac/27
+Verfügbarkeit des lokalen Modells:
+https://developer.apple.com/documentation/foundationmodels/generating-content-and-performing-tasks-with-foundation-models

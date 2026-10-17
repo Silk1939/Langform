@@ -56,6 +56,7 @@ class UIPanGestureRecognizer {
   var state = State.possible, delta = CGPoint.zero, speed = CGPoint.zero
   var isEnabled = true, cancelsTouchesInView = false
   func velocity(in: Any) -> CGPoint { speed }
+  func translation(in: Any) -> CGPoint { delta }
 }
 class Card { var transform = CGAffineTransform.identity }
 class WKWebView {
@@ -83,7 +84,7 @@ class Stage {
   var mode = Mode.expanded
   var feed = WKWebView(), player = WKWebView(), state = FeedState(), card = Card()
   var settler: UIViewPropertyAnimator?, revealer: UIViewPropertyAnimator?, dismisser: UIViewPropertyAnimator?
-  var dragging = false, edgeBackTracking = false, edgeBackUsesPicture = false, fullscreenExitDrag = false
+  var dragging = false, edgeBackTracking = false, edgeBackUsesPicture = false, fullscreenExitDrag = false, fullscreenEnterDrag = false
   var playerFullscreen = false, dragCanTakeOver = false, settlingBetweenModes = false, awaitingViewportGeometry = false
   var progress: CGFloat = 0, dragOrigin: CGFloat = 0, dragRevealOrigin: CGFloat = 0, dragTravel: CGFloat = 600
   var pendingRect: CGRect?, videoRect = CGRect(x: 0, y: 0, width: 400, height: 225)
@@ -107,6 +108,18 @@ class Stage {
   func setNativeDragging(_ active: Bool) {}
   func cancelVideoProbe() {}
   func requestFullscreenExit() {}
+  var nativeDragVideoID: String?, loadTicket = 1
+  // This feed fixture never admits fullscreen; its ownership policy is tested
+  // with real extracted methods in native-player-interaction.test.js.
+  struct FullscreenEntryAdmission {}
+  var fullscreenEntryAdmission: FullscreenEntryAdmission?
+  var fullscreenEntryAdmissionRevoked = false
+  func fullscreenEntryAdmissionIsCurrent(_ entry: FullscreenEntryAdmission) -> Bool { false }
+  func revokeFullscreenEntryAdmission() {
+    if fullscreenEntryAdmission != nil { fullscreenEntryAdmissionRevoked = true }
+    fullscreenEntryAdmission = nil
+  }
+  func enterFullscreenFromSwipe(videoID: String, ticket: Int) {}
   ${callbacks}
 }
 func expect(_ value: Bool, _ message: String) { if !value { print("FAILED: " + message); exit(1) } }

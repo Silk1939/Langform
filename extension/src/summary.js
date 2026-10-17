@@ -38,6 +38,7 @@
   var PANEL_ID = "langform-kurzfassung";
   var STYLE_ID = "langform-kurz-style";
   var BUTTON_ATTR = "data-langform-kurz";
+  var TRANSCRIPT_ATTR = "data-langform-transcript";
   var VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
   var ITEM_TAGS = {
@@ -774,7 +775,7 @@
     return parsed;
   }
 
-  async function readTracks(player, fetchText) {
+  async function readTracks(player, fetchText, originalLanguage) {
     var found = tracksOf(player);
     var attempts = rankTracks(found.tracks, found.translations);
     if (!attempts.length) return { kind: "none" };
@@ -782,7 +783,7 @@
     var empty = false;
     var error = false;
     for (var i = 0; i < attempts.length; i++) {
-      var urls = timedtextUrls(attempts[i].track, attempts[i].translate);
+      var urls = timedtextUrls(attempts[i].track, !originalLanguage && attempts[i].translate);
       for (var u = 0; u < urls.length; u++) {
         var raw;
         try {
@@ -809,7 +810,7 @@
     return { kind: "empty" };
   }
 
-  async function loadSummary(videoId, env) {
+  async function loadTranscript(videoId, env) {
     env = env || {};
     var fetchText = env.fetchText;
     var sawTracks = false;
@@ -818,10 +819,10 @@
 
     async function consider(player) {
       if (!player) return null;
-      var read = await readTracks(player, fetchText);
+      var read = await readTracks(player, fetchText, env.originalLanguage);
       if (read.kind === "none") return null;
       sawTracks = true;
-      if (read.kind === "text") return askModel(read.text, env);
+      if (read.kind === "text") return { text: read.text };
       if (read.kind === "timeout") return summaryFailure("CAPTIONS_TIMEOUT");
       if (read.kind === "empty") sawEmpty = true;
       if (read.kind === "error") sawError = true;
@@ -866,6 +867,11 @@
     if (!sawTracks) return { message: sawError ? FAILED : NO_CAPTIONS };
     if (sawEmpty) return { message: EMPTY_CAPTIONS };
     return { message: FAILED };
+  }
+
+  async function loadSummary(videoId, env) {
+    var transcript = await loadTranscript(videoId, env);
+    return transcript.text ? askModel(transcript.text, env || {}) : transcript;
   }
 
   function parentAcross(node) {
@@ -997,8 +1003,8 @@
       ".langform-kurz-body h3:first-child { margin-top: 0; }",
       ".langform-kurz p, .langform-kurz li { margin: 0 0 12px; line-height: 1.5; }",
       ".langform-kurz ul { margin: 0; padding-left: 1.1rem; }",
-      ".langform-kurz button, .langform-kurz-open { transition: transform 100ms ease-out, background-color 100ms ease-out; -webkit-tap-highlight-color: transparent; }",
-      ".langform-kurz button:active, .langform-kurz-open:active { transform: scale(.97); }",
+      ".langform-kurz button, .langform-kurz-open { transition: transform var(--lf-duration-pressOut,100ms) ease-out, background-color 100ms ease-out; -webkit-tap-highlight-color: transparent; }",
+      ".langform-kurz button:active, .langform-kurz-open:active { transition-duration:var(--lf-duration-pressIn,100ms); transform: scale(calc(1 - (1 - var(--lf-scale-icon,.97)) * (1 - var(--lf-reduce-spatial-motion,0)))); }",
       "@media (prefers-reduced-motion: reduce) { .langform-kurz button, .langform-kurz-open { transition: none; } .langform-kurz button:active, .langform-kurz-open:active { transform: none; } }",
     ].join("\n");
     (doc.documentElement || doc.head || doc.body).appendChild(style);
@@ -1131,22 +1137,29 @@
     var panel = sheet.querySelector(".langform-kurz");
     var backdrop = sheet.querySelector(".langform-kurz-backdrop");
     var preference = sheet.__langformKurzReduced;
-    if (!win || (preference && preference.matches) || typeof panel.animate !== "function") {
+    var appMotion = win && win.__langformMotion;
+    var fadeOnly = !!appMotion && (appMotion.reduceSpatialMotion || preference && preference.matches);
+    if (!win || (preference && preference.matches && !fadeOnly) || typeof panel.animate !== "function") {
       stopSheetMotion(sheet);
       if (!opening) finishSheetClose(sheet, true);
       return;
     }
     var from = opening ? "translateY(100%)" : "translateY(0)";
     var shade = opening ? "0" : "1";
+    var opacity = opening ? 0 : 1;
     if (sheet.__langformKurzMotion) {
-      from = win.getComputedStyle(panel).transform;
+      var pose = win.getComputedStyle(panel);
+      from = pose.transform;
+      if (fadeOnly) opacity = pose.opacity || "1";
       shade = win.getComputedStyle(backdrop).opacity;
-    }
+    } else if (fadeOnly) from = "translateY(0)";
     stopSheetMotion(sheet);
-    var timing = { duration: opening ? 280 : 180,
-      easing: opening ? "cubic-bezier(.16,1,.3,1)" : "cubic-bezier(.7,0,.84,0)", fill: "both" };
+    var timing = { duration: appMotion ? (fadeOnly ? appMotion.durations.fade : opening ? appMotion.durations.sheetEnter : appMotion.durations.sheetExit) : opening ? 280 : 180,
+      easing: appMotion ? (fadeOnly ? appMotion.easings.fade : opening ? appMotion.easings.enter : appMotion.easings.exit) : opening ? "cubic-bezier(.16,1,.3,1)" : "cubic-bezier(.7,0,.84,0)", fill: "both" };
+    var frames = fadeOnly ? [{ transform: from, opacity: opacity }, { transform: from, opacity: opening ? 1 : 0 }]
+      : [{ transform: from }, { transform: opening ? "translateY(0)" : "translateY(100%)" }];
     var motion = { opening: opening, animations: [
-      panel.animate([{ transform: from }, { transform: opening ? "translateY(0)" : "translateY(100%)" }], timing),
+      panel.animate(frames, timing),
       backdrop.animate([{ opacity: shade }, { opacity: opening ? "1" : "0" }], timing),
     ] };
     sheet.__langformKurzMotion = motion;
@@ -1246,6 +1259,7 @@
       win.addEventListener("langform-feed-visibility", visibility);
       if (win.visualViewport) win.visualViewport.addEventListener("resize", settle);
       if (preference && preference.addEventListener) preference.addEventListener("change", reduce);
+      if (win.__langformMotion) win.addEventListener("langform-motion-change", settle);
       sheet.__langformKurzDispose = function () {
         lifecycle.forEach(function (name) { win.removeEventListener(name, leave); });
         win.removeEventListener("resize", settle);
@@ -1253,6 +1267,7 @@
         win.removeEventListener("langform-feed-visibility", visibility);
         if (win.visualViewport) win.visualViewport.removeEventListener("resize", settle);
         if (preference && preference.removeEventListener) preference.removeEventListener("change", reduce);
+        win.removeEventListener("langform-motion-change", settle);
         sheet.__langformKurzDispose = null;
       };
     }
@@ -1609,6 +1624,278 @@
     card.appendChild(button);
   }
 
+  function ensureTranscriptStyle(doc) {
+    if (doc.getElementById("langform-transcript-style")) return;
+    var style = doc.createElement("style");
+    style.id = "langform-transcript-style";
+    style.textContent = [
+      ".langform-watch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0 16px; width: fit-content; max-width: 100%; margin: 6px 0 0; }",
+      ".langform-watch-actions > .langform-kurz-open, .langform-watch-actions .langform-transcript-actions > button { margin: 0; align-self: center; min-height: 44px; }",
+      ".langform-transcript-actions { display: inline-flex; align-items: center; margin: 0; }",
+      ".langform-transcript-sheet { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; z-index: 2147483100; font: 15px/1.5 system-ui, sans-serif; }",
+      ".langform-transcript-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.55); }",
+      ".langform-transcript-dialog { position: relative; display: flex; flex-direction: column; box-sizing: border-box; width: min(520px,100%); max-height: min(540px,calc(100dvh - 48px)); min-height: 180px; overflow: hidden; border: 1px solid var(--yt-spec-10-percent-layer,#ffffff26); border-radius: 16px; background: var(--yt-spec-menu-background,#202020); color: var(--yt-spec-text-primary,#f1f1f1); box-shadow: 0 16px 60px #0008; }",
+      ".langform-transcript-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px 4px; flex: 0 0 auto; }",
+      ".langform-transcript-dialog h2 { margin: 0; color: inherit; font: 600 18px/1.3 system-ui,sans-serif; }",
+      ".langform-transcript-dialog button { min-height: 40px; border: 0; border-radius: 20px; padding: 0 16px; font: 600 13px/1.3 system-ui,sans-serif; color: inherit; background: var(--yt-spec-badge-chip-background,#ffffff18); cursor: pointer; }",
+      ".langform-transcript-dialog button:hover { background: var(--yt-spec-button-chip-background-hover,#ffffff29); }",
+      ".langform-transcript-dialog button:focus-visible, .langform-transcript-body:focus-visible { outline: 2px solid #8ab4f8; outline-offset: -2px; }",
+      ".langform-transcript-dialog button:disabled { opacity: .6; cursor: wait; }",
+      ".langform-transcript-dialog .langform-transcript-close { width: 40px; flex: 0 0 40px; padding: 0; font-size: 24px; background: transparent; }",
+      ".langform-transcript-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 20px 20px; white-space: pre-wrap; overflow-wrap: anywhere; -webkit-overflow-scrolling: touch; }",
+      ".langform-transcript-body p { margin: 0 0 12px; }",
+      ".langform-transcript-text { user-select: text; }",
+      ".langform-transcript-dialog footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-top: 1px solid var(--yt-spec-10-percent-layer,#ffffff1a); flex: 0 0 auto; }",
+      ".langform-transcript-status { flex: 1; font: 13px/1.4 system-ui,sans-serif; color: inherit; opacity: .85; }",
+      "@media (max-width: 600px) { .langform-transcript-sheet { padding: 16px; } .langform-transcript-dialog { max-height: min(540px,calc(100dvh - 32px)); } }",
+    ].join("\n");
+    (doc.documentElement || doc.head || doc.body).appendChild(style);
+  }
+
+  function closeTranscript(doc, restoreFocus) {
+    var sheet = doc.getElementById("langform-transcript");
+    if (!sheet) return;
+    var opener = sheet.__langformTranscriptOpener;
+    if (sheet.__langformTranscriptDispose) sheet.__langformTranscriptDispose();
+    sheet.remove();
+    if (restoreFocus && opener && opener.isConnected) opener.focus({ preventScroll: true });
+  }
+
+  function bindTranscriptButton(doc, win, card, videoId, summaryButton) {
+    // This UI is installed only in the browser extension's isolated context.
+    if (!isolatedFromPage(win) || watchIdOf(win) !== videoId) return;
+    ensureTranscriptStyle(doc);
+    if (!win.__langformTranscriptLifecycle) {
+      win.__langformTranscriptLifecycle = true;
+      ["yt-navigate-start", "state-navigatestart", "popstate", "pagehide"].forEach(function (name) {
+        win.addEventListener(name, function () {
+          win.__langformTranscriptGeneration = (win.__langformTranscriptGeneration || 0) + 1;
+          win.__langformKurzWatchButton = null;
+          closeTranscript(doc, false);
+          doc.querySelectorAll("[" + TRANSCRIPT_ATTR + "]").forEach(function (node) { node.remove(); });
+        });
+      });
+    }
+    var generation = win.__langformTranscriptGeneration || 0;
+    var existing = card.querySelectorAll("[" + TRANSCRIPT_ATTR + "]");
+    for (var i = 0; i < existing.length; i++) {
+      if (existing[i].getAttribute(TRANSCRIPT_ATTR) === videoId) return;
+      existing[i].remove();
+    }
+    card.querySelectorAll(".langform-watch-actions:empty").forEach(function (node) { node.remove(); });
+    var actions = doc.createElement("span");
+    actions.className = "langform-transcript-actions";
+    actions.setAttribute(TRANSCRIPT_ATTR, videoId);
+    var button = doc.createElement("button");
+    button.type = "button";
+    button.className = "langform-kurz-open";
+    button.textContent = "Transkript";
+    button.setAttribute("aria-haspopup", "dialog");
+    button.setAttribute("aria-controls", "langform-transcript");
+    button.setAttribute("aria-expanded", "false");
+    actions.appendChild(button);
+    var row = summaryButton.parentNode;
+    if (!row.classList.contains("langform-watch-actions")) {
+      row = doc.createElement("div");
+      row.className = "langform-watch-actions";
+      summaryButton.parentNode.insertBefore(row, summaryButton);
+      row.appendChild(summaryButton);
+    }
+    row.appendChild(actions);
+    var readyText = "", readyOwner = null;
+    function owner() {
+      var mediaRoot = doc.querySelector("#movie_player, ytd-player, ytm-player");
+      var video = mediaRoot && mediaRoot.querySelector("video");
+      return { mediaRoot: mediaRoot, video: video, source: video && (video.currentSrc || video.src || "") };
+    }
+    function sameOwner(first, second) {
+      return first && second && first.mediaRoot === second.mediaRoot && first.video === second.video && first.source === second.source;
+    }
+    function current(media) {
+      return actions.isConnected && watchIdOf(win) === videoId &&
+        (win.__langformTranscriptGeneration || 0) === generation && (!media || sameOwner(media, owner()));
+    }
+    ["pointerdown", "mousedown"].forEach(function (type) { button.addEventListener(type, stopClick, true); });
+    button.addEventListener("click", function (event) {
+      stopClick(event);
+      if (!current()) return;
+      closeTranscript(doc, false);
+      var summarySheet = doc.getElementById(PANEL_ID);
+      if (summarySheet) closeSheet(summarySheet, true);
+      var media = owner();
+      if (!sameOwner(readyOwner, media)) readyText = "";
+      var sheet = doc.createElement("div");
+      sheet.id = "langform-transcript";
+      sheet.className = "langform-transcript-sheet";
+      sheet.setAttribute("lang", "de");
+      sheet.__langformTranscriptOpener = button;
+      var backdrop = doc.createElement("div");
+      backdrop.className = "langform-transcript-backdrop";
+      backdrop.setAttribute("aria-hidden", "true");
+      var panel = doc.createElement("section");
+      panel.className = "langform-transcript-dialog";
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-modal", "true");
+      panel.setAttribute("aria-labelledby", "langform-transcript-title");
+      var header = doc.createElement("header");
+      var title = doc.createElement("h2");
+      title.id = "langform-transcript-title";
+      title.textContent = "Transkript";
+      var close = doc.createElement("button");
+      close.type = "button";
+      close.className = "langform-transcript-close";
+      close.setAttribute("aria-label", "Transkript schließen");
+      close.textContent = "×";
+      header.appendChild(title);
+      header.appendChild(close);
+      var body = doc.createElement("div");
+      body.className = "langform-transcript-body";
+      body.tabIndex = 0;
+      body.setAttribute("aria-label", "Vollständiges Transkript");
+      var footer = doc.createElement("footer");
+      var copy = doc.createElement("button");
+      copy.type = "button";
+      copy.className = "langform-transcript-copy";
+      copy.textContent = "Kopieren";
+      var status = doc.createElement("span");
+      status.className = "langform-transcript-status";
+      status.setAttribute("role", "status");
+      footer.appendChild(copy);
+      footer.appendChild(status);
+      panel.appendChild(header);
+      panel.appendChild(body);
+      panel.appendChild(footer);
+      sheet.appendChild(backdrop);
+      sheet.appendChild(panel);
+      (doc.body || doc.documentElement).appendChild(sheet);
+      button.setAttribute("aria-expanded", "true");
+      close.focus({ preventScroll: true });
+      var textPromise = null, loadTicket = 0;
+      function visible() { return sheet.isConnected && current(media); }
+      function finishClose(restore) { if (sheet.isConnected) closeTranscript(doc, restore); }
+      function expire() {
+        if (!visible()) { readyText = ""; readyOwner = null; finishClose(false); }
+      }
+      function fetchTranscript() {
+        var pageUrl = win.location.href;
+        return bridgeFor(win, videoId, pageUrl).then(function (bridge) {
+          if (!visible()) throw new Error("Videowechsel");
+          if (!bridge) return { message: FAILED };
+          return loadTranscript(videoId, {
+            player: bridge.player, pageUrl: pageUrl, ytcfg: bridge.ytcfg,
+            fetchText: bridge.fetchText, watchPage: bridge.watchPage, originalLanguage: true,
+          });
+        }).then(function (result) {
+          if (!visible()) throw new Error("Videowechsel");
+          if (!result || !result.text) throw new Error((result && result.message) || FAILED);
+          readyText = result.text;
+          readyOwner = media;
+          return result.text;
+        });
+      }
+      function load() {
+        var ticket = ++loadTicket;
+        body.textContent = "Untertitel werden geladen …";
+        body.setAttribute("aria-busy", "true");
+        panel.setAttribute("data-transcript-state", "loading");
+        status.textContent = "";
+        copy.disabled = false;
+        textPromise = readyText ? Promise.resolve(readyText) : fetchTranscript();
+        textPromise.then(function (value) {
+          if (!visible() || ticket !== loadTicket) return;
+          body.textContent = "";
+          var content = doc.createElement("p");
+          content.className = "langform-transcript-text";
+          content.textContent = value;
+          body.appendChild(content);
+          body.setAttribute("aria-busy", "false");
+          panel.setAttribute("data-transcript-state", "ready");
+        }, function (error) {
+          if (!visible() || ticket !== loadTicket) return;
+          body.textContent = "";
+          var note = doc.createElement("p");
+          note.textContent = error.message;
+          var retry = doc.createElement("button");
+          retry.type = "button";
+          retry.className = "langform-transcript-retry";
+          retry.textContent = "Erneut versuchen";
+          retry.addEventListener("click", function (event) { stopClick(event); if (visible()) load(); });
+          body.appendChild(note);
+          body.appendChild(retry);
+          body.setAttribute("aria-busy", "false");
+          panel.setAttribute("data-transcript-state", "error");
+          copy.disabled = true;
+        });
+      }
+      copy.addEventListener("click", function (event) {
+        stopClick(event);
+        if (copy.disabled || !visible()) return;
+        copy.disabled = true;
+        copy.setAttribute("aria-busy", "true");
+        status.textContent = "Wird kopiert …";
+        var text = textPromise.then(function (value) {
+          if (!visible()) throw new Error("Videowechsel");
+          return value;
+        });
+        var written;
+        try {
+          var clipboard = win.navigator && win.navigator.clipboard;
+          if (clipboard && clipboard.write && win.ClipboardItem && win.Blob) {
+            // Safari needs write() synchronously inside this explicit Copy click.
+            var blob = text.then(function (value) { return new win.Blob([value], { type: "text/plain" }); });
+            blob.catch(function () {});
+            written = clipboard.write([new win.ClipboardItem({ "text/plain": blob })]);
+          } else if (clipboard && clipboard.writeText) {
+            written = readyText ? clipboard.writeText(readyText) : text.then(function (value) {
+              if (!visible()) throw new Error("Videowechsel");
+              return clipboard.writeText(value);
+            });
+          } else written = Promise.reject(new Error("Clipboard unavailable"));
+        } catch (error) { written = Promise.reject(error); }
+        Promise.all([
+          text.then(function () { return null; }, function (error) { return error; }),
+          Promise.resolve(written).then(function () { return null; }, function (error) { return error; }),
+        ]).then(function (errors) {
+          if (!visible()) return;
+          copy.disabled = panel.getAttribute("data-transcript-state") === "error";
+          copy.setAttribute("aria-busy", "false");
+          status.textContent = errors[0] ? errors[0].message : errors[1]
+            ? "Kopieren nicht möglich. Bitte erneut versuchen." : "Transkript kopiert.";
+        });
+      }, true);
+      close.addEventListener("click", function (event) { stopClick(event); finishClose(true); });
+      sheet.addEventListener("click", function (event) {
+        event.stopPropagation();
+        if (event.target === backdrop || event.target === sheet) finishClose(true);
+      });
+      sheet.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") { stopClick(event); finishClose(true); return; }
+        // Playback shortcuts belong to the page; an open dialog owns its keys.
+        event.stopPropagation();
+        if (event.key !== "Tab") return;
+        var focusable = panel.querySelectorAll("button:not([disabled]), [tabindex='0']");
+        var first = focusable[0], last = focusable[focusable.length - 1];
+        if (first && ((event.shiftKey && doc.activeElement === first) || (!event.shiftKey && doc.activeElement === last))) {
+          event.preventDefault(); (event.shiftKey ? last : first).focus({ preventScroll: true });
+        }
+      });
+      function keepFocus(event) { if (visible() && !sheet.contains(event.target)) close.focus({ preventScroll: true }); }
+      doc.addEventListener("focusin", keepFocus);
+      doc.addEventListener("loadstart", expire, true);
+      doc.addEventListener("emptied", expire, true);
+      var observer = typeof win.MutationObserver === "function" ? new win.MutationObserver(expire) : null;
+      if (observer) observer.observe(doc.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
+      sheet.__langformTranscriptDispose = function () {
+        button.setAttribute("aria-expanded", "false");
+        doc.removeEventListener("focusin", keepFocus);
+        doc.removeEventListener("loadstart", expire, true);
+        doc.removeEventListener("emptied", expire, true);
+        if (observer) observer.disconnect();
+      };
+      load();
+    }, true);
+  }
+
   function bindButton(doc, win, card, videoId) {
     if (!card) return null;
     var existing = null;
@@ -1617,7 +1904,10 @@
       if (!existing && buttons[i].getAttribute(BUTTON_ATTR) === videoId) existing = buttons[i];
       else buttons[i].remove();
     }
-    if (existing) return existing;
+    if (existing) {
+      bindTranscriptButton(doc, win, card, videoId, existing);
+      return existing;
+    }
     ensureStyle(doc);
     var button = doc.createElement("button");
     button.type = "button";
@@ -1637,6 +1927,7 @@
       true
     );
     placeInColumn(card, button);
+    bindTranscriptButton(doc, win, card, videoId, button);
     return button;
   }
 
@@ -1798,6 +2089,8 @@
       /^YT[DM]-COMMENTS?(?:-|$)/.test(tag) || tag === "YT-COMMENT-THREAD-VIEW-MODEL" ||
       tag === "YT-COMMENT-VIEW-MODEL" ||
       node.id === PANEL_ID || node.id === "langform-chapter-chip" || node.id === "langform-chapter-sheet" ||
+      node.id === "langform-transcript" || node.id === "langform-transcript-style" ||
+      node.classList.contains("langform-watch-actions") || node.classList.contains("langform-transcript-actions") ||
       node.hasAttribute(BUTTON_ATTR) || node.id === STYLE_ID;
   }
 
@@ -1944,6 +2237,7 @@
     blocks: blocks,
     extractPlayer: extractPlayer,
     loadSummary: loadSummary,
+    loadTranscript: loadTranscript,
     videoIdFromHref: videoIdFromHref,
     decorate: decorate,
     start: start,

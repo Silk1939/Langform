@@ -59,6 +59,135 @@ function setup(t, options = {}) {
   };
 }
 
+// Match the shipped order: the common WebViewLinks capture handler exists
+// before PlayerSettings installs its own contact and click handlers.
+function closedPlayerSettings(t, kind = 'pointer') {
+  const ctx = setup(t, {url:'https://m.youtube.com/watch?v=abcdefghijk',channels:['langformWatchIntent','langformOpenWatch']});
+  const {win}=ctx,doc=win.document;
+  doc.body.insertAdjacentHTML('beforeend','<ytm-player><div id="movie_player"><video src="https://example.test/a"></video></div></ytm-player><a id="under-settings" href="/watch?v=lqr_U7cQ3s0">Recommendation</a>');
+  const root=doc.getElementById('movie_player'),video=root.querySelector('video');
+  let captions=true,now=1000;
+  win.Date.now=()=>now;
+  root.getVideoData=()=>({video_id:'abcdefghijk'});
+  root.getOptions=()=>['track'];root.isSubtitlesOn=()=>captions;
+  root.toggleSubtitles=()=>{captions=!captions;};
+  Object.defineProperties(video,{readyState:{value:4},duration:{value:200},videoWidth:{value:1920},videoHeight:{value:1080}});
+  const contact=(target,type,mode=kind)=>{
+    const event=mode==='pointer'?new win.MouseEvent(type,{bubbles:true,cancelable:true,clientX:20,clientY:130}):new win.Event(type,{bubbles:true,cancelable:true});
+    if(mode==='pointer')Object.defineProperties(event,{pointerId:{value:3},isPrimary:{value:true}});
+    else {const point={identifier:3,clientX:20,clientY:130};Object.defineProperties(event,{touches:{value:type==='touchend'?[]:[point]},changedTouches:{value:[point]}});}
+    target.dispatchEvent(event);
+  };
+  win.eval(fs.readFileSync(path.join(__dirname,'../ios/Langform/Langform/PlayerSettings.js'),'utf8'));
+  doc.querySelector('.lf-settings-gear').click();
+  doc.querySelector('[data-setting="captions"]').click();
+  const off=doc.querySelector('[data-caption="false"]');
+  contact(off,kind==='pointer'?'pointerdown':'touchstart');
+  contact(off,kind==='pointer'?'pointerup':'touchend');
+  assert.equal(captions,false);assert.equal(win.__langformPlayerSettings.isOpen(),false);
+  assert.equal(ctx.bodies.length,0);
+  return {...ctx,contact,advance:ms=>{now+=ms;}};
+}
+
+for(const kind of ['pointer','touch'])test(`closed settings ${kind} release cannot reach the earlier native recommendation router`,t=>{
+  const ctx=closedPlayerSettings(t,kind);let playerClicks=0;
+  ctx.win.__langformHandlePlayerClick=()=>{playerClicks++;return false;};
+  ctx.advance(1700);
+  const click=ctx.tap('under-settings',{detail:1,clientX:20,clientY:130});
+  assert.equal(click.defaultPrevented,true);
+  assert.deepEqual(ctx.messages,[],'no native WatchIntent may escape before the later settings capture listener');
+  assert.equal(playerClicks,0,'the same release cannot toggle the underlying player controls');
+  assert.equal(ctx.spaClicks(),0,'the website recommendation handler must not receive the click either');
+});
+
+for(const reason of ['fresh-pointer','fresh-touch','keyboard','elsewhere','expired','route','navigation','pagehide'])test(`settings trailing-click bridge preserves legitimate ${reason} navigation`,t=>{
+  const ctx=closedPlayerSettings(t),{win}=ctx,link=win.document.getElementById('under-settings');
+  if(reason==='fresh-pointer'){ctx.contact(link,'pointerdown');ctx.contact(link,'pointerup');}
+  if(reason==='fresh-touch'){ctx.contact(link,'touchstart','touch');ctx.contact(link,'touchend','touch');}
+  if(reason==='expired')ctx.advance(2600);
+  if(reason==='route')win.history.replaceState({},'','/watch?v=zyxwvutsrqp');
+  if(reason==='navigation')win.dispatchEvent(new win.Event('yt-navigate-start'));
+  if(reason==='pagehide')win.dispatchEvent(new win.Event('pagehide'));
+  ctx.tap('under-settings',{detail:reason==='keyboard'?0:1,clientX:reason==='elsewhere'?150:20,clientY:130});
+  assert.deepEqual(ctx.messages,[{name:'langformWatchIntent',href:'https://m.youtube.com/watch?v=lqr_U7cQ3s0'}]);
+  assert.equal(ctx.spaClicks(),0,'the native router retains its existing authority');
+});
+
+for(const modifier of ['metaKey','ctrlKey','shiftKey','altKey','button'])test(`settings trailing-click bridge preserves ${modifier} browser handling`,t=>{
+  const ctx=closedPlayerSettings(t),before=ctx.spaClicks();
+  ctx.tap('under-settings',{detail:1,clientX:20,clientY:130,[modifier]:modifier==='button'?2:true});
+  assert.deepEqual(ctx.messages,[]);
+  assert.equal(ctx.spaClicks(),before+1,'modified clicks are not claimed by either native bridge');
+});
+
+test("native Lupe öffnet UIKit-Suche vor dem originalen Weboverlay", t => {
+  const ctx = setup(t, {channels:["langformOpenWatch","langformNativeSearch"]});
+  ctx.win.document.body.insertAdjacentHTML('afterbegin','<ytm-header><button class="topbar-button-search-button" id="native-search">Suchen</button></ytm-header>');
+  ctx.tap('native-search');
+  assert.equal(ctx.spaClicks(),0);
+  assert.equal(ctx.bodies.length,1);
+  assert.equal(ctx.bodies[0].action,'open');
+  assert.equal(ctx.bodies[0].href,ctx.win.location.href);
+});
+test("tatsächliche 6,1-Zoll-Lupe Bei YouTube suchen öffnet die native Suche", t => {
+  const ctx = setup(t, {channels:["langformOpenWatch","langformNativeSearch"]});
+  ctx.win.document.body.insertAdjacentHTML('afterbegin','<ytm-mobile-topbar-renderer><button aria-label="Bei YouTube suchen" id="actual-search"><svg></svg></button></ytm-mobile-topbar-renderer>');
+  ctx.tap('actual-search');
+  assert.equal(ctx.spaClicks(),0);assert.equal(ctx.bodies[0].action,'open');
+});
+test("native Suche bindet frühe Pointerfreigabe und späten WK-Klick an denselben Kontakt", t => {
+  const ctx=setup(t,{channels:['langformOpenWatch','langformNativeSearch']});
+  ctx.win.document.body.insertAdjacentHTML('afterbegin','<div aria-label="Bei YouTube suchen" id="search-entry">Suchen</div>');
+  let now=1000;ctx.win.Date.now=()=>now;
+  const pointer=(name,x=20,y=20)=>{const e=new ctx.win.MouseEvent(name,{bubbles:true,cancelable:true,clientX:x,clientY:y});Object.defineProperty(e,'pointerId',{value:7});ctx.win.document.getElementById('search-entry').dispatchEvent(e)};
+  pointer('pointerdown');assert.equal(ctx.bodies.length,0);pointer('pointerup');assert.equal(ctx.bodies.length,1);
+  ctx.win.dispatchEvent(new ctx.win.Event('blur'));now=2900;ctx.tap('search-entry',{detail:1});
+  assert.deepEqual(ctx.bodies.map(b=>b.action),['open','focus'],'the late WebKit handoff restores focus without reopening a dismissed overlay');
+  pointer('pointerdown');pointer('pointerup');assert.deepEqual(ctx.bodies.map(b=>b.action),['open','focus','open'],'fresh physical tap remains available');
+});
+test("Ziehen ab Suchknopf aktiviert weder bei Release noch beim Nachklick die Suche",t=>{
+  const ctx=setup(t,{channels:['langformOpenWatch','langformNativeSearch']});ctx.win.document.body.insertAdjacentHTML('afterbegin','<div aria-label="Bei YouTube suchen" id="moving-search">Suchen</div>');
+  for(const [name,x] of [['pointerdown',20],['pointermove',65],['pointerup',65]]){
+    const e=new ctx.win.MouseEvent(name,{bubbles:true,cancelable:true,clientX:x,clientY:20});Object.defineProperty(e,'pointerId',{value:9});ctx.win.document.getElementById('moving-search').dispatchEvent(e);
+  }
+  ctx.tap('moving-search',{detail:1});assert.equal(ctx.bodies.length,0);
+});
+
+test("native Suche übernimmt ein getipptes Ergebnis-Suchfeld ohne Webfokus", t => {
+  const ctx = setup(t, {url:'https://m.youtube.com/results?search_query=NASA',channels:["langformOpenWatch","langformNativeSearch"]});
+  ctx.win.document.body.insertAdjacentHTML('afterbegin','<yt-searchbox><input name="search_query" value="NASA" id="native-input"></yt-searchbox>');
+  ctx.tap('native-input');
+  assert.equal(ctx.bodies[0].action,'open');
+  assert.notEqual(ctx.win.document.activeElement.id,'native-input');
+});
+test("native search receives the current custom filter after canonical URL cleanup",t=>{
+  const ctx=setup(t,{url:'https://m.youtube.com/results?search_query=NASA&sp=EgIQAQ%253D%253D',channels:['langformOpenWatch','langformNativeSearch']});
+  ctx.win.__langformSearchFilter=()=> 'unwatched';
+  ctx.win.document.body.insertAdjacentHTML('afterbegin','<ytm-header><button class="topbar-button-search-button" id="custom-filter-search">Suchen</button></ytm-header>');
+  ctx.tap('custom-filter-search');assert.equal(ctx.bodies[0].filter,'unwatched');
+});
+
+test("native Watch-Suchübergabe braucht kein hydriertes Webfeld und bleibt bis Frame widerrufbar", t => {
+  const frames=[];
+  const ctx=setup(t,{channels:['langformOpenWatch','langformNativeSearch','langformFeedSearch'],beforeScript(win){win.requestAnimationFrame=cb=>{frames.push(cb);return frames.length};win.cancelAnimationFrame=()=>{}}});
+  assert.equal(ctx.win.__langformOpenSearch(10),true);
+  assert.equal(ctx.bodies.length,0);
+  frames.shift()();
+  assert.equal(ctx.bodies[0].action,'open');assert.equal(ctx.bodies[0].ticket,10);
+  assert.equal(ctx.bodies[1].opened,true);
+  assert.equal(ctx.win.__langformOpenSearch(11),true);
+  ctx.win.__langformFeedActive=false;
+  ctx.win.dispatchEvent(new ctx.win.Event('langform-feed-visibility'));
+  frames.shift()();
+  assert.equal(ctx.bodies.filter(b=>b.action==='open').length,1);
+});
+
+test("ausgefallene native Suchbrücke erhält die originale Lupenaktion", t => {
+  const ctx=setup(t,{channels:['langformOpenWatch','langformNativeSearch'],beforeScript(win){win.webkit.messageHandlers.langformNativeSearch.postMessage=()=>{throw new Error('gone')}}});
+  ctx.win.document.body.insertAdjacentHTML('afterbegin','<ytm-header><button class="topbar-button-search-button" id="failed-native-search">Suchen</button></ytm-header>');
+  ctx.tap('failed-native-search');assert.equal(ctx.spaClicks(),1);assert.equal(ctx.bodies.length,0);
+});
+
 test("Abos → Startseite navigiert auch bei schon geänderter URL vor YouTubes altem Feed", t => {
   const ctx = setup(t);
   ctx.tap("home");
@@ -807,7 +936,7 @@ test("Scrollgesten über 8 Pixel, fremde Pointer und Mehrfinger-Gesten lösen ke
 });
 
 test("Abbruch, Scrollen, Tabwechsel, Navigation, Hintergrund und Reduced Motion räumen Press-Animationen auf", t => {
-  for (const trigger of ["pointercancel", "scroll", "blur", "pagehide", "yt-navigate-start", "feed-inactive", "hidden", "reduce"]) {
+  for (const trigger of ["pointercancel", "scroll", "blur", "pagehide", "yt-navigate-start", "feed-inactive", "hidden", "real-hidden", "native-inactive", "reduce"]) {
     const ctx = motionSetup(t);
     const { image } = thumbnail(ctx);
     ctx.pointer("pointerdown", image);
@@ -818,6 +947,10 @@ test("Abbruch, Scrollen, Tabwechsel, Navigation, Hintergrund und Reduced Motion 
     } else if (trigger === "hidden") {
       Object.defineProperty(ctx.win.document, "hidden", { value: true });
       ctx.win.document.dispatchEvent(new ctx.win.Event("visibilitychange"));
+    } else if (trigger === "real-hidden" || trigger === "native-inactive") {
+      ctx.win.__langformRealVisibility = {hidden:()=>trigger === "real-hidden",inactive:()=>true};
+      Object.defineProperty(ctx.win.document,"hidden",{value:false});
+      ctx.win.document.dispatchEvent(new ctx.win.Event("langform-real-visibilitychange"));
     } else if (trigger === "reduce") {
       ctx.media.matches = true;
       ctx.media.dispatchEvent(new ctx.win.Event("change"));

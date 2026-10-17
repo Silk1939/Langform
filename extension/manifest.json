@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Shorts ausblenden",
-  "version": "1.0.6",
+  "version": "1.0.11",
   "author": "Tan Ipekkaya",
   "description": "Blendet YouTube Shorts aus und leitet Shorts-Seiten auf die Startseite um.",
   "browser_specific_settings": {
@@ -10,7 +10,7 @@
       "strict_min_version": "109.0"
     }
   },
-  "permissions": ["storage", "nativeMessaging"],
+  "permissions": ["storage", "nativeMessaging", "clipboardWrite"],
   "background": {
     "scripts": ["src/background.js"],
     "service_worker": "src/background.js"
@@ -48,7 +48,9 @@
         "src/hide.js",
         "src/controller.js",
         "src/summary.js",
+        "src/ad-skip.js",
         "src/ads.js",
+        "src/playback-shortcuts.js",
         "src/content.js"
       ],
       "run_at": "document_start",
@@ -59,7 +61,7 @@
         "https://www.youtube.com/*",
         "https://m.youtube.com/*"
       ],
-      "js": ["src/page-captions.js"],
+      "js": ["src/page-adblock.js", "src/page-captions.js"],
       "run_at": "document_start",
       "all_frames": false,
       "world": "MAIN"

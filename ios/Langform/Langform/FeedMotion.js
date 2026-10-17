@@ -11,7 +11,7 @@
   var documentToken = String(win.performance && win.performance.timeOrigin || Date.now());
   win.__langformFeedDocumentToken = documentToken;
   var content = "ytm-rich-item-renderer, ytm-video-with-context-renderer, ytm-video-renderer, ytm-compact-video-renderer, ytm-grid-video-renderer, ytm-channel-renderer, ytd-rich-item-renderer, ytd-video-renderer, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-channel-renderer, yt-lockup-view-model";
-  var message = "ytm-message-renderer, ytm-error-message-renderer, ytm-background-promo-renderer, ytd-message-renderer, ytd-error-message-renderer, ytd-background-promo-renderer";
+  var message = "ytm-message-renderer, ytm-error-message-renderer, ytm-background-promo-renderer, ytm-sign-in-promo-with-background-renderer, ytd-message-renderer, ytd-error-message-renderer, ytd-background-promo-renderer";
   var watchLinks = 'a[href^="/watch?"], a[href^="https://m.youtube.com/watch?"], a[href^="https://www.youtube.com/watch?"], a[href^="https://youtube.com/watch?"]';
   var channels = "ytm-channel-renderer, ytd-channel-renderer";
   var failedImages = new WeakMap(), decodedImages = new WeakMap(), decodingImages = new WeakMap();
@@ -217,11 +217,13 @@
   var searchAnimation = null;
   var searchHalo = null;
   var reduced = win.matchMedia && win.matchMedia("(prefers-reduced-motion: reduce)");
-  var ease = "cubic-bezier(.16, 1, .3, 1)";
+  var motion = win.__langformMotion;
+  var ease = motion ? motion.easings.enter : "cubic-bezier(.16, 1, .3, 1)";
+  var pressScale = motion ? String(motion.scales.card) : ".98";
 
   function active() {
     return alive && !navigating && win.__langformFeedActive !== false && !doc.hidden &&
-      !(reduced && reduced.matches) && win.location && !/^\/watch(?:\/|$)/.test(win.location.pathname);
+      !(reduced && reduced.matches) && !(motion && motion.reduceSpatialMotion) && win.location && !/^\/watch(?:\/|$)/.test(win.location.pathname);
   }
   function covered() {
     return typeof win.__langformHasOpenOverlay === "function" && win.__langformHasOpenOverlay();
@@ -371,8 +373,8 @@
     var existing = win.getComputedStyle(node).scale;
     if (existing && existing !== "none" && existing !== "1" && existing !== "1 1") return;
     try {
-      pressAnimation = node.animate([{ scale: from && from !== "none" ? from : "1" }, { scale: ".98" }], {
-        duration: 100, easing: ease, fill: "forwards"
+      pressAnimation = node.animate([{ scale: from && from !== "none" ? from : "1" }, { scale: pressScale }], {
+        duration: motion ? motion.durations.pressIn : 100, easing: ease, fill: "forwards"
       });
       pressNode = node;
       press = { node: node, x: point.clientX, y: point.clientY, id: id };
@@ -390,8 +392,8 @@
     stopPress();
     if (!active() || !node.isConnected || covered()) return;
     try {
-      var animation = node.animate([{ scale: scale && scale !== "none" ? scale : ".98" }, { scale: "1" }], {
-        duration: 160, easing: ease
+      var animation = node.animate([{ scale: scale && scale !== "none" ? scale : pressScale }, { scale: "1" }], {
+        duration: motion ? motion.durations.pressOut : 160, easing: ease
       });
       pressAnimation = animation;
       pressNode = node;
@@ -496,6 +498,7 @@
   win.addEventListener("pagehide", function () { alive = false; suspend(); });
   win.addEventListener("pageshow", function () { alive = true; navigating = false; wake(); });
   win.addEventListener("langform-feed-visibility", wake);
+  win.addEventListener("langform-motion-change", wake);
   doc.addEventListener("visibilitychange", wake);
   ["yt-navigate-start", "state-navigatestart"].forEach(function (name) {
     win.addEventListener(name, function () { navigating = true; suspend(); });

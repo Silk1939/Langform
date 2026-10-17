@@ -217,7 +217,7 @@ class RotationStage: ScrollStage {
     func discardFeedOpening() {}
     var viewportGeneration = 0, playerLayoutSize = viewport
     var loadTicket = 1
-    var videoSeekGeometry: (rect: CGRect, videoID: String, ticket: Int, viewport: Int)?
+    var videoSeekGeometry: (rect: CGRect, seek: CGRect, videoID: String, ticket: Int, viewport: Int)?
     var revealer: UIViewPropertyAnimator?, settler: UIViewPropertyAnimator?, dismisser: UIViewPropertyAnimator?
     var settlingBetweenModes = false, dragging = false, awaitingViewportGeometry = false
     var cropCorrection: PlayerViewportPolicy.SurfaceCorrection?

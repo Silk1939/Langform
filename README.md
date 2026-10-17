@@ -38,7 +38,7 @@ Der UI-Runner benötigt eine installierte iOS-Simulatorlaufzeit. Für ein eigene
 - `apps/langform/`: separate Next.js-Web-App; Änderungen dort wirken nicht automatisch auf die native App.
 - `tests/`, `scripts/` und `ios/DeviceTests/`: Regressionen, Builds und Simulatorprüfung.
 
-**Arbeitsstand und Bugcheck:** [Gemeinsames Backlog](docs/VERBESSERUNGS_BACKLOG.md) zuerst lesen und nach Änderungen aktualisieren. Der dokumentierte iPhone-Stand ist Build 63; persönliche Gesten-, Ton-, Hintergrund- und Systemmedienabnahmen sowie die breite Simulatorwiederholung bleiben offen. [Übergabe](UEBERGABE.md) enthält zusätzlich historische Befunde.
+**Arbeitsstand und Bugcheck, 17.10.2026:** Der aktuelle iPhone-Quellstand ist Build **72**, bisher nur im Simulator gebaut und gezielt geprüft. Auf dem echten iPhone ist zuletzt Build **71** vom 16.10.2026 bestätigt. Persönliche Gesten-, Motion-, Ton-, Bluetooth-, Hintergrund- und Systemmedienabnahmen bleiben offen. Zum Weiterarbeiten zuerst die [kurze Entwickleranleitung](docs/WEITERARBEITEN.md) und das [gemeinsame Backlog](docs/VERBESSERUNGS_BACKLOG.md) lesen; das Backlog nach Änderungen aktualisieren. Die [Übergabe](UEBERGABE.md) trennt den aktuellen Einstieg von historischen Befunden. Die aktuelle Exportkopie besteht 2.266 Root- und 87 Webtests, Web-Lint und Produktionsbuild sowie den gezielten iOS-Simulatorfall35. Zwei bestätigte Fehler sind korrigiert; der offene Abhängigkeitsbefund LF-74 ist dokumentiert. [Prüfstand](docs/GITHUB_UEBERGABE_PRUEFUNG_2026-10-17.json).
 
 Lokale QA-Aufnahmen, Rohlogs, Netzantworten und Buildprodukte bleiben außerhalb von GitHub. Historische Links nach `docs/qa/` beziehen sich deshalb überwiegend auf lokale Nachweise und sind im öffentlichen Repo nicht verfügbar. Die beiden öffentlichen JSON-Fixtures, die `npm test` benötigt, sind enthalten. Drittanbieterhinweise für den Downloadresolver: `ios/Langform/Langform/ThirdPartyLicensing.txt`.
 
@@ -69,7 +69,9 @@ Das [gemeinsame Projektbacklog](docs/VERBESSERUNGS_BACKLOG.md) führt Features, 
   Seit Safari-Version 1.0.5 erzeugt das Modell direkt die benötigten Felder. Dadurch entfällt zusätzlicher Nachtext nach dem Merksatz, den die Oberfläche bislang verworfen hat. Der fertig formulierte TLDR kann bereits während der restlichen Generierung erscheinen und bleibt als laufende Vorschau markiert. Bei langen Quellen zeigt das Blatt den tatsächlichen Bearbeitungsschritt. Optionale Statusabfragen laufen neben der unverändert offenen Hauptanfrage; sie starten keine weitere Berechnung. Vorschauen werden nur im Arbeitsspeicher gehalten, nach Profil und Anfrage getrennt und niemals als fertige Kurzfassung gespeichert.
 
   Für längere Safari-Anfragen hält ein eigener Nachrichtenport den Hintergrund aktiv. Der Seitenkontext sendet alle 20 Sekunden einen Heartbeat, den der Hintergrund beantwortet, bis die Modellanfrage endet. Diese Nachrichten starten keine zusätzliche Zusammenfassung. Der Port akzeptiert nur die eigene Erweiterung auf den erlaubten HTTPS-YouTube-Ursprüngen.
-- Blendet Werbung aus (`src/ads.js`): Banner, Begleitanzeigen, Masthead und Werbeplätze im Feed verschwinden per Stylesheet. Eine Videowerbung wird mit YouTubes eigenem Knopf **Überspringen** übersprungen, sobald es ihn gibt. Ohne Knopf wird sie stummgeschaltet und läuft an ihr Ende, danach kommt der Ton zurück. Das Hauptvideo wird dabei nie angehalten oder verschoben.
+- **Transkript** neben „Kurzfassung“ öffnet ein kleines Fenster direkt in YouTube. Dort lassen sich die vollständigen verfügbaren Untertitel lesen und mit **Kopieren** übernehmen. Das Fenster lässt sich über ×, Escape oder den Hintergrund schließen. Status und Abnahme stehen im [Backlog unter LF-60](docs/VERBESSERUNGS_BACKLOG.md#lf-60--copy-transcript-in-der-safari-erweiterung--13102026).
+- **A/S/D auf der Videoseite:** D startet ein pausiertes Video mit **1×**. Läuft das Video bereits, verdoppelt jeder Druck das tatsächliche Tempo bis **8×** (1× → 2× → 4× → 8×). S pausiert und setzt die Geschwindigkeit sofort auf **1×**. Auch jede Pause per Leertaste oder Mausklick setzt auf 1× zurück, sodass die nächste Wiedergabe normal beginnt. A halbiert bei laufendem Schnellvorlauf das Tempo (8× → 4× → 2× → 1×); bei 1× oder Pause springt A **5 Sekunden zurück**. Gedrückthalten erhöht das Tempo nicht; Suchfelder, Kommentare und offene Dialoge behalten ihre normale Tastaturbedienung. [Status unter LF-64](docs/VERBESSERUNGS_BACKLOG.md#lf-64--safari-wiedergabe-über-asd--14102026).
+- **Werbung automatisch entfernen:** Die Safari-Erweiterung filtert Werbeplätze schon aus den Playerantworten, bevor YouTube sie abspielt. Banner, Begleitanzeigen, Masthead und Feedanzeigen werden ausgeblendet. Verbleibende Videowerbung wird über YouTubes eigenen Knopf **Überspringen** beendet, sobald er freigegeben wird – auch wenn er zunächst gesperrt war. Ohne verfügbaren Knopf bleibt die Werbung stumm; bei gepufferten Streams übernimmt YouTube den Übergang zum Hauptvideo. Das Hauptvideo wird dabei nie angehalten oder verschoben. Wechselnde oder direkt in den Videostream eingebaute Werbeformen können weiterhin durchkommen. [Stand und Prüfung unter LF-71](docs/VERBESSERUNGS_BACKLOG.md#lf-71--safari-werbung-verhindern-und-überspringen--15102026).
 - Kein Server, keine Auswertung, keine weiteren Dienste. Kein Download, kein Auslesen von Stream-Adressen.
 
 ## Was sie nicht tut
@@ -94,6 +96,16 @@ Mit einer kostenlosen Apple-ID muss die App etwa alle **7 Tage** neu signiert we
 
 ## Auf dem Mac in Safari
 
+Für die Weitergabe einer fertigen Test-App gibt es [eine Installationsanleitung](scripts/safari-friend/INSTALLIEREN.txt), einen optionalen lokalen Kopierhelfer und [Hilfe für Claude](scripts/safari-friend/CLAUDE.md). Der Empfänger braucht für die fertige App kein Xcode. Sie ist eine Ad-hoc-signierte Beta ohne Notarisierung; Safari verlangt nach jedem vollständigen Beenden erneut „Nicht signierte Erweiterungen erlauben“. Empfängerinstallation und Live-Funktion bleiben im gemeinsamen [Backlog unter LF-59](docs/VERBESSERUNGS_BACKLOG.md#lf-59--safari-testpaket-für-einen-freund--13102026) dokumentiert.
+
+Ein separater Universal-Build für Intel und Apple Silicon mit macOS-Mindestziel 12 lässt sich mit vollständigem Xcode ohne Apple-Account oder Zertifikatsverwaltung erzeugen. Einen neuen, noch nicht vorhandenen Ausgabeordner wählen:
+
+```bash
+python3 scripts/build-safari-friend.py --output "$HOME/Downloads/Langform-Safari-Neubau"
+```
+
+Die erzeugte `Langform Safari.app` wird danach gemäß der Installationsanleitung abgelegt. Lokale Apple-Kurzfassungen benötigen weiterhin ein verfügbares Apple-Intelligence-Modell auf einem kompatiblen Mac mit macOS 26 oder neuer; das Mindestziel des Bundles ist keine Geräteabnahme. Der nachfolgende historische Entwicklerweg verwendet dagegen Tans festgelegte lokale Signierung.
+
 Voraussetzung: Xcode aus dem App Store, einmal geöffnet, damit die Kommandozeilenwerkzeuge da sind.
 
 1. Im Terminal in diesen Projektordner wechseln und ausführen:
@@ -109,7 +121,7 @@ Voraussetzung: Xcode aus dem App Store, einmal geöffnet, damit die Kommandozeil
 4. App und Extension sind bereits auf manuelle Signierung mit der festgelegten vorhandenen Identität eingestellt. Diese muss im Schlüsselbund vorhanden und gültig sein. Fehlende Signierungsmittel bewusst bereitstellen; **Automatically manage signing** ausgeschaltet lassen.
 5. Run (⌘R). Die kleine Mac-App startet und bietet an, die Safari-Einstellungen zu öffnen.
 6. Safari → Einstellungen → Erweiterungen → „Shorts ausblenden“ aktivieren und den Zugriff auf `www.youtube.com` erlauben.
-7. Lehnt Safari die Erweiterung als unsigniert ab: Safari → Einstellungen → Erweitert → „Funktionen für Webentwickler anzeigen“. Danach im Menü Entwickeln → „Nicht signierte Erweiterungen erlauben“. Safari neu starten und die Erweiterung erneut aktivieren.
+7. Lehnt Safari die Erweiterung als unsigniert ab: Safari → Einstellungen → Erweitert → „Funktionen für Webentwickler anzeigen“. In Safari 17 oder neuer danach Einstellungen → Entwickler → „Nicht signierte Erweiterungen erlauben“; bei älteren Versionen steht die Option im Menü Entwickeln. Anschließend die Erweiterung aktivieren. Die Erlaubnis wird beim vollständigen Beenden von Safari zurückgesetzt.
 
 Nach Änderungen an `extension/` das Konverter-Skript erneut ausführen, damit Xcode die neue Fassung kopiert.
 

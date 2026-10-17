@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { JSDOM } = require("jsdom");
-const source = fs.readFileSync(path.join(__dirname, "../ios/Langform/Langform/PlayerRect.js"), "utf8");
+const source = fs.readFileSync(process.env.LANGFORM_PLAYERRECT_TEST_SOURCE || path.join(__dirname, "../ios/Langform/Langform/PlayerRect.js"), "utf8");
 
 async function setup(t, { observe = true, url = "https://m.youtube.com/watch?v=abcdefghijk" } = {}) {
   const dom = new JSDOM('<!doctype html><div id="movie_player"></div>', { url, runScripts: "outside-only" });
@@ -153,4 +153,94 @@ test("SPA nach einem leeren Hauptplayer armiert die Discovery neu; ein vorhanden
   assert.equal(p.posts.at(-1).hasVideo, true);
   assert.equal(p.observers.filter(observer => observer.connected).length, 0);
   assert.equal(p.timers.size, 0);
+});
+
+async function endedPage(t) {
+  const p=await setup(t),video=p.video();let plays=0;
+  const hidden={left:0,top:-568,width:402,height:226},inline={left:50,top:110,width:301,height:226};
+  let box=hidden;
+  Object.defineProperties(video,{ended:{value:true,writable:true},paused:{value:true,writable:true},readyState:{value:4},videoWidth:{value:640},videoHeight:{value:480},duration:{value:19.014},currentTime:{value:19.014,writable:true}});
+  video.getBoundingClientRect=()=>box;
+  p.root.getBoundingClientRect=()=>({left:0,top:110,width:402,height:226});
+  p.root.playVideo=()=>{plays++;video.ended=false;video.paused=false;video.currentTime=0;box=inline;video.dispatchEvent(new p.win.Event('playing'));};
+  return {...p,video,hidden,inline,plays:()=>plays,setBox:value=>{box=value;},measure:()=>p.win.__langformMeasureVideo()};
+}
+const geometry=report=>[report.x,report.y,report.width,report.height];
+test('the real ended offscreen-media geometry reports the visible current endscreen; replay returns to the actual 4:3 media box',async t=>{
+  const p=await endedPage(t),report=p.measure();
+  assert.deepEqual(geometry(report),[0,110,402,226]);assert.equal(report.playbackState,'ended');assert.equal(report.playing,false);assert.equal(report.mediaReady,true);
+  p.video.dispatchEvent(new p.win.Event('ended'));p.frame();assert.deepEqual(geometry(p.posts.at(-1)),[0,110,402,226]);assert.equal(p.plays(),0,'measuring the endscreen never restarts media');
+  assert.equal(p.win.__langformPlay('abcdefghijk'),true);assert.equal(p.plays(),1);assert.deepEqual(geometry(p.measure()),[50,110,301,226]);
+});
+for(const mode of ['mismatchedID','missingID','staleRoute','adData','adDataTruthy','ad-showing','ad-interrupting','documentFullscreen','nativeVideoFullscreen','playerFullscreen','customFullscreen'])test('ended viewport fallback excludes '+mode,async t=>{
+  const p=await endedPage(t);
+  if(mode==='mismatchedID')p.root.getVideoData=()=>({video_id:'lmnopqrstuv'});
+  if(mode==='missingID')p.root.getVideoData=()=>({});
+  if(mode==='staleRoute')p.win.history.replaceState({},'', '/watch?v=lmnopqrstuv');
+  if(mode==='adData')p.root.getVideoData=()=>({video_id:'abcdefghijk',isAd:true});
+  if(mode==='adDataTruthy')p.root.getVideoData=()=>({video_id:'abcdefghijk',isAd:1});
+  if(mode==='ad-showing'||mode==='ad-interrupting')p.root.classList.add(mode);
+  if(mode==='documentFullscreen')Object.defineProperty(p.win.document,'fullscreenElement',{value:p.root});
+  if(mode==='nativeVideoFullscreen')Object.defineProperty(p.video,'webkitDisplayingFullscreen',{value:true});
+  if(mode==='playerFullscreen')p.root.isFullscreen=()=>true;
+  if(mode==='customFullscreen')p.win.__langformFullscreen={isOpen:()=>true};
+  assert.deepEqual(geometry(p.measure()),[0,-568,402,226]);assert.equal(p.plays(),0);
+});
+for(const mode of ['display','visibility','opacity','ancestor','zero','outside','invalid','throwing'])test('a genuinely hidden or invalid ended root does not create visible geometry ('+mode+')',async t=>{
+  const p=await endedPage(t);
+  if(mode==='display')p.root.style.display='none';
+  if(mode==='visibility')p.root.style.visibility='hidden';
+  if(mode==='opacity')p.root.style.opacity='0';
+  if(mode==='ancestor')p.win.document.body.style.display='none';
+  if(mode==='zero')p.root.getBoundingClientRect=()=>({left:0,top:110,width:0,height:0});
+  if(mode==='outside')p.root.getBoundingClientRect=()=>({left:0,top:1000,width:402,height:226});
+  if(mode==='invalid')p.root.getBoundingClientRect=()=>({left:NaN,top:110,width:402,height:226});
+  if(mode==='throwing')p.root.getBoundingClientRect=()=>{throw Error('detached layout');};
+  assert.deepEqual(geometry(p.measure()),[0,-568,402,226]);assert.equal(p.plays(),0);
+});
+test('ended fallback preserves visible media, paused geometry and a valid owner zoom basis',async t=>{
+  const p=await endedPage(t);p.setBox(p.inline);assert.deepEqual(geometry(p.measure()),[50,110,301,226]);
+  p.setBox(p.hidden);p.video.ended=false;assert.deepEqual(geometry(p.measure()),[0,-568,402,226]);
+  p.video.ended=true;p.win.__langformPlaybackZoom={getLayoutRect:()=>({left:20,top:110,width:360,height:226})};
+  assert.deepEqual(geometry(p.measure()),[20,110,360,226]);assert.equal(p.plays(),0);
+});
+test('opt-in geometry diagnostics observe only a successfully posted full report and keep the real raw media rect separate',async t=>{
+  const p=await endedPage(t),seen=[];p.win.__langformPlayerRectDiagnostic=body=>seen.push(body);
+  p.measure();assert.equal(seen.length,0,'a read-only native measure is not a posted report');
+  p.video.dispatchEvent(new p.win.Event('ended'));p.frame();assert.equal(seen.length,1);
+  assert.deepEqual(geometry(seen[0]),[0,110,402,226]);assert.equal(seen[0].playerVideoID,'abcdefghijk');assert.equal(seen[0].playbackState,'ended');
+  assert.equal(seen[0].href,p.win.location.href);assert.equal(p.video.getBoundingClientRect().top,-568);
+  p.video.dispatchEvent(new p.win.Event('ended'));p.frame();assert.equal(seen.length,1,'unchanged reports remain deduplicated');
+});
+test('a failing opt-in geometry diagnostic never blocks the production media report',async t=>{
+  const p=await endedPage(t);p.win.__langformPlayerRectDiagnostic=()=>{throw Error('diagnostic only');};
+  p.video.dispatchEvent(new p.win.Event('ended'));p.frame();assert.deepEqual(geometry(p.posts.at(-1)),[0,110,402,226]);
+  assert.equal(p.win.__langformPlay('abcdefghijk'),true);p.frame();assert.deepEqual(geometry(p.posts.at(-1)),[50,110,301,226]);
+});
+
+async function posterPage(t) {
+  const p=await setup(t),video=p.video();let plays=0,box={left:0,top:-568,width:402,height:226};
+  Object.defineProperties(video,{ended:{value:false,writable:true},paused:{value:true,writable:true},readyState:{value:0,writable:true},duration:{value:NaN,writable:true},currentTime:{value:0,writable:true},videoWidth:{value:0,writable:true},videoHeight:{value:0,writable:true}});
+  video.getBoundingClientRect=()=>box;
+  p.root.getBoundingClientRect=()=>({left:0,top:110,width:402,height:226});
+  p.root.playVideo=()=>{plays++;video.paused=false;video.readyState=4;video.duration=19.014;video.videoWidth=320;video.videoHeight=240;box={left:50,top:110,width:301,height:226};video.dispatchEvent(new p.win.Event('playing'));};
+  return {...p,video,plays:()=>plays,measure:()=>p.win.__langformMeasureVideo()};
+}
+test('an actual unstarted offscreen media node reports its visible poster without pretending decoded frames; explicit native Play starts the same owner',async t=>{
+  const p=await posterPage(t),report=p.measure();
+  assert.deepEqual(geometry(report),[0,110,402,226]);assert.equal(report.playbackState,'unstarted');assert.equal(report.mediaReady,false);assert.equal(report.mediaPresented,false);assert.equal(p.plays(),0);
+  p.video.dispatchEvent(new p.win.Event('loadstart'));p.frame();assert.deepEqual(geometry(p.posts.at(-1)),[0,110,402,226]);
+  assert.equal(p.win.__langformPlay('abcdefghijk'),true);assert.equal(p.plays(),1);assert.deepEqual(geometry(p.measure()),[50,110,301,226]);assert.equal(p.measure().playbackState,'playing');
+});
+test('poster fallback never turns a deliberate zero-time pause, decoded stream, ad, stale owner or hidden root into new playable geometry',async t=>{
+  for(const mode of ['pauseAtZero','decoded','mismatchedID','ad','hidden','fullscreen']) {
+    const p=await posterPage(t);
+    if(mode==='pauseAtZero')p.root.getPlayerState=()=>2;
+    if(mode==='decoded')p.video.readyState=4;
+    if(mode==='mismatchedID')p.root.getVideoData=()=>({video_id:'lmnopqrstuv'});
+    if(mode==='ad')p.root.getVideoData=()=>({video_id:'abcdefghijk',isAd:true});
+    if(mode==='hidden')p.root.style.display='none';
+    if(mode==='fullscreen')p.win.__langformFullscreen={isOpen:()=>true};
+    assert.deepEqual(geometry(p.measure()),[0,-568,402,226],mode);assert.equal(p.plays(),0);
+  }
 });

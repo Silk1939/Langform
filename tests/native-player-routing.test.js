@@ -39,6 +39,8 @@ import Foundation
 import CoreGraphics
 enum YouTubeWebView {
   ${declaration(source, 'static func isYouTube(')}
+  ${declaration(source, 'static func isAccountPage(')}
+  ${declaration(source, 'static func isAccountTransition(')}
   ${declaration(source, 'static func isWatchPage(')}
   ${declaration(source, 'static func isPlayablePage(')}
   ${declaration(source, 'static func isPlayableResource(')}
@@ -75,7 +77,7 @@ class Diagnostics { enum Outcome { case superseded }; func finish(_ outcome: Out
 class FeedState { var active = true }
 class Stage {
   enum Mode { case closed, loading, expanded, mini }
-  var minimizeRequestTicket = 0, pendingMinimizeRequest: Int?, loadTicket = 1
+  var minimizeRequestTicket = 0, pendingMinimizeRequest: Int?, loadTicket = 1, accountInvalidations = 0
   var mode = Mode.expanded, player: WKWebView! = WKWebView(watch(a)), feed: WKWebView! = WKWebView(home)
   var startupVideoID: String? = a, loadingVideoID: String? = a, lastWatchURL: URL?
   var pendingFeedSearch: (view: ObjectIdentifier, ticket: Int)?, feedSearchTicket = 0
@@ -95,6 +97,8 @@ class Stage {
   func openWatch(_ url: URL, userInitiated: Bool) { openedWatches += 1 }
   func resetPlayerStartupForVideo(_ id: String?) { startupVideoID = id }
   func resetPlayerOverlayForVideo(_ id: String?) {}
+  func dismissNativeSearch() {}
+  func evictCachedFeedsForAccountChange() { accountInvalidations += 1 }
   func updateMissingMediaTimeout() {}
   ${methods}
   ${policy}
@@ -249,6 +253,19 @@ for custom in [false,true] {
   expect(fullscreen.mode == .expanded && fullscreen.settlements == 0 && fullscreen.pendingFeedSearch == nil,
          "an old delayed minimize or header-search cannot steal a newly opened fullscreen player")
 }
+let accountRouting = Stage()
+for raw in ["https://m.youtube.com/logout", "https://accounts.google.com/ServiceLogin", "https://m.youtube.com/account_switcher"] {
+ let action = WKNavigationAction(request: URLRequest(url:URL(string:raw)!), targetFrame:Frame(isMainFrame:true))
+ var answer = WKNavigationActionPolicy.cancel
+ accountRouting.webView(accountRouting.feed, decidePolicyFor:action) { answer = $0 }
+ expect(answer == .allow, "feed account navigation remains usable")
+}
+expect(accountRouting.accountInvalidations == 3 && accountRouting.player.url == watch(a) && accountRouting.mode == .expanded, "actual main-frame account routes invalidate cache while retaining current Watch")
+for raw in ["https://m.youtube.com/feed/you", "https://example.com/logout", "https://accounts.google.com/ServiceLogin"] {
+ let action = WKNavigationAction(request: URLRequest(url:URL(string:raw)!), targetFrame:Frame(isMainFrame:false))
+ accountRouting.webView(accountRouting.feed, decidePolicyFor:action) { _ in }
+}
+expect(accountRouting.accountInvalidations == 3, "account iframe cannot evict personal tabs")
 print("NATIVE_PLAYER_ROUTING_OK")
 `;
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'langform-native-routing-'));

@@ -54,7 +54,7 @@ class UIView {
 }
 class UIPanGestureRecognizer { var y: CGFloat = 0; func translation(in: UIView) -> CGPoint { CGPoint(x: 0, y: y) } }
 class Animator { var stopped = false; func stopAnimation(_ immediately: Bool) { stopped = true } }
-struct Insets { var bottom: CGFloat = 0, right: CGFloat = 0 }
+struct Insets { var top: CGFloat = 0, left: CGFloat = 0, bottom: CGFloat = 0, right: CGFloat = 0 }
 class Stage: UIView {
     var minimizeRequestTicket = 0, pendingMinimizeRequest: Int?
     enum Mode { case closed, loading, mini, expanded }
@@ -99,19 +99,32 @@ presentedCard.position = CGPoint(x: 319, y: 749)
 presentedPlayer.pose = CGAffineTransform(scaleX: 0.432, y: 0.432)
 presentedPlayer.position = CGPoint(x: 61.5, y: 127.5)
 stage.card.layer.shown = presentedCard; stage.player!.layer.shown = presentedPlayer
+let presentedClose = Layer(), presentedPlayback = Layer()
+presentedClose.bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
+presentedClose.position = CGPoint(x: 120, y: 26)
+presentedPlayback.bounds = presentedClose.bounds
+// The actual Catalyst portrait-crop transition presented playback at52.6167pt
+// while its destination model was already at112pt. Capturing only the card
+// and video would preserve those but jump the button by59.3833pt on grab.
+presentedPlayback.position = CGPoint(x: 26, y: 74.61666810512543)
+stage.closeButton.layer.shown = presentedClose; stage.miniPlaybackButton.layer.shown = presentedPlayback
 stage.settler = Animator()
 let expected = PlayerViewportPolicy.SurfaceGeometry(frame: CGRect(x: 246, y: 683, width: 146, height: 132), scale: 0.432,
     origin: CGPoint(x: 61.5 - 0.432 * 201, y: 127.5 - 0.432 * 437))
 stage.freezeSettle()
 expect(matches(shownGeometry(stage), expected), "crop-only grab preserves card AND decoded-picture transform")
+expect(near(stage.miniPlaybackButton.frame.minY, 52.61666810512543), "crop grab preserves the actually presented playback control")
+expect(near(stage.closeButton.frame.minX, 98), "crop grab preserves the actually presented close control")
 expect(stage.settler == nil && stage.progress == 1, "crop grab keeps selected mini progress without a running animator")
 let pan = UIPanGestureRecognizer()
 stage.follow(pan)
 expect(matches(shownGeometry(stage), expected), "first finger callback cannot reapply the already-new crop target")
+expect(near(stage.miniPlaybackButton.frame.minY, 52.61666810512543), "first finger callback retains presented control pose")
 pan.y = -40; stage.follow(pan)
 expect(stage.progress < 1 && stage.card.bounds.height > expected.frame.height, "upward finger motion leaves the held mini pose continuously")
 pan.y = 0; stage.follow(pan)
 expect(matches(shownGeometry(stage), expected), "finger reversal returns to the exact held card and picture without hysteresis")
+expect(near(stage.miniPlaybackButton.frame.minY, 52.61666810512543), "finger reversal returns playback to the held presentation pose")
 stage.progress = 0; stage.apply(0)
 let expanded = PlayerViewportPolicy.surfaceGeometry(viewport: stage.bounds, picture: stage.pictureRect, mini: stage.miniFrame(), progress: 0, videoOnly: true)
 expect(matches(shownGeometry(stage), expanded), "correction ends at the ordinary expanded video plane")

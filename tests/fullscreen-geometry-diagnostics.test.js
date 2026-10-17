@@ -26,6 +26,7 @@ test('fullscreen trace authenticates the current exit and writes bounded numeric
   const exercise=`
 import Foundation
 import CoreGraphics
+import CoreFoundation
 enum StartupDiagnostics { static var enabled=true; static var entries:[[String:Any]]=[]; static func videoMark(_ entry:[String:Any]) { entries.append(entry) } }
 enum YouTubeWebView { static func videoID(_ url:URL?)->String? { guard let url,["m.youtube.com","www.youtube.com","youtube.com"].contains(url.host ?? ""),url.path=="/watch" else{return nil};return URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first{$0.name=="v"}?.value } }
 struct Transform { var a=1.0,d=1.0,tx=0.0,ty=0.0 }
@@ -58,6 +59,12 @@ let unsafeFlags=stage.fullscreenGeometryRow(["phase":"handoff","exitContextHidde
 expect(unsafeFlags?["exitContextHidden"]==nil && unsafeFlags?["exitUsingCachedDestination"]==nil,"new flags cannot persist arbitrary page strings")
 let ownerMetrics:[String:Any]=["phase":"handoff","inlineSizeOwned":true,"inlineSizeSuspended":false,"playerSetSizeAvailable":false,"naturalVideoWidth":402.0,"naturalVideoHeight":226.125,"naturalContainerWidth":402.0,"naturalContainerHeight":226.125,"videoInlineWidth":100.0,"videoInlineHeight":100.0,"containerInlineWidth":100.0,"containerInlineHeight":100.0]
 let ownerEntry=stage.fullscreenGeometryRow(ownerMetrics)
+for key in ["exitRequestEpochMilliseconds","exitAnimationCreatedEpochMilliseconds","exitHandoffToInlineCalls"] {
+ expect(stage.fullscreenGeometryRow(["phase":"handoff",key:1.0])?[key] as? Double == 1,"bounded opt-in scalar preserved: \\(key)")
+ for invalid:Any in ["private page text",Double.infinity,Double.nan,true] {
+  expect(stage.fullscreenGeometryRow(["phase":"handoff",key:invalid])?[key]==nil,"opt-in timing/counter excludes strings, bools and nonfinite values: \\(key)")
+ }
+}
 expect(ownerEntry?["inlineSizeOwned"] as? Bool == true && ownerEntry?["inlineSizeSuspended"] as? Bool == false && ownerEntry?["playerSetSizeAvailable"] as? Bool == false,"inline ownership is explicitly typed geometry metadata")
 for key in ["naturalVideoWidth","naturalVideoHeight","naturalContainerWidth","naturalContainerHeight","videoInlineWidth","videoInlineHeight","containerInlineWidth","containerInlineHeight"] {
  expect(ownerEntry?[key] as? Double == ownerMetrics[key] as? Double,"owner geometry preserves finite scalar \\(key)")
@@ -69,6 +76,20 @@ for key in ["naturalVideoWidth","naturalVideoHeight","naturalContainerWidth","na
 for key in ["inlineSizeOwned","inlineSizeSuspended","playerSetSizeAvailable"] {
  var invalid=ownerMetrics;invalid[key]="private page string"
  expect(stage.fullscreenGeometryRow(invalid)?[key]==nil,"page string cannot enter owner flag: \\(key)")
+}
+for (keys, maximum) in [(["exitHTMLPaint","exitBodyPaint","exitHitPaint","exitAncestorPaint"],3),(["exitHitDepth","exitAncestorDepth"],12),(["exitHitRole","exitAncestorRole"],5)] {
+ for key in keys {
+  for value in 0...maximum {
+   expect(stage.fullscreenGeometryRow(["phase":"handoff",key:value])?[key] as? Double == Double(value),"paint enum preserves bounded integer: \\(key)")
+  }
+  for invalid:Any in ["private page text",-1,maximum+1,0.5,Double.infinity,Double.nan,true] {
+   expect(stage.fullscreenGeometryRow(["phase":"handoff",key:invalid])?[key]==nil,"paint enum rejects arbitrary, boolean or unbounded payload: \\(key)")
+  }
+ }
+}
+for key in ["exitWatchContextVisible","exitBackdropLeased","exitRevealsActive","traceMotionWindow"] {
+ expect(stage.fullscreenGeometryRow(["phase":"handoff",key:true])?[key] as? Bool == true,"paint state remains a boolean: \\(key)")
+ expect(stage.fullscreenGeometryRow(["phase":"handoff",key:"private page text"])?[key]==nil,"paint state excludes page strings: \\(key)")
 }
 expect(["title","query","href","videoID","phaseInjection","videoWidth","token"].allSatisfy{entry[$0]==nil},"page strings and nonfinite values are excluded")
 stage.customFullscreenExit=nil;stage.playerFullscreen=false

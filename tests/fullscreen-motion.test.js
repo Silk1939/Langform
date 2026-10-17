@@ -3,9 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
-const source = fs.readFileSync(process.env.LANGFORM_FULLSCREEN_TEST_SOURCE || path.join(__dirname, '../ios/Langform/Langform/FullscreenMotion.js'), 'utf8');
+const source = fs.readFileSync(process.env.LANGFORM_FULLSCREEN_TEST_SOURCE || path.join(__dirname, '../ios/Langform/Langform/FullscreenMotion.js'), 'utf8').replace('  win.__langformFullscreen = {','  win.__qaInlineDestination=function(){var c=state&&state.inlineDestination;return c?{picture:c.picture,rect:c.rect,root:c.root,clip:c.clip,ratio:c.ratio,rejected:state.exitMotionRejectedReason||0}:null;};\n  win.__langformFullscreen = {');
 function setup(t, options = {}) {
-  const dom = new JSDOM('<!doctype html><html style="overflow:auto"><head><title>A title - YouTube</title></head><body><main style="transform:translateX(3px)"><div id="movie_player" style="width:390px;height:220px"><div class="html5-video-container"><video class="html5-main-video" src="https://example.test/media" style="object-fit:cover"></video></div><button class="ytp-fullscreen-button">Full</button></div></main></body></html>', { url:'https://m.youtube.com/watch?v=abcdefghijk',runScripts:'outside-only' });
+  const dom = new JSDOM('<!doctype html><html style="overflow:auto"><head><title>A title - YouTube</title></head><body><main style="transform:translateX(3px)"><div id="movie_player" style="width:390px;height:220px"><div class="html5-video-container"><video class="html5-main-video" src="https://example.test/media" style="object-fit:cover"></video></div><button class="ytp-fullscreen-button">Full</button></div></main></body></html>', { url:'https://m.youtube.com/watch?v=abcdefghijk',runScripts:'outside-only',pretendToBeVisual:true });
   t.after(() => { dom.window.dispatchEvent(new dom.window.Event('pagehide')); dom.window.close(); });
   const win = dom.window, doc = win.document, root = doc.getElementById('movie_player'), video = root.querySelector('video');
   win.scrollTo = () => {}; // JSDOM has no scrolling implementation.
@@ -13,11 +13,11 @@ function setup(t, options = {}) {
   t.after(() => assert.deepEqual(errors,[], 'shipping script produces no uncaught errors'));
   const messages = [], calls = [], timers = new Map(); let serial = 0;
   let paused = !!options.paused;
-  Object.defineProperties(video,{ paused:{get:() => paused}, ended:{value:false}, duration:{value:120,writable:true}, readyState:{value:4,writable:true}, currentTime:{value:40,writable:true,configurable:true} });
+  Object.defineProperties(video,{ paused:{get:() => paused}, ended:{value:false,writable:true}, duration:{value:120,writable:true}, readyState:{value:4,writable:true}, currentTime:{value:40,writable:true,configurable:true} });
   video.play = () => { throw Error('Fullscreen must not directly call play'); };
   video.pause = () => { throw Error('Fullscreen must not directly call pause'); };
   root.getVideoData = () => ({ video_id:'abcdefghijk',title:'The actual video' });
-  win.__langformPlay = id => { calls.push(['play',id]); paused = false; video.dispatchEvent(new win.Event('play')); if(options.confirmPlaying!==false)video.dispatchEvent(new win.Event('playing')); return true; };
+  win.__langformPlay = id => { calls.push(['play',id]); if(video.ended){video.currentTime=0;video.ended=false;} paused = false; video.dispatchEvent(new win.Event('play')); if(options.confirmPlaying!==false)video.dispatchEvent(new win.Event('playing')); return true; };
   win.__langformTogglePlayback = id => { calls.push(['toggle',id]); paused = !paused; video.dispatchEvent(new win.Event(paused ? 'pause':'play')); return true; };
   win.webkit = {messageHandlers:{langformFullscreen:{postMessage:value => messages.push(value)}}};
   win.setTimeout = (fn,delay) => { const key = ++serial; timers.set(key,{fn,delay}); return key; };
@@ -109,6 +109,76 @@ test('explicit fullscreen entry preserves media identity, source, playing positi
   assert.equal(s.root.parentElement.hasAttribute('inert'),false);
   assert.deepEqual([s.doc.documentElement,s.root,s.video,s.root.parentElement].map(n => n.getAttribute('style')),styles);
   assert.equal(s.messages[1].open,false); assert.equal(s.video.currentTime,40);
+});
+test('completed video keeps fullscreen controls reachable and explicit replay and exit preserve the media owner',t=>{
+  const s=setup(t),video=s.video,parent=video.parentElement,source=video.getAttribute('src');s.enter();
+  s.button('play').click();assert.equal(s.paused(),true);s.button('play').click();assert.equal(s.paused(),false);
+  video.currentTime=video.duration;video.ended=true;video.dispatchEvent(new s.win.Event('ended'));
+  assert.ok(s.ui());assert.equal(s.ui().hasAttribute('data-hidden'),false);assert.notEqual(s.ui().inert,true);
+  assert.equal(s.button('play').getAttribute('aria-label'),'Wiedergabe');s.button('play').click();
+  assert.equal(video.ended,false);assert.equal(video.currentTime,0);assert.equal(s.paused(),false);
+  s.button('exit').click();assert.equal(s.ui(),null);assert.equal(s.root.parentElement.hasAttribute('inert'),false);
+  assert.equal(video,parent.querySelector('video'));assert.equal(video.getAttribute('src'),source);assert.equal(s.calls.filter(row=>row[0]==='play').length,2);
+});
+test('replacing the completed player branch with a DOM clone releases copied fullscreen leases',async t=>{
+  const s=setup(t);s.enter();s.video.ended=true;s.video.dispatchEvent(new s.win.Event('ended'));
+  const original=s.root.parentElement,clone=original.cloneNode(true);original.replaceWith(clone);await Promise.resolve();await Promise.resolve();
+  assert.equal(s.ui(),null);assert.equal(s.win.__langformFullscreen.isOpen(),false);
+  assert.equal(clone.hasAttribute('inert'),false,'copied interaction lease belongs to the retired transaction');
+  assert.equal(clone.hasAttribute('data-langform-fullscreen-ancestor'),false);
+  assert.equal(clone.querySelector('#movie_player').hasAttribute('data-langform-fullscreen-player'),false,'cloned player cannot retain the fixed fullscreen CSS');
+  assert.equal(s.messages.at(-1).open,false);assert.deepEqual(s.calls,[]);
+});
+test('clone cleanup preserves original and foreign inert state',async t=>{
+  const s=setup(t);s.root.parentElement.setAttribute('inert','');s.enter();
+  const clone=s.root.parentElement.cloneNode(true),foreign=s.doc.createElement('section');foreign.setAttribute('inert','');s.doc.body.appendChild(foreign);s.root.parentElement.replaceWith(clone);
+  await Promise.resolve();await Promise.resolve();assert.equal(s.ui(),null);assert.equal(clone.hasAttribute('inert'),true);
+  assert.equal(foreign.hasAttribute('inert'),true,'a branch outside our original lease is never enabled');
+  assert.equal(clone.querySelector('#movie_player').hasAttribute('data-langform-fullscreen-player'),false);
+});
+test('staged cloned exit releases copied context and only owned media style properties',async t=>{
+  const s=exitHandoffPage(t,{cached:true}),original=s.root.parentElement,clone=original.cloneNode(true),video=clone.querySelector('video'),source=video.getAttribute('src');
+  // JSDOM 26's cloned style parser drops the last property's !important.
+  // Preserve the original CSSOM pairs so the fixture reflects browser cloning.
+  ['width','height','transform'].forEach(key=>video.style.setProperty(key,s.video.style.getPropertyValue(key),s.video.style.getPropertyPriority(key)));
+  video.style.backgroundColor='purple';original.replaceWith(clone);await Promise.resolve();await Promise.resolve();
+  assert.equal(s.ui(),null);assert.equal(clone.hasAttribute('inert'),false);assert.equal(clone.querySelectorAll('[data-langform-fullscreen-exit-context]').length,0);
+  assert.equal(video.style.width,'');assert.equal(video.style.height,'');assert.equal(video.style.getPropertyValue('transform'),'translateX(7px)');
+  assert.equal(video.style.backgroundColor,'purple');assert.equal(video.getAttribute('src'),source);assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+test('staged clone cleanup retains page modifications to copied media properties',async t=>{
+  const s=exitHandoffPage(t,{cached:true}),original=s.root.parentElement,clone=original.cloneNode(true),video=clone.querySelector('video');
+  ['width','height','transform'].forEach(key=>video.style.setProperty(key,s.video.style.getPropertyValue(key),s.video.style.getPropertyPriority(key)));
+  video.style.setProperty('width','123px','important');video.style.setProperty('transform','scale(1.2)','important');
+  original.replaceWith(clone);await Promise.resolve();await Promise.resolve();
+  assert.equal(s.ui(),null);assert.equal(video.style.getPropertyValue('width'),'123px');assert.equal(video.style.getPropertyPriority('width'),'important');
+  assert.equal(video.style.getPropertyValue('transform'),'scale(1.2)');assert.equal(video.style.getPropertyPriority('transform'),'important');assert.equal(video.style.height,'');
+});
+test('lost native exit confirmation times out its own transaction without playback or successful commit',t=>{
+  const s=handshakePage(t);s.enter();s.resize(844,390);s.video.ended=true;s.video.dispatchEvent(new s.win.Event('ended'));s.button('exit').click();
+  const request=s.messages.find(row=>row.kind==='exit-request'),deadline=[...s.timers.values()].find(row=>row.delay===4000);
+  assert.ok(deadline,'every exiting transaction owns a bounded confirmation deadline');deadline.fn();
+  assert.equal(s.ui(),null);assert.equal(s.root.parentElement.hasAttribute('inert'),false);assert.equal(s.frames.size,0);
+  assert.equal(s.messages.at(-1).reason,'exit-confirmation-timeout');assert.equal(s.messages.some(row=>row.kind==='exit-commit'),false);
+  assert.equal(s.win.__langformFullscreen.finishExit('abcdefghijk',request.token,390,844),false);assert.equal(s.video.ended,true);assert.deepEqual(s.calls,[]);
+  s.enter();const replacement=s.ui();deadline.fn();assert.equal(s.ui(),replacement,'an obsolete deadline cannot retire a later fullscreen owner');
+});
+test('successful and cancelled exits remove their deadline while late callbacks cannot close another session',t=>{
+  const s=handshakePage(t);s.enter();s.resize(844,390);s.button('exit').click();
+  const deadline=[...s.timers.values()].find(row=>row.delay===4000),request=s.messages.find(row=>row.kind==='exit-request');assert.ok(deadline);
+  s.win.__langformFullscreen.finishExit('abcdefghijk',request.token,390,844);s.resize(390,844);for(let i=0;i<6;i++)s.frame();
+  assert.equal(s.ui(),null);assert.equal([...s.timers.values()].some(row=>row.delay===4000),false);
+  s.enter();const replacement=s.ui();deadline.fn();assert.equal(s.ui(),replacement);
+  s.resize(844,390);s.button('exit').click();s.win.dispatchEvent(new s.win.Event('yt-navigate-start'));
+  assert.equal([...s.timers.values()].some(row=>row.delay===4000),false);assert.deepEqual(s.calls,[]);
+});
+test('lost native entry confirmation restores the watch page and does not commit or seek',t=>{
+  const s=setup(t,{nativeSetup(video,root,win){win.__langformFullscreenEnterProtocol=1;Object.defineProperties(video,{videoWidth:{value:1920},videoHeight:{value:1080}});root.getBoundingClientRect=()=>({x:0,y:110,left:0,top:110,width:390,height:219.375});video.getBoundingClientRect=root.getBoundingClientRect;}});
+  s.enter();assert.ok(s.ui());assert.equal(s.ui().inert,true);
+  const request=s.messages.find(row=>row.kind==='enter-request'),deadline=[...s.timers.values()].find(row=>row.delay===4000);assert.ok(deadline);deadline.fn();
+  assert.equal(s.ui(),null);assert.equal(s.root.parentElement.hasAttribute('inert'),false);assert.equal(s.doc.documentElement.hasAttribute('data-langform-fullscreen'),false);
+  assert.equal(s.messages.at(-1).reason,'enter-confirmation-timeout');assert.equal(s.messages.some(row=>row.kind==='enter-commit'),false);
+  assert.equal(s.win.__langformFullscreen.finishEnter('abcdefghijk',request.token,844,390),false);assert.equal(s.video.currentTime,40);assert.deepEqual(s.calls,[]);
 });
 test('fullscreen button consumes original handler only when custom entry is safe; native fullscreen stays native', t => {
   const s = setup(t); let original = 0;
@@ -734,6 +804,44 @@ test('fractional chapter detent commits its exact timestamp after range step rou
   assert.equal(s.video.currentTime,94,'keyboard clears the pointer target');
 });
 
+test('native snapped range release commits once even when WebKit omits change', t => {
+  const s=snapPage(t);s.button('play').click();
+  s.doc.documentElement.__langformChapterList=[{start:0,title:'Start'},{start:95.88,title:'Exact chapter'}];
+  const descriptor=Object.getOwnPropertyDescriptor(s.win.HTMLInputElement.prototype,'value');
+  Object.defineProperty(s.range,'value',{get(){return descriptor.get.call(this);},set(value){descriptor.set.call(this,String(Math.round(Number(value)*10)/10));}});
+  let value=s.video.currentTime,commits=0;
+  Object.defineProperty(s.video,'currentTime',{get:()=>value,set:next=>{value=next;commits++;},configurable:true});
+  s.pointer();s.input(95);assert.equal(value,40,'a moving thumb is only a preview');
+  s.win.dispatchEvent(new s.win.Event('pointerup'));
+  assert.equal(value,95.88,'owned release must commit the exact chapter without relying on change');
+  assert.equal(commits,1);assert.equal(s.video.paused,true);assert.equal(s.calls.length,1,'seek must not resume a paused video');
+  s.range.dispatchEvent(new s.win.Event('change',{bubbles:true}));
+  assert.equal(value,95.88);assert.equal(commits,1,'a subsequent native change cannot round or duplicate the seek');
+  s.pointer();s.input(45);s.range.dispatchEvent(new s.win.Event('change',{bubbles:true}));
+  s.win.dispatchEvent(new s.win.Event('pointerup'));assert.equal(value,45);assert.equal(commits,2,'change-before-release commits only once as well');
+});
+for(const boundary of ['foreign-pointer','cancel','blur','route','ad','no-input'])test(`range release preserves contact ownership and cancellation (${boundary})`,t=>{
+  const s=snapPage(t);
+  const fire=(target,type,id=7)=>{const e=new s.win.Event(type,{bubbles:true});Object.assign(e,{pointerId:id,isPrimary:true,button:0});target.dispatchEvent(e);};
+  fire(s.range,'pointerdown');if(boundary!=='no-input')s.input(28);
+  if(boundary==='foreign-pointer') {fire(s.win,'pointerup',8);assert.equal(s.video.currentTime,40);fire(s.win,'pointerup');assert.equal(s.video.currentTime,30);return;}
+  if(boundary==='cancel')fire(s.win,'pointercancel');
+  if(boundary==='blur')s.win.dispatchEvent(new s.win.Event('blur'));
+  if(boundary==='route')s.win.history.replaceState({},'','/watch?v=zyxwvutsrqp');
+  if(boundary==='ad')s.root.classList.add('ad-showing');
+  fire(s.win,'pointerup');assert.equal(s.video.currentTime,40,'abandoned, stale or unchanged contacts do not seek');
+});
+
+for(const boundary of ['same-node-source','hidden','second-contact'])test(`range release abandons a changed media/contact lifecycle (${boundary})`,t=>{
+  const s=snapPage(t);
+  const fire=(target,type,id=7,primary=true)=>{const e=new s.win.Event(type,{bubbles:true});Object.assign(e,{pointerId:id,isPrimary:primary,button:0});target.dispatchEvent(e);};
+  fire(s.range,'pointerdown');s.input(28);assert.equal(s.video.currentTime,40);
+  if(boundary==='same-node-source')s.video.setAttribute('src','https://example.test/new-source');
+  if(boundary==='hidden'){Object.defineProperty(s.doc,'hidden',{value:true,configurable:true});s.doc.dispatchEvent(new s.win.Event('visibilitychange'));}
+  if(boundary==='second-contact')fire(s.ui(),'pointerdown',8,false);
+  fire(s.win,'pointerup');assert.equal(s.video.currentTime,40,'the abandoned contact must never seek the media');
+});
+
 test('touch chapter selection releases focus for auto-hide while keyboard and paused playback retain visible controls', t => {
   for (const mode of ['touch','keyboard','paused','cancelled']) {
     const s = snapPage(t), label = s.ui().querySelector('.lf-fs-chapter-label');
@@ -860,11 +968,12 @@ test('navigation cancels an unfinished exit and late viewport confirmations cann
 });
 
 function exitHandoffPage(t,options={}) {
-  const frames=new Map(),animations=[],timers=new Map(),viewport={width:390,height:844},natural={x:7,y:100,width:390,height:390*9/16},videoNatural={},fullscreenRoot={},fullscreenVideo={};
+  const frames=new Map(),animations=[],timers=new Map(),viewport={width:options.contained?402:390,height:844},natural=options.contained?{x:0,y:110,width:402,height:226}:{x:7,y:100,width:390,height:390*9/16},videoNatural=options.contained?{x:50,y:110,width:301,height:226}:{},fullscreenRoot={},fullscreenVideo={};
   let frameID=0,elapsed=0,active=null,mediaTime=40,timeWrites=0;
   const s=setup(t,{paused:options.paused,nativeSetup(video,root,win) {
     win.__langformFullscreenExitProtocol=1;win.__langformFullscreenDiagnostics=!!options.diagnostics;
     win.__langformStageInsets={top:0,right:0,bottom:0,left:0};
+    if(options.preview){root.requestFullscreen=()=>Promise.resolve();Object.defineProperty(win.navigator,'userActivation',{value:{isActive:true}});}
     if(options.entry)win.__langformFullscreenEnterProtocol=1;
     if(options.probe) {
       win.__langformFullscreenProbeEnabled=true;
@@ -872,10 +981,11 @@ function exitHandoffPage(t,options={}) {
     }
     Object.defineProperties(win,{innerWidth:{get:()=>viewport.width},innerHeight:{get:()=>viewport.height}});
     Object.defineProperty(win.document,'hidden',{value:false,writable:true,configurable:true});
-    Object.defineProperties(video,{videoWidth:{value:options.unknownMetadata ? 0 : options.portrait ? 1080 : 1920,configurable:true},videoHeight:{value:options.unknownMetadata ? 0 : options.portrait ? 1920 : 1080,configurable:true},currentTime:{get:()=>mediaTime,set:value=>{mediaTime=value;timeWrites++;}}});
+    Object.defineProperties(video,{videoWidth:{value:options.contained?640:options.unknownMetadata ? 0 : options.portrait ? 1080 : 1920,configurable:true},videoHeight:{value:options.contained?480:options.unknownMetadata ? 0 : options.portrait ? 1920 : 1080,configurable:true},currentTime:{get:()=>mediaTime,set:value=>{mediaTime=value;timeWrites++;}}});
     if(options.live)video.duration=Infinity;
-    video.style.setProperty('transform',options.placement?'none':'translateX(7px)','important');
+    video.style.setProperty('transform',options.placement||options.contained?'none':'translateX(7px)','important');
     if(options.placement){video.style.position='absolute';video.style.top='0px';video.style.left='0px';}
+    if(options.contained){video.style.position='absolute';video.style.top='0px';video.style.left='50px';video.style.width='301px';video.style.height='226px';}
     if(options.ancestorStyles) {
       root.parentElement.style.cssText+=';will-change:transform;perspective:700px;filter:grayscale(.3);backdrop-filter:blur(2px);contain:layout;content-visibility:auto';
       root.style.cssText+=';will-change:transform;perspective:500px;filter:contrast(.8)';
@@ -898,9 +1008,10 @@ function exitHandoffPage(t,options={}) {
       const parse=value=>{const vals=value.match(/inset\(([^)]+)\)/)[1].trim().split(/\s+/);if(vals.length===1)while(vals.length<4)vals.push(vals[0]);return vals.map(Number.parseFloat);};
       const from=parse(a.clipPath),to=parse(b.clipPath),percent=b.clipPath.includes('%');return 'inset('+from.map((n,i)=>(n+(to[i]-n)*fraction)+(percent?'%':'px')).join(' ')+')';
     };
-    win.getComputedStyle=node=>node===video ? {position:options.placement?'absolute':undefined,top:options.placement?video.style.top:undefined,left:options.placement?video.style.left:undefined,transform:options.placement?'none':undefined,objectFit:video.hasAttribute('data-langform-fullscreen-exit-video') || video.hasAttribute('data-langform-fullscreen-enter-video') ? 'fill' : root.hasAttribute('data-langform-fullscreen-player') ? 'contain' : options.inlineFit || 'contain',objectPosition:'50% 50%',clipPath:interpolated('clip',pinStyle()?.match(/clip-path:([^;]+);/)?.[1] || 'inset(0)')} : originalStyle(node);
+    win.getComputedStyle=node=>node===video ? {position:options.placement||options.contained?'absolute':undefined,top:options.placement||options.contained?video.style.top:undefined,left:options.placement||options.contained?video.style.left:undefined,transform:options.placement||options.contained?'none':undefined,objectFit:video.hasAttribute('data-langform-fullscreen-exit-video') || video.hasAttribute('data-langform-fullscreen-enter-video') ? 'fill' : root.hasAttribute('data-langform-fullscreen-player') ? 'contain' : options.inlineFit || 'contain',objectPosition:'50% 50%',clipPath:interpolated('clip',pinStyle()?.match(/clip-path:([^;]+);/)?.[1] || 'inset(0)')} : originalStyle(node);
     const rect=box=>({...box,left:box.x,top:box.y,right:box.x+box.width,bottom:box.y+box.height});
-    root.getBoundingClientRect=()=>rect(root.hasAttribute('data-langform-fullscreen-player') ? {x:0,y:0,...viewport,...fullscreenRoot} : natural);
+    const previewBox=box=>{if(!options.preview||root.hasAttribute('data-langform-fullscreen-exit-layout'))return box;const match=root.style.transform.match(/^scale\(([\d.]+)(?:,\s*([\d.]+))?\)$/),sx=Number(match?.[1]||1),sy=Number(match?.[2]||sx),bottom=root.style.transformOrigin!=='top center'?natural.height:0;return {x:natural.x+natural.width/2+(box.x-natural.x-natural.width/2)*sx,y:natural.y+bottom+(box.y-natural.y-bottom)*sy,width:box.width*sx,height:box.height*sy};};
+    root.getBoundingClientRect=()=>rect(root.hasAttribute('data-langform-fullscreen-player') ? {x:0,y:0,...viewport,...fullscreenRoot} : previewBox(natural));
     video.getBoundingClientRect=()=>{
       if(video.hasAttribute('data-langform-fullscreen-exit-video') || video.hasAttribute('data-langform-fullscreen-enter-video')) {
         const css=pinStyle();
@@ -912,8 +1023,15 @@ function exitHandoffPage(t,options={}) {
         }
         return rect(box);
       }
-      if(root.hasAttribute('data-langform-fullscreen-player'))return rect({x:0,y:0,...viewport,...fullscreenVideo});
-      assert.equal(video.style.getPropertyValue('transform'),options.placement?'none':'translateX(7px)','destination reads the actual inline author transform');
+      if(root.hasAttribute('data-langform-fullscreen-player')){
+        const box={x:0,y:0,...viewport,...fullscreenVideo};
+        if(options.contained){
+          for(const key of ['width','height'])if(video.style.getPropertyPriority(key)==='important'&&video.style.getPropertyValue(key)!=='100%')box[key]=parseFloat(video.style.getPropertyValue(key));
+          for(const [key,axis] of [['top','y'],['left','x']])if(video.style.getPropertyPriority(key)==='important')box[axis]=parseFloat(video.style.getPropertyValue(key));
+        }
+        return rect(box);
+      }
+      assert.equal(video.style.getPropertyValue('transform'),options.placement||options.contained?'none':'translateX(7px)','destination reads the actual inline author transform');
       const box={...natural,...videoNatural};
       if(options.placement){
         if(video.style.width==='100%'&&video.style.getPropertyPriority('width')==='important')box.width=natural.width;
@@ -921,7 +1039,13 @@ function exitHandoffPage(t,options={}) {
         if(video.style.top==='0px'&&video.style.getPropertyPriority('top')==='important')box.y=natural.y;
         if(video.style.left==='0px'&&video.style.getPropertyPriority('left')==='important')box.x=natural.x;
       }
-      return rect(box);
+      if(options.contained){
+        if(video.style.getPropertyPriority('width')==='important')box.width=parseFloat(video.style.width);
+        if(video.style.getPropertyPriority('height')==='important')box.height=parseFloat(video.style.height);
+        if(video.style.getPropertyPriority('top')==='important')box.y=natural.y+parseFloat(video.style.top);
+        if(video.style.getPropertyPriority('left')==='important')box.x=natural.x+parseFloat(video.style.left);
+      }
+      return rect(previewBox(box));
     };
     video.animate=(keyframes,timing)=>{
       if(options.animationThrows)throw Error('No compositor');
@@ -938,7 +1062,7 @@ function exitHandoffPage(t,options={}) {
     resize(844,390);s.win.__langformFullscreen.exit('abcdefghijk');
   }
   const request=s.messages.find(row=>row.kind===(options.entry ? 'enter-request' : 'exit-request'));
-  const prepare=()=>{const width=options.entry ? 844 : 390,height=options.entry ? 390 : 844;assert.equal(s.win.__langformFullscreen[options.entry ? 'prepareEnter' : 'prepareExit']('abcdefghijk',request.token,width,height),true);resize(width,height);frame(2);};
+  const prepare=()=>{const width=options.entry ? 844 : options.contained?402:390,height=options.entry ? 390 : 844;assert.equal(s.win.__langformFullscreen[options.entry ? 'prepareEnter' : 'prepareExit']('abcdefghijk',request.token,width,height),true);resize(width,height);frame(2);};
   const confirm=()=>s.win.__langformFullscreen[options.entry ? 'finishEnter' : 'finishExit']('abcdefghijk',request.token,viewport.width,viewport.height);
   const finish=()=>{const animation=animations.at(-1);animation.fraction=1;animation.onfinish();frame(2);};
   return {...s,frames,animations,timers,frame,resize,prepare,confirm,finish,natural,videoNatural,fullscreenRoot,fullscreenVideo,viewport,request,timeWrites:()=>timeWrites};
@@ -947,11 +1071,104 @@ function exitHandoffPage(t,options={}) {
 function stagedExit(s,ticket=12,duration=300) {
   return s.win.__langformFullscreen.prepareExitMotion('abcdefghijk',s.request.token,390,844,s.win.Date.now()+duration,ticket);
 }
+for(const curve of ['cubic-bezier(.42,0,.58,1)','cubic-bezier(.42,0,1,1)','cubic-bezier(0,0,.58,1)','linear'])test('physical exit accepts only the system timing role '+curve,t=>{
+  const s=exitHandoffPage(t,{cached:true}),node=s.video,parent=node.parentElement;
+  assert.equal(s.win.__langformFullscreen.prepareExitMotion('abcdefghijk',s.request.token,390,844,s.win.Date.now()+300,12,curve),true);
+  assert.equal(s.animations[0].timing.easing,curve);
+  s.finish();assert.equal(s.messages.filter(row=>row.kind==='exit-motion-ready').length,1);
+  s.prepare();s.confirm();s.frame(8);
+  assert.equal(s.ui(),null);assert.equal(s.video,node);assert.equal(node.parentElement,parent);
+  assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+for(const curve of ['ease',null,{},'cubic-bezier(.42,0,.58,1);opacity:0'])test('unrecognized exit curve cannot acquire or mutate a video pose '+String(curve),t=>{
+  const s=exitHandoffPage(t,{cached:true}),before=s.video.getBoundingClientRect();
+  assert.equal(s.win.__langformFullscreen.prepareExitMotion('abcdefghijk',s.request.token,390,844,s.win.Date.now()+300,12,curve),false);
+  assert.equal(s.animations.length,0);assert.deepEqual(s.video.getBoundingClientRect(),before);
+  assert.equal(s.messages.some(row=>row.kind==='exit-motion-ready'),false);assert.deepEqual(s.calls,[]);
+});
+function previewContactPage(t){
+  const s=exitHandoffPage(t,{entry:true,probe:true,preview:true,cached:true,placement:true,diagnostics:true});
+  Object.assign(s.natural,{x:0,y:107});s.root.parentElement.style.transform='none';
+  const fire=(type,target=s.video,points=[{identifier:1,clientX:195,clientY:180}])=>{const e=new s.win.Event(type,{bubbles:true,cancelable:true});Object.defineProperties(e,{touches:{value:/end|cancel/.test(type)?[]:points},changedTouches:{value:points}});target.dispatchEvent(e);return e;};
+  const preview=(scale=1.25)=>{s.root.style.transform=`scale(${scale})`;s.root.style.transformOrigin='bottom center';};
+  const enterAtTerminal=(type='touchend',target=s.video)=>{let started;s.root.addEventListener(type,()=>{s.root.requestFullscreen();started=s.video.getBoundingClientRect();s.root.style.transform='scale(1)';s.root.style.transition='0.2s ease';},{once:true});fire(type,target,[{identifier:1,clientX:195,clientY:60}]);return started;};
+  const exit=()=>{const req=s.messages.find(r=>r.kind==='enter-request');assert.ok(req,'existing fullscreen API performs entry');s.resize(844,390);s.win.__langformFullscreen.prepareEnter('abcdefghijk',req.token,844,390);s.frame(2);s.win.__langformFullscreen.finishEnter('abcdefghijk',req.token,844,390);if(s.animations.at(-1)?.onfinish)s.finish();s.frame(2);assert.equal(s.ui().hasAttribute('data-entering'),false);s.win.__langformFullscreen.exit('abcdefghijk');const out=s.messages.find(r=>r.kind==='exit-request');return s.win.__langformFullscreen.prepareExitMotion('abcdefghijk',out.token,390,844,s.win.Date.now()+300,12);};
+  return {...s,fire,preview,enterAtTerminal,exit};
+}
+for(const terminal of ['touchend','touchcancel'])test('original swipe '+terminal+' keeps its visible preview entry but stages back to the pre-contact inline picture',t=>{
+  const s=previewContactPage(t);s.fire('touchstart');s.preview();const current=s.video.getBoundingClientRect(),entry=s.enterAtTerminal(terminal);
+  assert.deepEqual([entry.x,entry.y,entry.width,entry.height],[current.x,current.y,current.width,current.height],'entry must start at the visible 1.25 preview');
+  assert.equal(s.exit(),true,'known original preview must not poison the stable exit destination');
+  s.finish();const final=s.video.getBoundingClientRect();assert.deepEqual([final.x,final.y,final.width,final.height],[0,107,390,219.375]);
+  assert.equal(s.video.currentTime,40);assert.deepEqual(s.calls,[]);
+});
+test('paired Pointer cancellation cannot discard the still-active original Touch preview destination',async t=>{
+  const s=previewContactPage(t),down=new s.win.Event('pointerdown',{bubbles:true});Object.assign(down,{pointerType:'touch',pointerId:4,isPrimary:true,clientX:195,clientY:180});s.video.dispatchEvent(down);
+  s.win.__langformFullscreen.observeContact(down); // Earlier gesture observers can forward the same physical event.
+  s.fire('touchstart');s.preview();const cancel=new s.win.Event('pointercancel',{bubbles:true});Object.assign(cancel,{pointerType:'touch',pointerId:4,isPrimary:true,clientX:195,clientY:60});s.video.dispatchEvent(cancel);
+  await Promise.resolve();s.enterAtTerminal('touchcancel');assert.equal(s.exit(),true);s.finish();assert.equal(s.video.getBoundingClientRect().width,390);
+});
+for(const kind of ['late-terminal','second-finger','control','scrubber-band','blur','hidden','route','resize','scroll','insets','source','root-layout','video-layout','wrong-origin','nonuniform','too-large','preexisting-scale','horizontal','downward','overlay','mini'])test('pre-contact destination rejects '+kind+' without granting a new fullscreen request',async t=>{
+  const s=previewContactPage(t),button=s.doc.createElement('button');s.root.appendChild(button);
+  if(kind==='preexisting-scale')s.preview(1.05);
+  if(kind==='control')s.fire('touchstart',button);
+  else s.fire('touchstart',s.video,[{identifier:1,clientX:195,clientY:kind==='scrubber-band'?310:180}]);
+  if(kind==='second-finger')s.fire('touchstart',s.video,[{identifier:1,clientX:195,clientY:180},{identifier:2,clientX:200,clientY:180}]);
+  if(kind==='blur')s.win.dispatchEvent(new s.win.Event('blur'));
+  if(kind==='hidden'){s.doc.hidden=true;s.doc.dispatchEvent(new s.win.Event('visibilitychange'));s.doc.hidden=false;}
+  if(kind==='route')s.win.dispatchEvent(new s.win.Event('yt-navigate-start'));
+  if(kind==='resize'||kind==='scroll')s.win.dispatchEvent(new s.win.Event(kind));
+  if(kind==='insets')s.win.__langformStageInsets.top=1;
+  if(kind==='source')s.video.src='https://example.test/new-source';
+  if(kind==='root-layout')s.natural.y+=12;
+  if(kind==='video-layout')s.videoNatural.width=370;
+  s.preview(kind==='too-large'?1.3:1.25);
+  if(kind==='wrong-origin')s.root.style.transformOrigin='top center';
+  if(kind==='nonuniform')s.root.style.transform='scale(1.25, 1.2)';
+  if(kind==='overlay')s.win.__langformHasOpenOverlay=()=>true;
+  if(kind==='mini')s.win.__langformStageInsets.nativeMini=true;
+  if(kind==='late-terminal'||kind==='horizontal'||kind==='downward'){
+    s.fire('touchend',s.video,[{identifier:1,clientX:kind==='horizontal'?320:195,clientY:kind==='downward'?300:kind==='horizontal'?180:60}]);
+    if(kind==='late-terminal')await Promise.resolve();
+    assert.equal(s.ui(),null,'saved geometry never opens anything');s.root.requestFullscreen();s.root.style.transform='scale(1)';
+  }else s.enterAtTerminal();
+  if(kind==='mini'){assert.equal(s.ui(),null,'existing native Mini request guard owns this action');return;}
+  const accepted=s.exit();
+  assert.equal(accepted,false,'an invalid contact must leave the existing exit cache rejection intact');
+  assert.deepEqual(s.calls,[]);
+});
 function visibleVideo(s) {
   const box=s.video.getBoundingClientRect(),values=s.win.getComputedStyle(s.video).clipPath.match(/inset\(([^)]+)\)/)[1].split(/\s+/).map(Number.parseFloat);
   if(values.length===1)while(values.length<4)values.push(values[0]);
   return {x:box.x+box.width*values[3]/100,y:box.y+box.height*values[0]/100,width:box.width*(1-(values[1]+values[3])/100),height:box.height*(1-(values[0]+values[2])/100)};
 }
+for(const motion of ['fallback','staged'])test('confirmed centered 4:3 inline pose recovers the real oversized landscape author box after '+motion+' exit',t=>{
+  const s=exitHandoffPage(t,{contained:true,cached:true}),node=s.video,source=node.getAttribute('src');
+  if(motion==='staged'){assert.equal(s.win.__langformFullscreen.prepareExitMotion('abcdefghijk',s.request.token,402,844,s.win.Date.now()+300,12),true);s.finish();}
+  Object.assign(s.videoNatural,{x:109,y:110,width:656,height:492});node.style.width='656px';node.style.height='492px';node.style.left='109px';
+  s.prepare();s.confirm();s.frame(30);
+  assert.equal(s.ui(),null);assert.equal(s.messages.filter(row=>row.kind==='exit-commit').length,1,'source-bound original pose produces a real geometry commit');
+  const rect=node.getBoundingClientRect();assert.deepEqual([rect.x,rect.y,rect.width,rect.height],[50,110,301,226]);
+  assert.equal(node.getAttribute('src'),source);assert.equal(node,s.root.querySelector('video'));assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+test('a claimed centered 4:3 lease suspends inline size and offset through repeated fullscreen entry and resumes only on exit',async t=>{
+  const s=exitHandoffPage(t,{contained:true,cached:true});Object.assign(s.videoNatural,{x:109,y:110,width:656,height:492});
+  s.video.style.width='656px';s.video.style.height='492px';s.video.style.left='109px';s.prepare();s.confirm();s.frame(30);assert.equal(s.ui(),null);
+  s.win.__langformFullscreenEnterProtocol=1;
+  for(let cycle=0;cycle<3;cycle++){
+    s.enter();const request=s.messages.findLast(row=>row.kind==='enter-request');assert.ok(request);
+    s.resize(874,402);assert.equal(s.win.__langformFullscreen.finishEnter('abcdefghijk',request.token,874,402),true);s.frame(4);
+    const animation=s.animations.at(-1);if(animation&&!animation.cancelled){animation.fraction=1;animation.onfinish();}s.frame(8);
+    await Promise.resolve();await Promise.resolve();
+    assert.equal(s.ui().inert,false,'real fullscreen entry must release its interaction latch');
+    assert.equal(s.messages.filter(row=>row.kind==='enter-commit').length,cycle+1);
+    const full=s.video.getBoundingClientRect();assert.deepEqual([full.x,full.y,full.width,full.height],[0,0,874,402]);
+    s.button('exit').click();const exit=s.messages.findLast(row=>row.kind==='exit-request');s.resize(402,844);
+    assert.equal(s.win.__langformFullscreen.finishExit('abcdefghijk',exit.token,402,844),true);s.frame(30);
+    assert.equal(s.ui(),null);const inline=s.video.getBoundingClientRect();assert.deepEqual([inline.x,inline.y,inline.width,inline.height],[50,110,301,226]);
+  }
+  assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
 test('staged exit animates the same live video before WK shrink and ACKs only its measured final pin',t=>{
   const s=exitHandoffPage(t,{cached:true}),node=s.video,parent=node.parentElement,source=node.getBoundingClientRect();
   assert.equal(stagedExit(s),true);assert.equal(s.animations.length,1);assert.equal(s.animations[0].keyframes.length,33);
@@ -1172,7 +1389,7 @@ test('cached exit hides only watch context branches and reveals them after match
   assert.ok(header.hasAttribute('data-langform-fullscreen-exit-context'));assert.equal(reveals.length,0);
   Object.keys(s.videoNatural).forEach(key=>delete s.videoNatural[key]);s.frame(4);
   assert.equal(s.ui(),null);assert.equal(header.hasAttribute('data-langform-fullscreen-exit-context'),false);
-  assert.ok(reveals.some(row=>row.node===header));assert.ok(reveals.every(row=>!row.node.contains(s.video)));
+  assert.equal(reveals.some(row=>row.node===header),false,'cached watch context also returns without an empty opacity-zero canvas');assert.ok(reveals.every(row=>!row.node.contains(s.video)));
   assert.equal(s.animations.length,0);assert.equal(s.timeWrites(),0);
 });
 
@@ -1186,14 +1403,16 @@ test('YouTube can move the same live node into a previously hidden sibling witho
 });
 
 for(const reason of ['pagehide','navigation','newID','hydratedVideo','inactive'])test(`cached exit cancellation restores context and media ownership (${reason})`,async t=>{
-  const s=exitHandoffPage(t,{cached:true}),context=s.doc.createElement('section');s.doc.body.appendChild(context);await Promise.resolve();s.prepare();
-  assert.ok(context.hasAttribute('data-langform-fullscreen-exit-context'));
+  const s=exitHandoffPage(t,{cached:true}),context=s.doc.createElement('section'),reveals=[];
+  s.win.Element.prototype.animate=function(){const a={cancelled:false,cancel(){this.cancelled=true;},onfinish:null};reveals.push(a);return a;};
+  s.doc.body.appendChild(context);await Promise.resolve();assert.ok(context.hasAttribute('data-langform-fullscreen-exit-context'));s.prepare();
+  assert.equal(context.hasAttribute('data-langform-fullscreen-exit-context'),false,'stable watch context is visible before native commit');assert.ok(context.closest('[inert]'));
   if(reason==='pagehide')s.win.dispatchEvent(new s.win.Event('pagehide'));
   if(reason==='navigation')s.win.dispatchEvent(new s.win.Event('yt-navigate-start'));
   if(reason==='newID'){s.win.history.replaceState({},'','/watch?v=zyxwvutsrqp');s.win.dispatchEvent(new s.win.Event('video-data-change'));}
   if(reason==='hydratedVideo'){s.video.remove();await Promise.resolve();}
   if(reason==='inactive'){s.doc.hidden=true;s.doc.dispatchEvent(new s.win.Event('visibilitychange'));}
-  assert.equal(s.ui(),null);assert.equal(context.hasAttribute('data-langform-fullscreen-exit-context'),false);
+  assert.equal(s.ui(),null);assert.equal(context.hasAttribute('data-langform-fullscreen-exit-context'),false);assert.equal(context.hasAttribute('inert'),false);assert.ok(reveals.every(a=>a.cancelled),'cancelled exit leaves no running context fade');
   assert.equal(s.video.hasAttribute('data-langform-fullscreen-exit-video'),false);assert.equal(s.doc.getElementById('langform-fullscreen-exit-style'),null);
   assert.equal(s.confirm(),false);assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
 });
@@ -1743,4 +1962,455 @@ test('after releasing native drag and Mini ownership explicit fullscreen enters 
   drag=false;s.win.__langformStageInsets.nativeMini=false;
   s.video.webkitEnterFullscreen();assert.ok(s.ui());assert.equal(native,0);
   assert.equal(s.win.__langformFullscreen.isOpen(),true);
+});
+
+function rotationSetup(t, options = {}) {
+  const s = setup(t,options);
+  Object.defineProperty(s.doc,'hidden',{value:false,configurable:true});
+  Object.defineProperties(s.video,{videoWidth:{value:640,configurable:true},videoHeight:{value:360,configurable:true}});
+  const box = {x:0,y:110,left:0,top:110,right:390,bottom:330,width:390,height:220};
+  s.root.getBoundingClientRect = () => box;
+  s.video.getBoundingClientRect = () => box;
+  s.win.__langformMeasureVideo = () => ({playerVideoID:'abcdefghijk',hasVideo:true,mediaReady:true,navigationToken:''});
+  return s;
+}
+test('physical fullscreen entry uses the current transaction without touch activation or playback changes',t=>{
+  const s=rotationSetup(t),parent=s.video.parentElement,source=s.video.src;
+  Object.defineProperty(s.win.navigator,'userActivation',{value:{isActive:false}});
+  assert.equal(s.win.__langformFullscreen.enter('abcdefghijk',true,{contact:{}}),true);
+  assert.ok(s.ui());assert.equal(s.win.__langformFullscreen.isOpen(),true);
+  assert.equal(s.video.parentElement,parent);assert.equal(s.video.src,source);
+  assert.equal(s.video.currentTime,40);assert.deepEqual(s.calls,[]);
+  assert.equal(s.win.__langformFullscreen.enter('abcdefghijk'),false,'a duplicate never toggles fullscreen off');
+  assert.equal(s.win.__langformFullscreen.exitForRotation('abcdefghijk'),true);
+  assert.equal(s.ui(),null);assert.equal(s.video.currentTime,40);assert.deepEqual(s.calls,[]);
+});
+test('physical entry and exit preserve a deliberately paused video',t=>{
+  const s=rotationSetup(t,{paused:true});
+  assert.equal(s.win.__langformFullscreen.enter('abcdefghijk',true,{contact:{}}),true);
+  assert.equal(s.paused(),true);
+  assert.equal(s.win.__langformFullscreen.exitForRotation('abcdefghijk'),true);
+  assert.equal(s.paused(),true);assert.deepEqual(s.calls,[]);
+});
+test('physical fullscreen entry rejects absent, foreign, stale, hidden, ad and busy owners',t=>{
+  const variants=['wrong-id','no-id','no-bridge','hidden-document','non-watch','missing-root','detached-video','foreign-data','missing-data','ad-data','ad-class','native-fullscreen','not-ready','no-dimensions','media-error','seeking','mini','native-drag','overlay','hidden-root','inert-root','transparent-ancestor','offscreen','missing-report','stale-report','not-ready-report','incomplete-navigation'];
+  for(const kind of variants){
+    const s=rotationSetup(t);let id='abcdefghijk';
+    if(kind==='wrong-id')id='zyxwvutsrqp';
+    if(kind==='no-id')id='';
+    if(kind==='no-bridge')delete s.win.webkit.messageHandlers.langformFullscreen;
+    if(kind==='hidden-document')Object.defineProperty(s.doc,'hidden',{value:true});
+    if(kind==='non-watch')s.win.history.replaceState({},'', '/');
+    if(kind==='missing-root')s.root.remove();
+    if(kind==='detached-video')s.video.remove();
+    if(kind==='foreign-data')s.root.getVideoData=()=>({video_id:'zyxwvutsrqp'});
+    if(kind==='missing-data')s.root.getVideoData=()=>null;
+    if(kind==='ad-data')s.root.getVideoData=()=>({video_id:id,isAd:'ad'});
+    if(kind==='ad-class')s.root.classList.add('ad-showing');
+    if(kind==='native-fullscreen')s.video.webkitDisplayingFullscreen=true;
+    if(kind==='not-ready')s.video.readyState=1;
+    if(kind==='no-dimensions')Object.defineProperty(s.video,'videoWidth',{value:0});
+    if(kind==='media-error')Object.defineProperty(s.video,'error',{value:{code:3}});
+    if(kind==='seeking')Object.defineProperty(s.video,'seeking',{value:true});
+    if(kind==='mini')s.win.__langformStageInsets={nativeMini:true};
+    if(kind==='native-drag')s.win.__langformIsNativeDragging=()=>true;
+    if(kind==='overlay')s.win.__langformHasOpenOverlay=()=>true;
+    if(kind==='hidden-root')s.root.hidden=true;
+    if(kind==='inert-root')s.root.setAttribute('inert','');
+    if(kind==='transparent-ancestor')s.root.parentElement.style.opacity='0';
+    if(kind==='offscreen')s.video.getBoundingClientRect=()=>({x:0,y:-400,left:0,top:-400,right:390,bottom:-180,width:390,height:220});
+    if(kind==='missing-report')delete s.win.__langformMeasureVideo;
+    if(kind==='stale-report')s.win.__langformMeasureVideo=()=>({playerVideoID:'zyxwvutsrqp',hasVideo:true,mediaReady:true});
+    if(kind==='not-ready-report')s.win.__langformMeasureVideo=()=>({playerVideoID:id,hasVideo:true,mediaReady:false});
+    if(kind==='incomplete-navigation')s.win.__langformMeasureVideo=()=>({playerVideoID:id,hasVideo:true,mediaReady:true,navigationToken:'4',navigationComplete:false,navigationMediaLoaded:true});
+    assert.equal(s.win.__langformFullscreen.enter(id),false,kind);assert.equal(s.ui(),null,kind);assert.deepEqual(s.calls,[],kind);
+  }
+});
+test('physical entry revalidates media source, main node, ads and navigation after synchronous readiness reads',t=>{
+  for(const kind of ['source','video','root','route','ad','hidden','media-error']){
+    const s=rotationSetup(t),report=s.win.__langformMeasureVideo;
+    s.win.__langformMeasureVideo=()=>{
+      if(kind==='source')s.video.src='https://example.test/foreign-source';
+      if(kind==='video')s.video.replaceWith(s.video.cloneNode());
+      if(kind==='root')s.root.replaceWith(s.root.cloneNode(true));
+      if(kind==='route')s.win.history.replaceState({},'', '/watch?v=zyxwvutsrqp');
+      if(kind==='ad')s.root.classList.add('ad-interrupting');
+      if(kind==='hidden')Object.defineProperty(s.doc,'hidden',{value:true});
+      if(kind==='media-error')Object.defineProperty(s.video,'error',{value:{code:3}});
+      return report();
+    };
+    assert.equal(s.win.__langformFullscreen.enter('abcdefghijk'),false,kind);assert.equal(s.ui(),null,kind);assert.deepEqual(s.calls,[],kind);
+  }
+});
+test('physical fullscreen movement waits for real contact release including multi-touch and pointer cancellation',t=>{
+  for(const family of ['pointer','touch']){
+    const s=rotationSetup(t);
+    function contact(name, contacts){const event=new s.win.Event(name,{bubbles:true});if(family==='pointer')Object.defineProperty(event,'pointerId',{value:7});else Object.defineProperty(event,'touches',{value:contacts.map(identifier=>({identifier}))});s.video.dispatchEvent(event);}
+    contact(family==='pointer'?'pointerdown':'touchstart',[7,8]);
+    assert.equal(s.win.__langformFullscreen.enter('abcdefghijk'),false,family+' retains its initial contact');
+    if(family==='touch'){contact('touchend',[8]);assert.equal(s.win.__langformFullscreen.enter('abcdefghijk'),false,'second finger still owns contact');}
+    contact(family==='pointer'?'pointercancel':'touchcancel',[]);
+    assert.equal(s.win.__langformFullscreen.enter('abcdefghijk'),true,family+' releases on cancellation');
+    contact(family==='pointer'?'pointerdown':'touchstart',[7]);
+    assert.equal(s.win.__langformFullscreen.exitForRotation('abcdefghijk'),false,family+' keeps active fullscreen contact');
+    contact(family==='pointer'?'pointerup':'touchend',[]);
+    assert.equal(s.win.__langformFullscreen.exitForRotation('abcdefghijk'),true,family+' permits portrait exit after release');
+  }
+});
+test('physical portrait exit keeps open speed, chapter and zoom gestures and current media ownership',t=>{
+  for(const kind of ['speed','chapters','zoom','foreign-id','ad','source-after-read']){
+    const s=rotationSetup(t);
+    if(kind==='chapters')s.win.__langformFullscreenChapters={mount:()=>({isOpen:()=>true,update:()=>{},close:()=>{},destroy:()=>{}})};
+    assert.equal(s.win.__langformFullscreen.enter('abcdefghijk',true,{contact:{}}),true);
+    Object.defineProperty(s.video,'seeking',{value:true});
+    if(kind==='speed')s.ui().querySelector('.lf-fs-speed-button').click();
+    if(kind==='zoom')s.win.__langformPlaybackZoom={getState:()=>({gesturing:true})};
+    if(kind==='foreign-id')s.root.getVideoData=()=>({video_id:'zyxwvutsrqp'});
+    if(kind==='ad')s.root.classList.add('ad-showing');
+    if(kind==='source-after-read'){const report=s.win.__langformMeasureVideo;s.win.__langformMeasureVideo=()=>{s.video.src='https://example.test/new';return report();};}
+    assert.equal(s.win.__langformFullscreen.exitForRotation('abcdefghijk'),false,kind);
+    assert.deepEqual(s.calls,[],kind);
+  }
+});
+test('physical portrait exit permits current media seeking while subsequent entry still waits for it',t=>{
+  for(const paused of [false,true]){
+    const s=rotationSetup(t,{paused});
+    assert.equal(s.win.__langformFullscreen.enter('abcdefghijk',true,{contact:{}}),true);
+    Object.defineProperty(s.video,'seeking',{value:true,writable:true});
+    const time=s.video.currentTime;
+    assert.equal(s.win.__langformFullscreen.exitForRotation('abcdefghijk'),true,'same current fullscreen exit does not require seeked');
+    assert.equal(s.ui(),null);
+    assert.equal(s.video.currentTime,time);assert.equal(s.video.paused,paused);assert.deepEqual(s.calls,[]);
+    assert.equal(s.win.__langformFullscreen.enter('abcdefghijk'),false,'seeking still guards a new entry');
+    s.video.seeking=false;
+    assert.equal(s.win.__langformFullscreen.enter('abcdefghijk'),true,'entry is available after the actual seek ends');
+  }
+});
+test('physical portrait exit does not reverse an uncommitted fullscreen entry or exit',t=>{
+  const s=rotationSetup(t);s.win.__langformFullscreenEnterProtocol=1;s.win.__langformFullscreenExitProtocol=1;
+  assert.equal(s.win.__langformFullscreen.enter('abcdefghijk',true,{contact:{}}),true);
+  assert.equal(s.ui().hasAttribute('data-entering'),true);
+  assert.equal(s.win.__langformFullscreen.exitForRotation('abcdefghijk'),false);
+  assert.equal(s.ui().hasAttribute('data-entering'),true);assert.deepEqual(s.calls,[]);
+});
+
+test('native portrait-up entry allows the released pan contact queue but keeps all live owner guards',t=>{
+  const s=rotationSetup(t);
+  const event=new s.win.Event('touchstart',{bubbles:true});Object.defineProperty(event,'touches',{value:[{identifier:5}]});s.video.dispatchEvent(event);
+  assert.equal(s.win.__langformFullscreen.enter('abcdefghijk'),false,'physical rotation still waits for contact');
+  s.win.__langformIsNativeDragging=()=>true;
+  assert.equal(s.win.__langformFullscreen.enterForGesture('abcdefghijk'),false,'native input lock must release first');
+  s.win.__langformIsNativeDragging=()=>false;
+  assert.equal(s.win.__langformFullscreen.enterForGesture('abcdefghijk'),true);
+  assert.equal(s.video.currentTime,40);assert.deepEqual(s.calls,[]);
+});
+for(const family of ['pointer','touch'])test(`free fullscreen ${family} downward swipe exits once at release and never toggles playback`,t=>{
+  const s=setup(t,{nativeSetup:(v,r,w)=>{if(family==='pointer')w.PointerEvent=w.MouseEvent;}});s.enter();const ui=s.ui();
+  function fire(type,x,y,target=ui,id=1){const e=new s.win.Event(type,{bubbles:true,cancelable:true});if(family==='pointer')Object.assign(e,{pointerType:'touch',pointerId:id,isPrimary:id===1,clientX:x,clientY:y});else{const ended=/end|cancel/.test(type);Object.defineProperties(e,{touches:{value:ended?[]:[{identifier:id,clientX:x,clientY:y}]},changedTouches:{value:[{identifier:id,clientX:x,clientY:y}]}});}target.dispatchEvent(e);return e;}
+  const names=family==='pointer'?['pointerdown','pointermove','pointerup']:['touchstart','touchmove','touchend'];
+  fire(names[0],150,120);assert.ok(s.ui());fire(names[1],155,215);assert.ok(s.ui(),'wait until real release');
+  assert.equal(fire(names[2],155,215).defaultPrevented,true);assert.equal(s.ui(),null);assert.equal(s.video.currentTime,40);assert.deepEqual(s.calls,[]);
+  const click=new s.win.MouseEvent('click',{bubbles:true,cancelable:true,detail:1,clientX:155,clientY:215});
+  Object.defineProperty(click,'target',{value:s.root});
+  assert.equal(s.win.__langformConsumeFullscreenGestureClick(click),true);assert.equal(click.defaultPrevented,true);assert.equal(s.win.__langformConsumeFullscreenGestureClick(click),false,'one click only');
+});
+for(const kind of ['cancel','up','horizontal','reversed','control','zoom','overlay','foreign-source'])test(`fullscreen downward swipe preserves ${kind} ownership`,t=>{
+  const s=setup(t,{nativeSetup:(v,r,w)=>{w.PointerEvent=w.MouseEvent;}});s.enter();const ui=s.ui();
+  function fire(type,x,y,target=ui,id=1){const e=new s.win.Event(type,{bubbles:true,cancelable:true});Object.assign(e,{pointerType:'touch',pointerId:id,isPrimary:id===1,clientX:x,clientY:y});target.dispatchEvent(e);}
+  if(kind==='zoom')s.win.__langformPlaybackZoom={getState:()=>({scale:1.8,gesturing:false})};
+  if(kind==='overlay')s.win.__langformHasOpenOverlay=()=>true;
+  const target=kind==='control'?s.button('play'):ui;
+  fire('pointerdown',150,120,target);fire('pointermove',kind==='horizontal'?250:150,kind==='up'?20:220,target);
+  if(kind==='foreign-source')s.video.src='https://example.test/new';
+  fire(kind==='cancel'?'pointercancel':'pointerup',kind==='horizontal'?250:150,kind==='up'?20:kind==='reversed'?100:220,target);
+  assert.ok(s.ui(),kind);assert.equal(s.video.currentTime,40);assert.deepEqual(s.calls,[]);
+});
+
+test('uncached exit reveals stable inline watch context alongside live handoff while player controls stay hidden and inert',async t=>{
+  const s=exitHandoffPage(t),parent=s.video.parentElement,source=s.video.getAttribute('src');
+  const host=s.doc.createElement('ytm-player');s.root.before(host);host.appendChild(s.root);
+  const original=s.doc.createElement('button');original.className='player-settings-icon';host.appendChild(original);
+  const header=addHeader(s,s.root.closest('main')),details=s.doc.createElement('section');details.textContent='Watch metadata';s.root.closest('main').appendChild(details);
+  const reveals=[];s.win.Element.prototype.animate=function(frames,timing){const a={node:this,frames,timing,cancel(){},onfinish:null};reveals.push(a);return a;};
+  await Promise.resolve();assert.ok(header.hasAttribute('data-langform-fullscreen-exit-context'));
+  s.prepare();
+  assert.equal(s.animations.length,1,'natural inline geometry starts the live handoff');
+  assert.ok(s.ui(),'reveal is earlier than commit');assert.equal(s.messages.some(x=>x.kind==='exit-commit'),false);
+  assert.equal(header.hasAttribute('data-langform-fullscreen-exit-context'),false,'stable watch chrome should not wait for media completion');
+  assert.equal(details.hasAttribute('data-langform-fullscreen-exit-context'),false);
+  assert.equal(reveals.length,0,'watch text must be present with its restored canvas, without a new opacity-zero interval');
+  assert.ok(original.hasAttribute('data-langform-fullscreen-exit-context'),'original sibling controls remain suppressed');
+  assert.ok(s.ui().inert);assert.ok(header.closest('[inert]'));assert.ok(details.closest('[inert]'));assert.ok(original.closest('[inert]'));
+  s.confirm();s.finish();assert.equal(s.ui(),null);assert.equal(original.hasAttribute('data-langform-fullscreen-exit-context'),false);
+  assert.ok(reveals.some(x=>x.node===original),'the original-player control fade still belongs to final commit');
+  assert.ok(reveals.every(x=>!x.node.contains(s.video)&&x.node!==header&&x.node!==details));
+  assert.equal(s.root.closest('main').hasAttribute('inert'),false);assert.equal(header.hasAttribute('inert'),false);
+  assert.equal(s.video.parentElement,parent);assert.equal(s.video.getAttribute('src'),source);assert.equal(s.video.currentTime,40);assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+
+test('early exit watch reveal keeps hydrated siblings inert and re-hides on a mismatching viewport',async t=>{
+  const s=exitHandoffPage(t),header=addHeader(s);await Promise.resolve();
+  s.prepare();assert.equal(header.hasAttribute('data-langform-fullscreen-exit-context'),false);
+  const hydrated=s.doc.createElement('header');hydrated.innerHTML='<button>Neue Suche</button>';s.doc.body.appendChild(hydrated);await Promise.resolve();
+  assert.equal(hydrated.hasAttribute('data-langform-fullscreen-exit-context'),false,'hydrated watch context joins the already safe inline view');
+  assert.ok(hydrated.hasAttribute('inert'),'new body branch is blocked until commit');
+  s.resize(844,390);assert.ok(header.hasAttribute('data-langform-fullscreen-exit-context'));assert.ok(hydrated.hasAttribute('data-langform-fullscreen-exit-context'));
+  s.resize(390,844);s.frame(2);assert.equal(header.hasAttribute('data-langform-fullscreen-exit-context'),false);assert.equal(hydrated.hasAttribute('data-langform-fullscreen-exit-context'),false);
+  s.win.dispatchEvent(new s.win.Event('pagehide'));assert.equal(s.ui(),null);assert.equal(hydrated.hasAttribute('inert'),false);assert.equal(hydrated.hasAttribute('data-langform-fullscreen-exit-context'),false);assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+
+test('Reduce Motion preserves an early watch reveal without introducing a fade or releasing player input',async t=>{
+  const s=exitHandoffPage(t),header=addHeader(s),reveals=[];
+  s.win.Element.prototype.animate=function(){const a={cancelled:false,cancel(){this.cancelled=true;},onfinish:null};reveals.push(a);return a;};
+  await Promise.resolve();s.prepare();assert.equal(reveals.length,0);assert.ok(s.ui());
+  s.win.__testPreference.matches=true;s.win.__testPreference.dispatchEvent(new s.win.Event('change'));
+  assert.ok(reveals.every(a=>a.cancelled));assert.equal(header.hasAttribute('data-langform-fullscreen-exit-context'),false);
+  assert.ok(header.closest('[inert]'));assert.ok(s.ui().inert);s.frame(4);s.confirm();s.frame(4);
+  assert.equal(s.ui(),null);assert.equal(header.hasAttribute('inert'),false);assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+
+function backdropExitPage(t, colors=true) {
+  const s=handshakePage(t),nodes=[s.doc.documentElement,s.doc.body];
+  if(colors){nodes[0].style.setProperty('background-color','rgb(248, 249, 250)','important');nodes[1].style.setProperty('background-color','white','');}
+  const before=nodes.map(node=>[node.style.getPropertyValue('background-color'),node.style.getPropertyPriority('background-color'),node.hasAttribute('style')]);
+  s.enter();s.resize(844,390);s.button('exit').click();
+  const request=s.messages.find(row=>row.kind==='exit-request');
+  const prepare=()=>{s.win.__langformFullscreen.prepareExit('abcdefghijk',request.token,390,844);s.resize(390,844);};
+  const finish=()=>{s.win.__langformFullscreen.finishExit('abcdefghijk',request.token,390,844);for(let i=0;i<6;i++)s.frame();};
+  const colorsNow=()=>nodes.map(node=>[node.style.getPropertyValue('background-color'),node.style.getPropertyPriority('background-color'),node.hasAttribute('style')]);
+  const dark=()=>nodes.forEach(node=>{assert.equal(node.style.getPropertyValue('background-color'),'rgb(0, 0, 0)');assert.equal(node.style.getPropertyPriority('background-color'),'important');});
+  return {...s,nodes,before,prepare,finish,colorsNow,dark};
+}
+for(const colors of [true,false])test('exit backdrop holds through native inline preparation and restores exact author colors and priorities; inline='+colors,t=>{
+  const s=backdropExitPage(t,colors),parent=s.video.parentElement,src=s.video.getAttribute('src');
+  s.dark();s.prepare();s.dark();s.frame();s.dark();s.frame();assert.deepEqual(s.colorsNow(),s.before,'author canvas returns with safe early context');assert.ok(s.ui());
+  s.resize(844,390);s.dark();s.resize(390,844);s.frame();s.frame();assert.deepEqual(s.colorsNow(),s.before);
+  s.finish();assert.equal(s.ui(),null);assert.deepEqual(s.colorsNow(),s.before);assert.equal(s.video.parentElement,parent);assert.equal(s.video.getAttribute('src'),src);assert.equal(s.video.currentTime,40);assert.deepEqual(s.calls,[]);
+});
+for(const cancel of ['pagehide','yt-navigate-start','explicit','timeout'])test('exit backdrop restores author paint after '+cancel,t=>{
+  const s=backdropExitPage(t);s.prepare();s.dark();
+  if(cancel==='explicit')s.win.__langformFullscreen.exit('abcdefghijk','cancelled');
+  else if(cancel==='timeout')[...s.timers.values()].find(row=>row.delay===4000).fn();
+  else s.win.dispatchEvent(new s.win.Event(cancel));
+  assert.equal(s.ui(),null);assert.deepEqual(s.colorsNow(),s.before);s.frame();assert.deepEqual(s.colorsNow(),s.before);assert.equal(s.video.currentTime,40);assert.deepEqual(s.calls,[]);
+});
+test('exit backdrop preserves an intervening author color, priority and unrelated style on cancellation',t=>{
+  const s=backdropExitPage(t);s.prepare();s.dark();
+  s.nodes[0].style.setProperty('background-color','purple','important');s.nodes[1].style.setProperty('background-color','black','');s.nodes[1].style.setProperty('color','red','important');
+  s.win.dispatchEvent(new s.win.Event('pagehide'));
+  assert.equal(s.nodes[0].style.getPropertyValue('background-color'),'purple');assert.equal(s.nodes[0].style.getPropertyPriority('background-color'),'important');
+  assert.equal(s.nodes[1].style.getPropertyValue('background-color'),'black');assert.equal(s.nodes[1].style.getPropertyPriority('background-color'),'');assert.equal(s.nodes[1].style.getPropertyValue('color'),'red');assert.equal(s.nodes[1].style.getPropertyPriority('color'),'important');
+});
+test('exit backdrop follows viewport reversal until reduced-motion completion and then restores paint',t=>{
+  const s=exitHandoffPage(t),nodes=[s.doc.documentElement,s.doc.body];
+  s.prepare();s.resize(844,390);nodes.forEach(n=>assert.equal(n.style.backgroundColor,'rgb(0, 0, 0)'));
+  s.win.__testPreference.matches=true;s.win.__testPreference.dispatchEvent(new s.win.Event('change'));
+  s.resize(390,844);s.frame(4);s.confirm();s.frame(4);
+  assert.equal(s.ui(),null);nodes.forEach(n=>assert.equal(n.style.getPropertyValue('background-color'),''));assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+test('exit backdrop restores only its copied body lease after author subtree replacement',async t=>{
+  const s=backdropExitPage(t);s.prepare();s.dark();const clone=s.doc.body.cloneNode(false);
+  // JSDOM's clone parser drops the last !important; preserve the real CSSOM pair.
+  clone.style.setProperty('background-color',s.doc.body.style.getPropertyValue('background-color'),s.doc.body.style.getPropertyPriority('background-color'));clone.appendChild(s.doc.createElement('main'));s.doc.body.replaceWith(clone);await Promise.resolve();await Promise.resolve();
+  assert.equal(s.ui(),null);assert.equal(clone.style.getPropertyValue('background-color'),s.before[1][0]);assert.equal(clone.style.getPropertyPriority('background-color'),s.before[1][1]);assert.equal(clone.hasAttribute('data-langform-fullscreen-lease'),false);assert.deepEqual(s.colorsNow(),s.before);
+});
+
+test('exit backdrop releases author canvas before transparent black watch metadata becomes visible',async t=>{
+  const s=exitHandoffPage(t),style=s.doc.createElement('style');style.textContent='html,body{background-color:white} .watch-details{color:black;background:transparent}';s.doc.head.appendChild(style);
+  const details=s.doc.createElement('section');details.className='watch-details';details.textContent='Watch title';s.root.closest('main').appendChild(details);await Promise.resolve();
+  assert.equal(painted(s,details),false);assert.equal(s.win.getComputedStyle(s.doc.body).backgroundColor,'rgb(0, 0, 0)');
+  s.prepare();assert.ok(s.ui());assert.equal(painted(s,details),true);assert.equal(s.win.getComputedStyle(s.doc.body).backgroundColor,'rgb(255, 255, 255)');assert.equal(s.win.getComputedStyle(details).color,'rgb(0, 0, 0)');assert.equal(s.win.getComputedStyle(details).backgroundColor,'rgba(0, 0, 0, 0)');
+  s.resize(844,390);assert.equal(painted(s,details),false);assert.equal(s.win.getComputedStyle(s.doc.body).backgroundColor,'rgb(0, 0, 0)');s.win.dispatchEvent(new s.win.Event('pagehide'));assert.equal(s.win.getComputedStyle(s.doc.body).backgroundColor,'rgb(255, 255, 255)');
+});
+
+test('opt-in exit paint trace separates a white covering ancestor from leased black document paint',t=>{
+  const s=exitHandoffPage(t,{diagnostics:true}),main=s.root.closest('main');
+  main.style.backgroundColor='white';main.getBoundingClientRect=()=>({left:0,top:0,right:844,bottom:844});
+  const transparent=s.doc.createElement('div');transparent.style.backgroundColor='transparent';
+  let hitReads=0;s.doc.elementsFromPoint=(x,y)=>{hitReads++;assert.equal(x,8);assert.equal(y,s.win.innerHeight*.75);return [transparent,main,s.doc.body,s.doc.documentElement];};
+  Object.assign(s.videoNatural,{width:844,height:390});s.prepare();s.frame(10);
+  const row=s.messages.filter(x=>x.kind==='geometry-trace').flatMap(x=>x.rows).at(-1);
+  assert.equal(row.exitBackdropLeased,true);assert.equal(row.exitWatchContextVisible,false);assert.equal(row.exitRevealsActive,false);
+  assert.equal(row.exitHTMLPaint,1);assert.equal(row.exitBodyPaint,1);assert.equal(row.exitHitPaint,2);assert.equal(row.exitAncestorPaint,2);
+  assert.equal(row.exitHitDepth,2);assert.equal(row.exitHitRole,5);assert.equal(row.exitAncestorDepth,3);assert.equal(row.exitAncestorRole,5);
+  assert.equal(hitReads,12);assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+test('exit paint trace is disabled normally and bounds hit inspection to twelve fixed-enum rows',t=>{
+  const normal=exitHandoffPage(t);normal.doc.elementsFromPoint=()=>{throw Error('normal runtime must not hit-test paint');};normal.prepare();normal.frame(20);
+  assert.equal(normal.messages.some(row=>row.kind==='geometry-trace'),false);
+  const s=exitHandoffPage(t,{diagnostics:true}),blank=s.doc.createElement('div');blank.style.backgroundColor='transparent';
+  const hidden=s.doc.createElement('div');hidden.style.cssText='background:white;opacity:0';
+  const white=s.doc.createElement('div');white.style.backgroundColor='white';
+  const hits=[hidden,...Array(11).fill(blank),white];s.doc.elementsFromPoint=()=>hits;
+  s.frame(12);const row=s.messages.filter(x=>x.kind==='geometry-trace').flatMap(x=>x.rows).at(-1);
+  assert.equal(row.exitHitPaint,0);assert.equal(row.exitHitDepth,0);assert.equal(row.exitHitRole,0);
+  const fields=Object.keys(row).filter(key=>/^exit(?:HTMLPaint|BodyPaint|Hit|Ancestor)/.test(key));
+  assert.ok(fields.length>=8);assert.ok(fields.every(key=>Number.isInteger(row[key])&&row[key]>=0&&row[key]<=12));
+  assert.equal(JSON.stringify(row).includes('background'),false);
+});
+test('exit paint trace records early watch reveal independently from still-hidden original controls',t=>{
+  const s=exitHandoffPage(t,{diagnostics:true}),details=s.doc.createElement('section');s.root.closest('main').appendChild(details);
+  details.animate=()=>({cancel(){},onfinish:null});
+  s.prepare();s.frame(12);
+  const row=s.messages.filter(x=>x.kind==='geometry-trace').flatMap(x=>x.rows).at(-1);
+  assert.equal(row.exitContextHidden,true);assert.equal(row.exitWatchContextVisible,true);assert.equal(row.exitBackdropLeased,false);assert.equal(row.exitRevealsActive,false);
+  assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+
+test('opt-in trace distinguishes entered inline fallback from an accepted staged animation',t=>{
+  const fallback=exitHandoffPage(t,{diagnostics:true});fallback.prepare();fallback.frame(12);
+  const fallbackRows=fallback.messages.filter(row=>row.kind==='geometry-trace').flatMap(row=>row.rows);
+  assert.ok(fallbackRows.some(row=>row.exitHandoffToInlineCalls>0),'the real fallback function entry is recorded');
+  assert.ok(fallbackRows.every(row=>Number.isFinite(row.exitRequestEpochMilliseconds)&&row.exitRequestEpochMilliseconds>0));
+  const staged=exitHandoffPage(t,{diagnostics:true,cached:true});assert.equal(stagedExit(staged),true);staged.frame(12);
+  const stagedRows=staged.messages.filter(row=>row.kind==='geometry-trace').flatMap(row=>row.rows);
+  assert.ok(stagedRows.every(row=>row.exitHandoffToInlineCalls===0),'accepted staged motion has an explicitly observed zero fallback entries');
+  const motion=stagedRows.find(row=>Number.isFinite(row.exitAnimationCreatedEpochMilliseconds));
+  assert.ok(motion);assert.ok(motion.exitAnimationCreatedEpochMilliseconds>=motion.exitRequestEpochMilliseconds);
+  assert.equal(staged.timeWrites(),0);assert.deepEqual(staged.calls,[]);
+});
+
+test('exit geometry gets one bounded fresh diagnostic window at the actual delayed motion request',t=>{
+  const s=exitHandoffPage(t,{diagnostics:true,cached:true});s.frame(170);
+  const rows=()=>s.messages.filter(x=>x.kind==='geometry-trace').flatMap(x=>x.rows),before=rows().length;
+  assert.ok(before>5&&before<=240);assert.equal(s.frames.size,0);
+  assert.equal(stagedExit(s),true);s.frame(12);
+  assert.ok(rows().length>before,'the expired request window must not miss the later real handoff');
+  const motion=rows().filter(row=>row.traceMotionWindow===true);assert.equal(motion.length,12);
+  assert.ok(motion.every(row=>row.documentMilliseconds<2600&&Number.isFinite(row.documentEpochMilliseconds)));
+  s.frame(170);const after=rows().length;assert.ok(after<=480,'two finite windows, never an unbounded trace');
+  assert.equal(stagedExit(s,13),true);s.frame(20);assert.equal(rows().length,after,'a repeated native motion request cannot extend diagnostics again');
+  assert.equal(s.frames.size,0);assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+for(const changed of ['token','source','route'])test('exit diagnostic window rejects a delayed mismatching '+changed,t=>{
+  const s=exitHandoffPage(t,{diagnostics:true,cached:true});s.frame(170);
+  const rows=()=>s.messages.filter(x=>x.kind==='geometry-trace').flatMap(x=>x.rows),before=rows().length;
+  if(changed==='source')s.video.setAttribute('src','https://example.test/replacement');
+  if(changed==='route')s.win.history.replaceState({},'','/watch?v=zyxwvutsrqp');
+  const accepted=s.win.__langformFullscreen.prepareExitMotion('abcdefghijk',changed==='token'?'obsolete':s.request.token,390,844,s.win.Date.now()+300,12);
+  if(changed!=='source')assert.equal(accepted,false); // The probe must not alter the existing media-motion decision.
+  s.frame(20);assert.equal(rows().length,before);assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+
+function captionRefreshPage(t,options={}){
+ const s=exitHandoffPage(t,options),container=s.doc.createElement('div'),caption=s.doc.createElement('div');container.className='ytp-caption-window-container';caption.className='caption-window';caption.style.fontSize='20px';container.appendChild(caption);s.root.appendChild(container);
+ return {...s,container,caption};
+}
+test('inline caption refresh asks the original renderer once after stable layout and before reveal',t=>{
+ const s=captionRefreshPage(t),calls=[];
+ s.root.setSize=function(...args){calls.push({args,hidden:!painted(s,s.caption),rootFixed:s.root.hasAttribute('data-langform-fullscreen-player'),heldWidth:s.video.getBoundingClientRect().width});s.caption.style.fontSize='8px';};
+ s.prepare();assert.equal(calls.length,1);assert.deepEqual(calls[0].args,[]);assert.equal(calls[0].hidden,true);assert.equal(calls[0].rootFixed,false);assert.ok(calls[0].heldWidth>600,'the held picture is not the sizing argument');assert.equal(s.caption.style.fontSize,'8px');assert.equal(painted(s,s.caption),false);assert.equal(s.animations.length,0,'post-resize layout must be reconfirmed');
+ s.frame(2);assert.equal(s.animations.length,1);s.confirm();s.finish();assert.equal(s.ui(),null);assert.equal(s.caption.style.fontSize,'8px');assert.equal(calls.length,1);assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+test('caption refresh reconfirms original resize geometry and never repeatedly calls setSize',t=>{
+ const s=captionRefreshPage(t),calls=[];s.root.setSize=()=>{calls.push(1);Object.assign(s.videoNatural,{width:844,height:390});};s.prepare();assert.equal(calls.length,1);s.frame(6);assert.equal(s.animations.length,0);assert.equal(painted(s,s.caption),false);
+ Object.keys(s.videoNatural).forEach(k=>delete s.videoNatural[k]);s.frame(4);assert.equal(s.animations.length,1);assert.equal(calls.length,1);
+});
+for(const kind of ['source','root','video','route','ad','hidden','cancel'])test('caption resize reentry rejects '+kind+' before revealing or committing old geometry',t=>{
+ const s=captionRefreshPage(t);let calls=0;s.root.setSize=()=>{calls++;if(kind==='source')s.video.src='https://example.test/new';if(kind==='root')s.root.replaceWith(s.root.cloneNode(true));if(kind==='video')s.video.replaceWith(s.video.cloneNode());if(kind==='route')s.win.history.replaceState({},'', '/watch?v=zyxwvutsrqp');if(kind==='ad')s.root.classList.add('ad-showing');if(kind==='hidden')s.doc.hidden=true;if(kind==='cancel')s.win.__langformFullscreen.exit('abcdefghijk','cancelled');};
+ s.prepare();assert.equal(calls,1);assert.equal(s.ui(),null);assert.equal(s.messages.some(m=>m.kind==='exit-commit'),false);assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+for(const kind of ['no-captions','no-api','foreign-source','unready','wrong-viewport'])test('caption refresh keeps '+kind+' outside its one-shot action',t=>{
+ const s=captionRefreshPage(t);let calls=0;s.root.setSize=()=>{calls++;};if(kind==='no-captions')s.container.remove();if(kind==='no-api')delete s.root.setSize;if(kind==='foreign-source')s.video.src='https://example.test/new';if(kind==='unready')Object.assign(s.videoNatural,{width:844,height:390});
+ if(kind==='wrong-viewport'){s.frame(3);}else s.prepare();assert.equal(calls,0);assert.deepEqual(s.calls,[]);
+});
+test('throwing original caption resize is attempted once and keeps exit available',t=>{
+ const s=captionRefreshPage(t);let calls=0;s.root.setSize=()=>{calls++;throw Error('original resize unavailable')};s.prepare();s.frame(2);s.confirm();s.finish();assert.equal(s.ui(),null);assert.equal(calls,1);assert.deepEqual(s.calls,[]);
+});
+test('caption resize viewport reversal hides context until the current target settles',t=>{
+ const s=captionRefreshPage(t);let calls=0;s.root.setSize=()=>{calls++;s.resize(844,390);};s.prepare();assert.equal(calls,1);assert.equal(painted(s,s.caption),false);assert.equal(s.animations.length,0);s.resize(390,844);s.frame(2);assert.equal(s.animations.length,1);s.confirm();s.finish();assert.equal(s.ui(),null);assert.equal(calls,1);
+});
+
+function nativePreviewLease(t,terminal='touchcancel',point={identifier:1,clientX:195,clientY:60}) {
+ const s=previewContactPage(t);
+ s.win.__langformMeasureVideo=()=>({playerVideoID:'abcdefghijk',hasVideo:true,mediaReady:true});
+ s.fire('touchstart');s.preview();s.fire(terminal,s.video,[point]);
+ // Native evaluateJavaScript also outlives the original dispatch's queued
+ // contact cleanup. The separate lease must survive that zero-delay task.
+ for(const [key,timer] of [...s.timers])if(timer.delay===0){s.timers.delete(key);timer.fn();}
+ return s;
+}
+const stableNativePicture={x:0,y:107,width:390,height:219.375};
+function nativeLeaseSnapshot(s) {return JSON.parse(JSON.stringify(s.win.__qaInlineDestination()));}
+for(const frames of [0,18,240,299])test('Native geometry lease retains stable target after '+frames+' frames',t=>{
+ const s=nativePreviewLease(t),visible=s.video.getBoundingClientRect();s.frame(frames);
+ assert.equal(s.win.__langformFullscreen.enterForGesture('abcdefghijk'),true);
+ assert.deepEqual(nativeLeaseSnapshot(s).picture,stableNativePicture,'native handoff must use the matching stable precontact target');
+ assert.deepEqual(s.video.getBoundingClientRect(),visible,'live entry still starts from the actually visible1.25 preview');
+ s.root.style.transform='scale(1)';assert.equal(s.exit(),true);s.finish();
+ assert.deepEqual([s.video.getBoundingClientRect().x,s.video.getBoundingClientRect().y,s.video.getBoundingClientRect().width,s.video.getBoundingClientRect().height],[0,107,390,219.375]);
+ assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+for(const invalid of ['expired','timer','new-contact','second-finger','route','resize','scroll','blur','hidden','real-hidden','pagehide','cleanup','source','ratio','root-replaced','video-replaced','insets','offset','wrong-origin','nonuniform','overscale','owner','native-fullscreen','overlay','mini','reentrant-measure','reentrant-style'])test('Native geometry lease rejects '+invalid,t=>{
+ const s=nativePreviewLease(t);
+ if(invalid==='expired')s.frame(301);
+ if(invalid==='timer'){const timer=[...s.timers.values()].find(x=>x.delay===5000);assert.ok(timer);timer.fn();}
+ if(invalid==='new-contact')s.fire('touchstart');
+ if(invalid==='second-finger')s.fire('touchstart',s.video,[{identifier:1,clientX:195,clientY:180},{identifier:2,clientX:200,clientY:180}]);
+ if(['route','resize','scroll','blur'].includes(invalid))s.win.dispatchEvent(new s.win.Event(invalid==='route'?'yt-navigate-start':invalid));
+ if(invalid==='hidden'){s.doc.hidden=true;s.doc.dispatchEvent(new s.win.Event('visibilitychange'));s.doc.hidden=false;}
+ if(invalid==='real-hidden'){s.win.__langformRealVisibility={inactive:()=>true};s.doc.dispatchEvent(new s.win.Event('langform-real-visibilitychange'));s.win.__langformRealVisibility.inactive=()=>false;}
+ if(invalid==='pagehide')s.win.dispatchEvent(new s.win.Event('pagehide'));
+ if(invalid==='cleanup')s.win.__langformFullscreen.exit('abcdefghijk');
+ if(invalid==='source')s.video.src='https://example.test/replacement';
+ if(invalid==='ratio')Object.defineProperty(s.video,'videoHeight',{value:1440,configurable:true});
+ if(invalid==='root-replaced'){const root=s.root.cloneNode(true);s.root.replaceWith(root);}
+ if(invalid==='video-replaced')s.video.replaceWith(s.video.cloneNode(true));
+ if(invalid==='insets')s.win.__langformStageInsets.top=1;
+ if(invalid==='offset')Object.defineProperty(s.win,'scrollY',{value:1,configurable:true});
+ if(invalid==='wrong-origin')s.root.style.transformOrigin='top center';
+ if(invalid==='nonuniform')s.root.style.transform='scale(1.25,1.2)';
+ if(invalid==='overscale')s.preview(1.3);
+ if(invalid==='owner')s.root.getVideoData=()=>({video_id:'zyxwvutsrqp'});
+ if(invalid==='native-fullscreen')s.video.webkitDisplayingFullscreen=true;
+ if(invalid==='overlay')s.win.__langformHasOpenOverlay=()=>true;
+ if(invalid==='mini')s.win.__langformStageInsets.nativeMini=true;
+ if(invalid==='reentrant-measure')s.win.__langformMeasureVideo=()=>{s.win.dispatchEvent(new s.win.Event('blur'));return {playerVideoID:'abcdefghijk',hasVideo:true,mediaReady:true};};
+ if(invalid==='reentrant-style'){const original=s.win.getComputedStyle;let ran=false;s.win.getComputedStyle=node=>{const css=original(node);if(node===s.video&&!ran){ran=true;s.win.dispatchEvent(new s.win.Event('scroll'));}return css;};}
+ const entered=s.win.__langformFullscreen.enterForGesture('abcdefghijk');
+ if(entered)assert.notDeepEqual(nativeLeaseSnapshot(s).picture,stableNativePicture,'invalid geometry lease must not contribute the old target');
+ else assert.equal(s.ui(),null);
+ assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
+});
+for(const terminal of ['touchend','pointercancel','downward-cancel','horizontal-cancel'])test('Native geometry lease requires upward touchcancel '+terminal,t=>{
+ let s;
+ if(terminal==='pointercancel'){
+   s=previewContactPage(t);s.win.__langformMeasureVideo=()=>({playerVideoID:'abcdefghijk',hasVideo:true,mediaReady:true});
+   const fire=(type,y)=>{const e=new s.win.Event(type,{bubbles:true});Object.assign(e,{pointerType:'touch',pointerId:4,isPrimary:true,clientX:195,clientY:y});s.video.dispatchEvent(e);};
+   fire('pointerdown',180);s.preview();fire('pointercancel',60);
+ }else s=nativePreviewLease(t,terminal==='touchend'?'touchend':'touchcancel',{identifier:1,clientX:terminal==='horizontal-cancel'?320:195,clientY:terminal==='downward-cancel'?300:60});
+ assert.equal(s.win.__langformFullscreen.enterForGesture('abcdefghijk'),true);
+ assert.notDeepEqual(nativeLeaseSnapshot(s).picture,stableNativePicture);
+});
+test('Native geometry lease is one shot even when the first owner check rejects',t=>{
+ const s=nativePreviewLease(t);s.win.__langformHasOpenOverlay=()=>true;
+ assert.equal(s.win.__langformFullscreen.enterForGesture('abcdefghijk'),false);
+ s.win.__langformHasOpenOverlay=()=>false;
+ assert.equal(s.win.__langformFullscreen.enterForGesture('abcdefghijk'),true);
+ assert.notDeepEqual(nativeLeaseSnapshot(s).picture,stableNativePicture);
+});
+test('Native geometry lease cannot authorize ordinary rotation after terminal dispatch',t=>{
+ const s=nativePreviewLease(t);assert.equal(s.win.__langformFullscreen.enter('abcdefghijk',true,{contact:{}}),true);
+ assert.notDeepEqual(nativeLeaseSnapshot(s).picture,stableNativePicture);
+});
+test('Native geometry lease leaves original synchronous touchcancel intact',t=>{
+ const s=previewContactPage(t);s.fire('touchstart');s.preview();s.enterAtTerminal('touchcancel');
+ assert.deepEqual(nativeLeaseSnapshot(s).picture,stableNativePicture);assert.equal(s.exit(),true);
+});
+
+for(const invalid of ['last-owner-blur','last-owner-expiry'])test('Native geometry lease rejects final owner reentry '+invalid,t=>{
+ const s=nativePreviewLease(t);let ownedReads=0,invalidated=false;
+ s.root.getVideoData=()=>{
+   const stack=new Error().stack||'';
+   if(stack.includes('nativeInlineContactMatches')){
+     ownedReads++;
+     if(ownedReads===4){invalidated=true;if(invalid==='last-owner-blur')s.win.dispatchEvent(new s.win.Event('blur'));
+       else Object.defineProperty(s.win.performance,'now',{configurable:true,value:()=>10000});}
+   }
+   return {video_id:'abcdefghijk'};
+ };
+ const entered=s.win.__langformFullscreen.enterForGesture('abcdefghijk');
+ assert.equal(invalidated,true,'final owner callback actually invalidated generation/age');
+ if(entered)assert.notDeepEqual(nativeLeaseSnapshot(s).picture,stableNativePicture,'a lease invalidated in the final owner callback must not contribute its stable target');
+ assert.equal(s.timeWrites(),0);assert.deepEqual(s.calls,[]);
 });

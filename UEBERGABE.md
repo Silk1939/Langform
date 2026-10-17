@@ -1,6 +1,255 @@
 # Übergabe Langform
 
-## Aktueller Einstieg – 12. Oktober 2026
+## Entwicklerübergabe – 17.10.2026
+
+Der Einstieg für einen neuen Entwickler steht in [docs/WEITERARBEITEN.md](docs/WEITERARBEITEN.md). Das Repository enthält die native iPhone-App, die Safari-/Browser-Erweiterung, die separate Web-App und die zugehörigen Tests. [AGENTS.md](AGENTS.md) und das [gemeinsame Backlog](docs/VERBESSERUNGS_BACKLOG.md) bleiben für Änderungen und Statuspflege maßgeblich.
+
+Aktueller iPhone-Quellstand: **Build 72, nur im Simulator gebaut und gezielt geprüft**. Auf dem echten iPhone ist zuletzt **Build 71 vom 16.10.2026 installiert und gestartet** bestätigt. Historische Testzahlen unten sind keine erneute Prüfung dieses GitHub-Exports. Die frische Exportkopie besteht2.266 Root-/87 Webtests, Web-Lint/Produktionsbuild und Simulatorfall35. Zwei bestätigte Produktfehler (LF-73 Präferenzen nach Navigation, LF-22 AirPlay-Folge nach Kapitelübernahme) sind korrigiert und unabhängig gegengeprüft. Der Abhängigkeitsbefund LF-74 bleibt offen. GitHub-Upload und öffentlicher Klon sind noch ausstehend. [Aktueller Prüfstand](docs/GITHUB_UEBERGABE_PRUEFUNG_2026-10-17.json); keine persönliche Geräteabnahme.
+
+Vor der nächsten Änderung die bestehenden Einträge **LF-33** (früher Größenschritt bei Vollbildrückkehr), **LF-56** (Zoom/Reset), **LF-70** (unter anderem offener Caption-Befund) und **LF-67** (Audioverlust nach gemischten Gesten, Bluetoothursache offen) im Backlog lesen. Diese Hinweise sind ein Einstieg in die dort gepflegten Befunde. LF-31 und LF-32 bleiben zurückgestellt. Bestandene Simulatorfälle ersetzen keine Finger-, Motion-, Ton- oder Bluetoothabnahme auf dem Gerät.
+
+Lokale QA-Aufnahmen, Rohlogs, Netzantworten, Schlüssel und Signierungsmaterial werden nicht öffentlich mitgeliefert. Deshalb sind viele historische `docs/qa/`-Links unten nur in der ursprünglichen lokalen Arbeitskopie auflösbar; die für Regressionen benötigten öffentlichen Fixtures sind enthalten. Die folgenden datierten Abschnitte bleiben als Historie erhalten. Frühere Angaben zu nicht ausgeführten Commits oder Deployments beschreiben jeweils den damaligen Auftrag.
+
+## Aktueller Quell-/Prüfstand – 17.10.2026,72
+
+Motionrollen, Sheets/Menüs/Thumbnail, sichtbare Vollbild-Fingerfolge, Controls-Fade sowie eng gebundene physische Quellpose/Cancel umgesetzt und automatisiert geprüft. Root2258/0/0, Web87/0/0. Gezielt positive Simulatorfälle stammen aus mehreren Bundles; die roten43-Zwischenläufe und der alte Caption40-Befund bleiben erhalten. Frühe Schrumpfstufe und Zoomreset bleiben offen. Die abschließende ruhige47-Gegenprobe bestätigt beide Ready; der vorangehende physische Grenzfall ohne Ready bleibt erhalten. Durchgehend verlässliche Bewegung und eine Hostlastursache sind nicht bewiesen.
+
+**72 nur im Simulator; auf SrTan weiterhin bestätigter71 vom16.10.** Keine neue persönliche Finger-/Haptik-/Motion-/Tonabnahme. Manuelle Signierung unverändert. Verbindlicher Status und nächste Schritte im [gemeinsamen Backlog](docs/VERBESSERUNGS_BACKLOG.md#motion-review--17102026), Belege im [QA-Bericht](docs/qa/motion-review-2026-10-17/README.md). Neue Motion.swift und uncommittete/ungetrackte Quellen sowie Git-ignorierte QA beim Macwechsel mitnehmen. Kein Commit, Push, PR oder Safari-Deployment in diesem Motionauftrag.
+
+## Aktueller Installationsstand – 16.10.2026
+
+**Aktueller Installationsstand, 16.10.2026, 12:40 Uhr Berlin:** Langform **1.0 (71) auf SrTan installiert und normal gestartet**, Geräteinventar und laufender Prozess PID 69760 bestätigt. Neues Profil auf ausdrückliche Nutzerfreigabe mit unverändertem Zertifikat E94…F560 erstellt, gültig bis **23.10.2026 um 12:37:27 Uhr Berlin**. Zertifikatsbestand, manuelle Projekteinstellungen und Safari-Signierung unverändert. 44/44 Release-Ressourcen bytegleich, 74 Produkt-/UI-Dateien und 116 Tests unverändert; keine neue Simulatorserie. Gestriger Funktionsprüfstand 13/1 sowie Untertitel-/Motion-/Zoom-/Bluetoothbefunde und persönliche Abnahmen bleiben offen. [Installation und Nachweise](docs/qa/device-install-build71-2026-10-16/validation.json).
+
+Neues Profil b8c8fe50-1c5b-40eb-9da9-ab384c9b6eb8 liegt in den Standardprofilen und im Downloads-Ordner `Langform-Signierung-2026-10-16`. Der bestehende Deploypfad kann es mit der unveränderten festen Identität verwenden. Kein privater Schlüssel exportiert. Erster StartLocked bleibt historisch; nach Nutzerentsperren Start und PID bestätigt. Kein erneuter Funktions-/Bluetooth-/Finger-Test. QA-Rohdaten beim Transfer mitnehmen. Das gemeinsame Backlog bleibt verbindlich.
+
+## Historischer Arbeitsstand15.10. – Build71, lokaler Teilstand22:47Uhr
+
+**Aktueller tatsächlicher Teilstand,15.10.2026,22:47Uhr,Build71 – nicht vollständig grün:** Korrekturen an Kommentar-Feder/Kontaktbesitz, Mini-/Settings-Trefferflächen, Captionabständen, Kapitelbesitz, Range-Release, Mini-Replay und nativer Vollbildübergabe integriert. Root **2195 bestanden/0 Fehler/3 bestehende FFmpeg-Skips**. Gemeinsame tatsächliche14-Fall-Serie **13 bestanden/1 fehlgeschlagen/0 übersprungen**, Fehler40: Untertitel sind An, aber bei0:28–0:32 fehlen Cues/Rendererinhalt; Cuepause durch gleichenVideozeit-Vergleich nicht bestätigt, Provider-/Originalplayer-/Appursache offen. Separate Pflichtläufe am identischen74-Dateien-Stand:35dreimal,40zweimal und46einmalmitzwei normalen Such-/Vollbildzyklen bestanden; kein Ersatz für den roten gemeinsamen Lauf.116 Root-Testdateien stabil,44/44 Ressourcen je Release/gebautem und installiertem Simulator,49Syntaxprüfungen grün, bestehende manuelle Signierung streng bestätigt. **71 nicht installiert/gestartet:** autorisierter DeployExit70 vor Installation, SrTan unavailable/physisches Ziel inXcode fehlt. Sichtbarer früher Größenschritt LF-33, frühere Zoomursache LF-56, Bluetoothursache LF-67 und Finger-/Lupe-/Konto-/Livecommunityabnahme offen. Macstumm, Automationpausiert, LF-31/LF-32zurückgestellt. [Aktuelle Belege](docs/qa/motion-polish-2026-10-15/README.md), [Tatsächliche Ergebnisse](docs/qa/motion-polish-2026-10-15/validation.json).
+
+[Gemeinsames Backlog](docs/VERBESSERUNGS_BACKLOG.md) ist verbindlich. Der letzte gemeinsame Lauf ist13/1/0; niemals14grünbehaupten. Alle74 Produkt-/UI-Dateien und116Roottests unverändert, aktueller Release undSimulator enthalten44/44 identischeRessourcen. NeuerCaptionfehlerLF-70 ist bildlichbelegt und ursächlichungeklärt. VollständigeMotion-/Finger-/Lupe-/Bluetooth-/Kontoabnahmeoffen. ManuellesProfilendet15.10.23:35:45Berlin; keineErneuerung/automatischeProvisionierung. QA-GitignoredRohdatenbeimTransfermitnehmen; keineProduktquellenrücksetzen, paralleleSafariLF-71erhalten.
+
+## Historischer Neustartcheckpoint15.10.2026,17:55Uhr
+
+Nutzer muss Mac neu starten. **Auftrag unterbrochen, nicht abgeschlossen;71 nicht auf SrTan installiert.** Laufende Tests/Recorder sauber beendet; eigene Simulatorinstanz heruntergefahren, Daten erhalten, Runnerlock frei; andere Simulatorzustände unverändert. Root2037bestanden/0Fehler/3bestehendeFFmpeg-Skips; Release71 mit bestehender manueller Signierung gebaut. Nach Rootlauf nur frischerFailureDump im UI-Harness, Produktunverändert.
+
+AutoplayOwner-/Deadline-/Capabilityfix umgesetzt; tatsächliche45 und positiver12X-41 bestanden. Bisherige19-s- und55-s-Quelle liefern im Simulator keineAutoplayfähigkeit; natürlicheEnde-/Aus-/Replayfälle38/39 undgemeinsame abschließende14er-Serie noch offen. **Vor Installation weiterprüfen**, keinenalten13/13PassalsaktuellenAbschluss ausgeben.
+
+SrTan zuletztverbunden. Vor spätererInstallation Erreichbarkeit undvorhandeneSignierung erneutprüfen; Profilfrist15.10.2026,23:35:45Berlin, keineautomatischeProvisionierung/Erneuerung. PersönlicheFinger-/Lupe-/Bluetooth-/Kontoabnahme undLF-67-Ursacheoffen; LF-31/LF-32zurückgestellt. AutomationameinmaligenStartpausiert.
+
+VerbindlicherStatus im [gemeinsamenBacklog](docs/VERBESSERUNGS_BACKLOG.md). [CheckpointundnächsteSchritte](docs/qa/motion-polish-2026-10-15/restart-checkpoint/checkpoint.json), [aktuellerPrüfbericht](docs/qa/motion-polish-2026-10-15/README.md). QA-Rohdaten/GitignorierteAufnahmen beimTransfermitnehmen.
+
+
+
+
+## Erhaltene frühere Vorphase – 15. Oktober 2026, Motion-Nachlauf Build71
+
+Build 1.0/71 enthält korrigierte Mini-Tasten/Crop-Regrab, freigestellten Watchheader, kontinuierliches Kommentarblatt samt Hydration, unterbrechbare Einstellungsmenüs und kollisionsfreie Untertitel/Gestenhinweise einschließlich Fade. **Root 2015/0/3 bestehende FFmpeg-Skips; gemeinsame 13-Fall-Serie 13/0/0 und mandatory 44 dreimal grün**, keine Runtimewarnungen. 74 Produkt-/UI-Dateien und 114 Tests final stabil; 44/44 Ressourcen je signiertem Release/gebautem und installiertem Simulatorbundle bytegleich. **Build 71 noch nicht installiert:** SrTan auch nach den lokalen Prüfungen nicht erreichbar. Bestehende manuelle Signierung und Profil unverändert gültig; letzter bestätigter Gerätebuild 67.
+
+Verbindlicher Status und nächster Schritt im [gemeinsamen Backlog](docs/VERBESSERUNGS_BACKLOG.md), [aktueller Prüfbericht](docs/qa/motion-polish-2026-10-15/README.md) und [Gesamtnachweis](docs/qa/motion-polish-2026-10-15/validation.json). Einmalige Automation am Beginn pausiert. Tatsächliche Aufnahmen von kontrollierten WK-/UIKit-Geometrieprüfungen getrennt; keine absolute Fehlerfreiheit oder FPS behauptet. Persönliche Finger-/Lupe-/Motion-/Konto-/Bluetoothabnahme und LF-67-Ursache offen. LF-31/LF-32 zurückgestellt. Bestehende manuelle Signierung unverändert, Profilfrist 15.10.2026 23:35:45 Berlin. QA ist Git-ignoriert und bei Übergabe mitzunehmen; kein Commit, Push, PR oder Safari-Deployment dieses Nachlaufs.
+
+## Vorheriger Arbeitsstand – 15. Oktober 2026, geprüfter Build70
+
+**Build1.0/70 umgesetzt, gründlich nachgeprüft, mit bestehender manueller Signierung gebaut; noch nicht installiert: SrTan nicht erreichbar; letzter bestätigter Gerätebuild67.** Nachprüfung korrigiert verspätete Doppeltipps, Settings-Hydration/-Eingabe, Autoqualität, verzögerte Original-Autoplaycontrols sowie native Suchfokus-, Filterkontakt- und kanonisierten Ungesehenzustand. Finale Rootregression **1.884 bestanden /0 Fehler /3 bestehende FFmpeg-Skips**; **eine gemeinsame tatsächliche Elf-Fall-Serie11/0/0**, 0 Runtimewarnungen. Finaler Runner41 zusätzlich dreimal grün,47Syntaxprüfungen und18 echte WebKit-DOM-/CSS-/Hit-Tests grün. Alle75 Produkt-/UI-Dateien und111 Root-Tests vor/nach stabil,44/44 JS-Ressourcen im signierten Release und gebautem/installiertem Simulatorbundle bytegleich. Alte roten, abgebrochenen und nur transient grünen Suchbefunde erhalten.
+
+Zentraler Status und nächster Schritt ausschließlich im [gemeinsamen Backlog](docs/VERBESSERUNGS_BACKLOG.md). [Aktueller Prüfbericht](docs/qa/native-ux-2026-10-14/review/README.md), [Gesamtnachweis](docs/qa/native-ux-2026-10-14/review/validation.json). Persönliche Finger-/Lupe-/Motion-, angemeldete Cache-/Livecommunity- und Bluetoothabnahme offen, LF-67-Ursache weiterhin unbelegt. Keine automatische Provisionierung oder neue/erneuerte Signierung. Profilfrist15.10.2026 23:35:45Berlin unverändert. LF-31/LF-32 bleiben zurückgestellt. Eigene Simulatorinstanz nach Abschluss heruntergefahren, Daten erhalten; ursprüngliche Simulatoren und bestehende Arbeitskopie/QA-Historie erhalten. `docs/qa/` ist Git-ignoriert und muss bei Übergabe ausdrücklich mitgenommen werden. Kein Commit/Push/PR und keine Safari-Installation für diese Nachprüfung.
+
+## Vorheriger Arbeitsstand – 14. Oktober 2026, 6,1-Zoll-Update69
+
+**Build 1.0/69 umgesetzt, geprüft und mit bestehender manueller Signierung gebaut; noch nicht installiert.** Alle acht Punkte des 6,1-Zoll-Auftrags enthalten. Root: 1.817 bestanden / 0 Fehler / 3 bestehende FFmpeg-Skips. Acht unterschiedliche letzte Simulatorfallnachweise 11/33–39 grün, keine gemeinsame Achter-Passserie. Natürliches Autoplay an/aus/nach Replay bis zum fortschreitenden Hauptvideo sowie persönlicher Tab bereits vor erster Auswahl aus Cache belegt. Pointermove-Holdabbruch und MSE-Werbeendseek korrigiert. 44/44 Ressourcen bytegleich, 75 Produkt-/UI-Dateien und 111 Tests stabil. SrTan gepaart, Verbindung/DDI nicht verfügbar; letzter bestätigter Gerätebuild 67. Installation und persönliche Finger-/Lupe-/angemeldete Cache-/Bluetoothabnahme offen. Bestehende Signierung erhalten; Profilfrist 15.10.2026, 23:35:45 Uhr Berlin. Eigene neue Simulatorinstanz heruntergefahren, Daten erhalten, Runnerlock frei. Zentraler Status und nächster Schritt ausschließlich im [gemeinsamen Backlog](docs/VERBESSERUNGS_BACKLOG.md); [QA-Bericht](docs/qa/native-ux-2026-10-14/README.md), [Gesamtnachweis](docs/qa/native-ux-2026-10-14/validation.json). LF-67 Bluetoothursache offen; LF-31/LF-32 zurückgestellt.
+
+## Vorheriger Quellstand – 14. Oktober 2026, Release 68 vorbereitet
+
+Seit dem installierten67 sind Doppeltipps auf freie Videoseiten (links−10s/rechts+10s) und Schutz vor YouTubes konkurrierendem Hold umgesetzt. Root1.667 bestanden/0Fehler/3bestehende FFmpeg-Skips; finale echte iOS27-Simulatorserie33×2 und07×2 viermal grün, Quellen68Dateien/Testdateien103 unverändert,39/39 Ressourcen bytegleich. Nach dem ersten grünen Stand Buildnummer67→68 erhöht und eine nicht mehr unterstützte optionale Diagnoseabfrage entfernt; finale Prüfungen direkt auf68, Quellen unverändert. Release1.0/68 mit derselben bestehenden Identität/Profil gebaut und streng geprüft. **Noch nicht installiert:** SrTan gepaart, Tunnel/DDI nicht erreichbar; Verbindung/Entsperren beim Nutzer angefragt. Letzter bestätigter Gerätebuild bleibt67. [Prüfbericht](docs/qa/audio-doubletap-2026-10-14/README.md), [Gerätekandidat](docs/qa/audio-doubletap-2026-10-14/device-build68/signed-bundle-verification.json).
+
+Der neue Nutzerbefund betrifft Kopfhörer/Bluetooth bei weiterlaufendem Bild in normaler Ansicht und Vollbild. **Audioverlustursache und persönliche Finger-/Bluetoothabnahme bleiben offen.** REA wurde gezielt ausgeführt, konkurrierende Originalgesten statisch belegt, keine Audioausfallkausalität bewiesen. Neue begrenzte Route-/Unterbrechungsprobe ist ausschließlich opt-in und verändert Audio nicht;39 finale Simulatorzeilen sind kein gehörter/physischer Bluetoothton; Unterbrechungsgrund ohne unterstützten Kontext bleibt unbekannt. Zentraler tatsächlicher Status, nächste Schritte und historische Fehlversuche unter [LF-66/LF-67 im einzigen Backlog](docs/VERBESSERUNGS_BACKLOG.md). QA-Dateien beim Macwechsel ausdrücklich mitnehmen. Simulator wieder heruntergefahren, Daten erhalten; manuelle Signierung unverändert, Profilfrist15.10.2026 23:35:45Berlin bleibt bestehen.
+
+## Aktueller Gerätebuild – 14. Oktober 2026, Build 67 installiert
+
+Auf weiteren Nutzerauftrag ist **1.0 (67)** mit dem früheren Auswahlschutz gegen die gemeldete Lupe beim2×-Hold auf SrTan installiert (Sequenz4032), Geräteinventar bestätigt. Getestete Produktquellen unverändert, ausschließlich Buildnummer66→67;39/39 Release-Ressourcen entsprechen den Testhashes. Bestehende manuelle Signierung und Profil erhalten. **Normaler Appstart wegen gesperrtem iPhone (`Locked`) abgewiesen; persönliche Lupenabnahme offen.** Zentraler aktueller Stand unter [LF-52 im Backlog](docs/VERBESSERUNGS_BACKLOG.md); [Installation/Prüfung](docs/qa/hold-selection-2026-10-14/device-build67/validation.json).
+
+## Historischer Abschluss vor dem Lupenfix – 14. Oktober 2026, Build 66 installiert
+
+**Installation am 14.10.2026, 16:55 Uhr Europe/Berlin erfolgreich:** Nutzer hat den Signierungsordner unter `/Users/tan/Downloads/Langform-Signierung-2026-10-14/` bereitgestellt. Die vorhandene passwortgeschützte `.p12` wurde über die Schlüsselbundverwaltung in den Anmeldeschlüsselbund importiert; kein Passwort oder privater Schlüssel in Projekt/QA übernommen. Vorprüfung mit dem mitgebrachten Profil erfolgreich, anschließend `scripts/deploy-iphone.sh` Exit0: Release66 gebaut, lokal signiert, streng geprüft, auf ausschließlich SrTan installiert (Sequenz4024) und normal ohne Diagnoseflags gestartet. Gezielte Geräteinventur bestätigt **Langform1.0/66**. Testquellen unverändert,39/39 JS-Ressourcen bytegleich. Die zuvor fehlende Signierung ist damit übernommen; der frühere blockierte Versuch bleibt als [Historie](docs/qa/device-install-build66-2026-10-14/validation-blocked-before-transfer.json) erhalten. [Aktueller Nachweis](docs/qa/device-install-build66-2026-10-14/validation.json).
+
+**Projekt und bestätigter Gerätebuild: 1.0 (66).** Kapitel- und Gestenkorrekturen sowie der normale Hintergrundpfad sind gespeichert, automatisch geprüft und auf SrTan installiert. Simulatorbuild und manuell signierter iPhone-Release enthalten jeweils **39/39 bytegleiche JavaScript-Ressourcen**. Persönliche Finger-/Ton-/Sensorabnahme bleibt offen. Verbindlicher Status: [gemeinsames Backlog](docs/VERBESSERUNGS_BACKLOG.md).
+
+Lange Kapitel in der normalen Videoansicht reservieren den tatsächlich daneben liegenden AirPlay-Picker, auch wenn er später sichtbar wird; ungetrennte Blattnamen umbrechen. Eigene Kapitel beeinflussen die native Zeilenankererkennung nicht mehr. Konsumierte Zoom-/Swipekontakte bleiben bis zum Release nachvollziehbar; Hochformat-Exit darf bei aktuellem Seek zurückführen, Eintritt bleibt während Seeking geschützt. Verlassene Kontakte und Scrubvorschau werden bei echter Inaktivität entfernt. Eigene Lifecyclemodule lesen weiterhin die echte Sichtbarkeit und starten beim Vordergrund keine Wiedergabe.
+
+Hintergrundteil von LF-31 erneut vom Nutzer autorisiert: Home-Geste/Appwechsel und Sperren, laufend bleibt laufend, bewusst pausiert bleibt pausiert. `WatchBackgroundAudio.js` erhält genau den aktuellen Root-/Video-/Quellbesitz. Eine öffentliche `.playback`-Kategorie ohne `setActive` und höchstens eine Original-Playfortsetzung gelten nur für vorher laufendes ungemutetes Medium im echten Hintergrund; Pause, Unterbrechung, Quelle/Route/Ad/Offline und alte Zyklen bleiben geschützt. Kein Retry, Seek, Rate/Mute, Vordergrund-Play oder blindes Unsuspend. Dynamic-Island-Feature/automatischer Anschluss und Downloads bleiben zurückgestellt.
+
+**Finale Prüfung:** Root **1.525 bestanden / 0 Fehler / 3 übersprungen**, Web **87/87**. Die drei Rootskips sind bestehende FFmpeg-abhängige AVFoundation-/Store-Fixtures. **11 finale tatsächliche Simulatorfälle bestanden / 0 Fehler / 0 Skips / 0 Runtimewarnungen:** Gesten-/Endefälle13–18 sowie normale Homefälle32/29/30/29/30. Quellen-/UI-Fingerprint über78 Dateien stabil;100 Root-Testdateien separat vor/nach Rootlauf bytegleich. Kapitel67/67 lokal und61/61 tatsächliche isolierte WebKitfälle grün. [Gesamtnachweis](docs/qa/chapters-fluidity-2026-10-14/validation.json), [lesbarer Bericht](docs/qa/chapters-fluidity-2026-10-14/README.md), [Releasebundle](docs/qa/chapters-fluidity-2026-10-14/bundle-device-unsigned-final.json), [Home-Hauptmedienbelege](docs/qa/background-audio-2026-10-14/normal-actual-validation.json).
+
+**Offen:** Ein früher einzelner normaler Homeversuch verlor seine Quelle. Gated/gewöhnliche/sofortige Wiederholungen und die finalen fünf normalen Fälle bestanden; der ursprüngliche Widerrufsgrund wurde erst danach instrumentiert und nicht erneut reproduziert. Logging wird nicht als funktionaler Fix behauptet. Dieser Einzelfehler bleibt im Backlog offen. Stille mit kodierter Audiospur hält weitere Simulatorprüfungen leise; logischer Unmute-/Zeitstatus ist kein gehörtes Audio. Home ist kein physischer Lock. Hintergrund-/Sperrton, echte Systemmedien und Finger-/Sensorabnahme bleiben eigenständig am iPhone offen.
+
+Die feste bestehende Signierungsidentität `E94E8C9CC2FF184832B68E4C02A332867D66F560` samt privatem Schlüssel ist jetzt lokal nutzbar. Das unveränderte Profil `8c01d0de-5bba-4c1a-8eae-c9e2e9ceb2b5` wurde über `LANGFORM_SIGNING_PROFILES_DIRECTORY` aus dem Transferordner verwendet und ist bis **15.10.2026, 23:35:45 Uhr Europe/Berlin** gültig. Der Import verlängert diese Frist nicht; danach ist die Profilversorgung gezielt zu klären. Manuelle Projekteinstellungen erhalten, keine neue/erneuerte/widerrufene Identität, Ersatzsignierung oder automatische Provisionierung. Kein erneuter Simulatorlauf für die reine Installation nötig: getesteter78-Dateien-Fingerprint unverändert. Eigene Simulator-App beendet, ursprünglich heruntergefahrener Simulator wieder heruntergefahren, Daten erhalten, Runnerlock frei. Keine Safari-Installation, kein Commit/Push; parallele vorhandene Änderungen erhalten.
+
+Nachweise unter `docs/qa/` sind von Git ausgeschlossen und müssen bei einer erneuten Übergabe ausdrücklich mitgenommen werden. Aktuelle sechs Hintergrundquellenhashes: [Freeze](docs/qa/background-audio-2026-10-14/lease-reason-source-freeze.json); vollständiger aktueller Ressourcenabgleich im Releasebundle oben. Die folgenden Abschnitte sind **datierte Historie vor diesem Abschluss**.
+
+## Fortsetzung auf dem Ziel-Mac – 14. Oktober 2026
+
+Auf Nutzerauftrag hier weitergearbeitet. Tatsächlicher Projektpfad: `/Users/tan/Desktop/Langform`, Branch `main`, Ausgangscommit weiterhin `6223839df850ae828325d6acfab120a6f698509c`. Die vollständige Arbeitskopie samt neuen Dateien und QA-Historie ist angekommen; alle acht unten dokumentierten Übergabehashes waren beim Einstieg identisch. Verbindlicher Status und offene Abnahmen bleiben im [gemeinsamen Backlog](docs/VERBESSERUNGS_BACKLOG.md).
+
+**Projekt und neuer Kandidat sind jetzt 1.0 (64).** Simulatorbuild und unsignierter Release für iPhone erfolgreich gebaut. Der endgültige Release enthält 38/38 bytegleiche JS-Ressourcen. SrTan wurde beim Einstieg als 1.0 (63) bestätigt; keine neue physische Installation. Die anschließende Geräte-Inventarabfrage lief in ein Timeout, daher keinen neueren Gerätestand ableiten.
+
+Die Fortsetzung hat einen weiteren echten LF-57/LF-61-Fehler gefunden und korrigiert: Nach dem pausierten Ende-Seek blieb YouTubes alter Next-Countdown aktiv und wechselte später die Quelle. `PlayerRect.js` stellt für diesen bewussten Seek den bereits verifizierten, eng gebundenen Original-Cancel bereit. `PlaybackSwipe.js` ruft ihn vor dem Seek auf und prüft anschließend die aktuelle Bindung erneut. Kein eigener Playaufruf und keine Änderung des globalen Autoplayschalters. Neuer Quellenhash für `PlaybackSwipe.js`: `94c69842ca9f6ca682ef1367867320e3e53ab9fc282878a5a5827e4b7bbc9824`; für `PlayerRect.js`: `46900821d069ac406c297628ddf45a6d1281639029428b2fb9cf455d2344c279`. Die übrigen sechs Playerdateien aus dem Übergabehashblock sind unverändert.
+
+**Prüfung:** 463 gezielte Regressionen bestanden. Vollständiger Rootlauf **1.297 bestanden / 0 Fehler / 3 übersprungen**; die drei bestehenden AVFoundation-/Store-Fixtures benötigen hier fehlendes FFmpeg. **Alle fünf tatsächlichen finalen Simulatorfälle 13–17 bestanden, 0 Fehler/Skips/Runtimewarnungen.** Fall 15 auf eigener frischer Instanz hat Cookie-Ablehnung und den anschließenden Relaunch mit normaler Watchprobe tatsächlich ausgeführt. Quellen-/Testfingerprint über 75 Dateien vor/nach identisch; beide Simulatorbundles 38/38 bytegleich. XCTest-Harness an frische Cookiezustände und die ausgeloggte Home-/Mein-YouTube-Oberfläche angepasst; alte Catalystvergleichsfixture berücksichtigt ihren tatsächlich gelieferten CSS-env-Ausgangswert, alle produktiven 62px/y110-Assertions erhalten. Historische rote Nachweise bleiben erhalten. Eigene Apps beendet, ursprünglicher Simulator wieder heruntergefahren, ausschließlich die neu angelegte temporäre Cookieinstanz entfernt; bestehende Daten/Laufzeit erhalten und Runnerlock frei. [Gesamtnachweis](docs/qa/mac-continuation-2026-10-14/validation.json). [Root](docs/qa/mac-continuation-2026-10-14/root-final-result.json), [Ende-Countdown Rot/Grün](docs/qa/mac-continuation-2026-10-14/ended-autonav-validation.json), [Releasebundle](docs/qa/mac-continuation-2026-10-14/bundle-device-unsigned-final.json).
+
+**Konkrete Installationsgrenze:** `bash scripts/deploy-iphone.sh --check-signing` scheitert, weil die festgelegte Identität `E94E8C9CC2FF184832B68E4C02A332867D66F560` samt privatem Schlüssel lokal fehlt. Das einzige lokale Profil `24d39e34-49b8-4fb6-945f-a36ce28f7064` enthält dieses Zertifikat nicht. Keine passenden `.p12`-/`.pfx`-/`.developerprofile`-Exporte in den begrenzt geprüften üblichen Exportordnern; Nutzer kennt keinen Export. Die vorhandene manuelle Signierung, feste Identität und Profilwahl wurden erhalten. Keine automatische Provisionierung, Erneuerung oder Ersatzidentität.
+
+Zur Installation die **bestehende** Signierung vom alten Mac exportieren und hier importieren: Zertifikat einschließlich privatem Schlüssel als `.p12` sowie passendes `.mobileprovision`, alternativ vorhandenes `.developerprofile` mit den Signierungsmitteln. [Apple: Signierung auf anderen Mac übertragen](https://help.apple.com/xcode/mac/current/en.lproj/dev8a2822e0b.html), [Apple: Zertifikat exportieren](https://help.apple.com/xcode/mac/current/en.lproj/dev154b28f09.html). Danach erst `bash scripts/deploy-iphone.sh --check-signing` erfolgreich prüfen und den normalen manuellen Deploymentweg verwenden. Zertifikat-/Profilgültigkeit dabei neu prüfen. Der vorbereitete unsignierte Release ist kein installierbares signiertes Paket. Physische Gesten-/Ton-/Sensorabnahmen bleiben im Backlog offen.
+
+Keine Safari-Installation, kein Commit/Push. LF-31 Dynamic Island und LF-32 Downloads bleiben zurückgestellt; automatischer Anschluss bleibt pausiert. Die folgenden Abschnitte dokumentieren den Stand **vor** dieser Fortsetzung und bleiben als Historie erhalten.
+
+## Übergabestand vor dem Macwechsel – 14. Oktober 2026
+
+Stand 14. Oktober 2026. Die angefragten Playerkorrekturen sind umgesetzt und lokal sowie im Simulator geprüft. **Projektversion und Simulator-Arbeitsbuild sind weiterhin 1.0 (63). Die neuen Fixes sind noch nicht auf dem physischen iPhone installiert.** Der nächste Agent soll von den gespeicherten Quellen weiterarbeiten und die persönliche Geräteprüfung vorbereiten.
+
+[AGENTS.md](AGENTS.md) und [docs/VERBESSERUNGS_BACKLOG.md](docs/VERBESSERUNGS_BACKLOG.md) gelten für die Fortsetzung. Das Backlog bleibt die einzige Aufgaben- und Statusliste. Diese Übergabe erklärt den Arbeitsstand und den Wechsel auf den anderen Mac.
+
+### Build und Arbeitskopie
+
+Der zuletzt dokumentierte Gerätebuild auf SrTan ist ebenfalls 1.0 (63), installiert am 12.10.2026. Dieser Gerätebuild enthält die nachfolgenden neuen Korrekturen noch nicht. Die Buildnummer wurde während der Reparatur nicht erhöht; der neue Stand wurde ausschließlich als Simulatorbuild ohne Signierung geprüft. Ein neuer Release-/Gerätebuild mit diesen Änderungen steht aus. Vor dem nächsten Gerätebuild die dann nächste freie Buildnummer wählen; auf dieser Arbeitskopie wäre 64 der nächste Kandidat.
+
+Die Änderungen sind **nicht eingecheckt oder gepusht**. Branch: `main`. Ausgangscommit: `6223839df850ae828325d6acfab120a6f698509c`.
+
+Auf dem Ziel-Mac muss die vollständige aktuelle Arbeitskopie ankommen, einschließlich geänderter und neuer Dateien. Ein frischer GitHub-Klon enthält diese Reparaturen nicht automatisch. Die neuen Dateien `ios/Langform/Langform/WatchAudio.js` und `PlayerRotationIntentPolicy.swift` sowie die neuen Tests gehören dazu. `docs/qa/player-start-2026-10-14/` ist von Git ausgeschlossen: Für die vollständigen lokalen Prüfnachweise diesen Ordner ausdrücklich mitnehmen. Ein bloßer Git-Push würde die QA-Rohdaten nicht übertragen. Die tatsächliche Synchronisierung auf den anderen Mac wurde hier nicht geprüft.
+
+Der bisherige Projektpfad auf diesem Mac ist `/Users/tanipekkaya/Desktop/Langform`. Auf dem Ziel-Mac den tatsächlich vorhandenen Pfad verwenden. Buildprodukte, `node_modules` und DerivedData können dort neu aufgebaut werden; bestehende Signierungsdateien und Schlüsselbundzugänge werden durch eine Ordnerkopie nicht eingerichtet.
+
+### Signierung für den anderen Mac
+
+Aktualisierung vom 14.10.2026: `bash scripts/deploy-iphone.sh --check-signing` auf dem alten Mac erneut erfolgreich. Vorhandene nutzbare Identität `E94E8C9CC2FF184832B68E4C02A332867D66F560`, Team `RFN59MUTQ3`; ausgewähltes vorhandenes Profil `8c01d0de-5bba-4c1a-8eae-c9e2e9ceb2b5` ist bis **15.10.2026, 23:35:45 Uhr Europe/Berlin** gültig. Ein Transfer verlängert diese Frist nicht.
+
+In der installierten Xcode-27-Oberfläche wurde kein Exportmenü für `.developerprofile` gefunden. Apples aktueller dokumentierter Weg über Konto → Team → Manage Certificates → Export Certificate bietet die Signing Identity als passwortgeschützte `.p12`; das passende `.mobileprovision` wird separat mitgegeben. [Apple-Anleitung](https://developer.apple.com/documentation/Xcode/sharing-your-teams-signing-certificates). Dateiendungen nicht umbenennen.
+
+Vorbereitet auf dem alten Mac: `/Users/tanipekkaya/Downloads/Langform-Signierung-2026-10-14/`. Der Ordner enthält bereits das unveränderte gültige `.mobileprovision` und `IMPORT_AUF_DEM_ANDEREN_MAC.txt`. Xcodes Export wurde in demselben Ordner als `Langform-Signierung-2026-10-14.p12` gespeichert. **Export inzwischen gespeichert und lokal vorhanden: `Langform-Signierung-2026-10-14.p12` (3.314 Bytes), Passwort vom Nutzer selbst gesetzt. Nutzer meldet die AirDrop-Übertragung selbst als erledigt („habs gemacht“); der AirDrop-Dialog auf dem alten Mac ist anschließend geschlossen. Empfang, Import und erfolgreicher Signierungscheck auf dem Ziel-Mac sind hier noch nicht unabhängig bestätigt.** Die Signierung wurde weder neu erzeugt noch erneuert oder widerrufen. Äußerer PKCS#12-Container read-only geprüft: PFX-Version3, gültige DER-Gesamtlänge und MacData vorhanden; ohne Passwort/Entschlüsselung. Der endgültige Nachweis der enthaltenen nutzbaren Identität erfolgt nach Import durch `--check-signing` auf dem Ziel-Mac.
+
+Nach dem vollständigen Transfer die `.p12` auf dem Ziel-Mac per Doppelklick in den Anmeldeschlüsselbund importieren. Danach im aktuellen Projekt prüfen, bei abweichendem Speicherort den Profilordner anpassen:
+
+```bash
+LANGFORM_SIGNING_PROFILES_DIRECTORY="$HOME/Downloads/Langform-Signierung-2026-10-14" bash scripts/deploy-iphone.sh --check-signing
+```
+
+Erst bei erfolgreichem Check weiterbauen; `--build-only` erzeugt noch keine Geräteinstallation. Der Transferordner mit privaten Signierungsmitteln bleibt außerhalb des Projekt-/Gitordners. Das Exportpasswort gehört ausschließlich in den Systemdialog.
+
+### Umgesetzte Playerkorrekturen
+
+- **Ton beim Öffnen, LF-62:** `WatchAudio.js` und eine an den neuen Watchauftrag gebundene native Audioabsicht in `YouTubeWebView.swift` entstummen genau das aktuelle Hauptvideo einmalig. Eine später bewusst gewählte Stummschaltung bleibt bei Pause, Wiedergabefortsetzung, Replay und Vollbild erhalten. Die Hilfsfunktion startet keine eigene Wiedergabe und entstummt nicht fortlaufend.
+- **Blockierter Startbereich, LF-29:** `PlayerRect.js` berücksichtigt den sichtbaren ungeladenen YouTube-Poster, auch wenn das eigentliche Video noch außerhalb der sichtbaren Fläche liegt. Der native Startkontakt kann dadurch greifen; ein gebundener Mediafallback ergänzt eine wirkungslose ausdrückliche Player-Startanforderung. Kein vorgetäuschtes erstes Videobild.
+- **Videoende und Vollbild, LF-61/LF-33:** `FullscreenMotion.js` begrenzt eigene Enter-/Exittransaktionen auf vier Sekunden und nimmt ausschließlich die eigenen markierten Sperren/Stile zurück. Ursprüngliche 4:3-Inlinepose und erneute volle Eintrittspose werden getrennt wiederhergestellt. Beim ausdrücklichen Replay bricht `PlayerRect.js` einen vorhandenen Next-Countdown über den live belegten Original-Cancel im selben Endscreen ab.
+- **Ganze freie Wischfläche, LF-57:** `PlaybackSwipe.js` verwendet die aktuelle sichtbare Rootfläche; `PlayerRect.js` meldet sie getrennt als `seekRect`, `YouTubeWebView.swift` priorisiert damit native Randkontakte. Freie Leisten und 4:3-Seitenflächen gehören dazu. Buttons, Zeitleiste, Werbung, Zoom/Pan, Mini und aktive Übergänge behalten ihre Zuständigkeit; die eigentliche Mediendarstellung bleibt getrennt.
+- **Pause nach Zurückwischen am Videoende, LF-57:** Der echte Ereignisring zeigte `seeked` bei 4,013 Sekunden in Pause und fünf Millisekunden später YouTubes eigenes `play`. Ein erfolgreich beobachteter Ende-Seek erhält seinen Pauseintent höchstens 1,5 Sekunden; `seeked`/`play` korrigieren einmalig und nur bei identischem Hauptmedium, Quelle, Root, Zielzeit und Geometrie. Der Timer räumt nur auf. Frische Eingaben, Controls, Tasten und der Native-Playaufruf widerrufen den alten Intent. Zusätzlich zwei eng begrenzte Nachklicklücken geschlossen; diese sind nicht als Ursache des beobachteten Autoresume behauptet.
+- **Drehen, LF-63:** `PlayerRotationIntentPolicy.swift`, UIDevice-Beobachtung in `YouTubeWebView.swift` und geschützte Schnittstellen in `FullscreenMotion.js` öffnen bei Querhaltung eigenes Vollbild und führen bei Hochhaltung zurück. Ein manueller Exit im Querformat bleibt bis zu einer neuen Hoch→Querbewegung erhalten.
+
+`PlaybackHoldDiagnostics.js` enthält ausschließlich ausdrücklich aktivierte Beobachtungsproben für Geometrie, echte Medienzustände und einen begrenzten Ereignisring. Die Diagnoseanzeige ist auf 1 px geclippt, damit sie die Vollbildbedienung nicht verdeckt.
+
+### Bestandene Prüfungen
+
+**1.294/1.294 lokale Rootprüfungen bestanden, 0 Fehler/Skips.** Ausgeführt: `node --test --test-concurrency=2 tests/*.test.js`. Dazu gehören JavaScriptverhalten, tatsächliche Swift-/UIKit-Typechecks und native Policy-/Callbackfixtures. Dies ist kein neuer vollständiger Web-App-Testlauf.
+
+**Fünf tatsächliche Simulatorfälle bestanden, 0 Fehler/Skips/Runtimewarnungen:** iPhone 18 Pro, iOS 27.0 (24A434), ausschließlich `CODE_SIGNING_ALLOWED=NO`, exklusive Bedienung.
+
+- Fall 13: ±15 Sekunden in Pause/Wiedergabe, Inline/Vollbild, nach echtem Pinch/Reset und nach Mini-Rückkehr.
+- Fall 14: natürliches Ende in beiden Ansichten, Replay/Pause, Mini/Expand, wiederholtes Vollbild und erreichbarer Feed.
+- Fall 15: normaler ausdrücklicher Watchstart mit fortschreitendem, ungemutetem Hauptmedium; Pause/Resume/Vollbild erhalten Tonzustand.
+- Fall 16: Querlinks, manueller Exit, Hoch, Querrechts und Hoch-Rückkehr.
+- Fall 17: beide freien 4:3-Seitenflächen; nach natürlichem Ende auf 4,013 Sekunden zurückspulen und elf Sekunden unverändert pausiert bleiben.
+
+**38/38 gebündelte JS-Ressourcen bytegleich.** Acht festgehaltene Playerquellen sind gegenüber dem Quellenreview unverändert. Eigene Simulator-App nach Abschluss beendet; Runnerlock freigegeben. Die damalige Simulator-UUID `F789C6F7-3D3B-487C-B5E6-13082418E583` gehört zu diesem Mac und darf auf dem Ziel-Mac nicht als vorhanden vorausgesetzt werden.
+
+[Lesbarer Gesamtnachweis](docs/qa/player-start-2026-10-14/README.md), [Prüfergebnisse](docs/qa/player-start-2026-10-14/validation.json), [Bundleabgleich](docs/qa/player-start-2026-10-14/bundle-final-verification.json), [Ende-Seek Rot/Grün](docs/qa/player-start-2026-10-14/ended-seek-pause/validation.json). Historische rote Läufe bleiben erhalten. Der erste finale Rootlauf hatte eine veraltete exakte Packetfixture ohne `seekRect:null`; nach Anpassung 1.294/1.294 grün. Der erste lange Fall 13 verlor beim Ablesen eine verschwindende AX-Statusmeldung; nur die Uhrabfrage im Test wurde präzisiert, Produkt und Zeit-/Playback-/Geometriekriterien blieben unverändert.
+
+### Fortsetzung auf dem Ziel Mac
+
+1. Den vollständigen Arbeitsordner und die neuen Dateien prüfen; die untenstehenden Quellhashes mit dem Zielstand vergleichen. Fremde oder parallel vorhandene Änderungen erhalten. Vor neuer Featurearbeit den jeweiligen aktuellen Backlogeintrag lesen.
+2. Xcode, Node und Abhängigkeiten lokal prüfen. Auf diesem Mac liefen Xcode 27.0 (27A266a), Node 22.16.0 und npm 10.9.2. Bei fehlenden Rootabhängigkeiten `npm ci`; anschließend die passende lokale Regression ausführen. Für Simulatorarbeit mindestens 5 GB frei halten und keine parallele Bedienung derselben Instanz zulassen.
+3. Nach weiteren iPhone-Codeänderungen `scripts/test-simulator.sh` auf der verfügbaren iOS-27-Instanz des Ziel-Macs ausführen. Die fünf relevanten Testmethoden stehen unten; der Runner unterstützt `--only-testing`, `--device`, `--output` und `--iterations`.
+4. Für einen neuen Gerätebuild zuerst die dort vorhandene manuelle Signierung mit `bash scripts/deploy-iphone.sh --check-signing` prüfen. `--build-only` baut/signiert ohne Geräteinstallation. Signierung/Profil erhalten: keine automatische Provisionierung, Zertifikatserneuerung, `CODE_SIGN_STYLE=Automatic` oder `-allowProvisioningUpdates`. Die historischen Zertifikat-/Profilangaben weiter unten vor Nutzung lokal neu prüfen. Fehlende Mittel auf dem anderen Mac sind kein Anlass für automatischen Ersatz.
+5. Der nächste Produktprüfumfang ist die persönliche iPhonebedienung auf einem neuen Gerätestand: tatsächlicher Feed-Fingertap, hörbarer Ton und späteres Mute, Ende/Replay/Zurückspulen in beiden Ansichten, freie ±15-s-Fläche und echtes Drehen. Neuer Gerätebuild, Installation und persönliche Abnahme jeweils getrennt im zentralen Backlog dokumentieren.
+
+Die bestehenden Diagnoseproben belegen normale Watchroute und anschließende UI-Eingaben, keinen Feed-Fingertap oder gehörten Lautsprecherton. Simulatorausrichtung ersetzt keine physische Sensor-/Orientierungssperren- und Fingerprüfung. Hintergrundton, Sperrbildschirm und Systemmedien bleiben eigenständig offen. **LF-31 Dynamic Island und LF-32 Downloads bleiben zurückgestellt; deren automatischer Anschluss bleibt pausiert.**
+
+### Quellhashes zum Abgleich
+
+Auf macOS lässt sich eine Datei mit `shasum -a 256 PFAD` prüfen. Diese Hashes bezeichnen den erfolgreich geprüften Playerstand vom 14.10.2026, unabhängig von der weiterhin gleichen Buildnummer.
+
+```text
+c9337ed6937880b8ea98cf06bdfe2ec9a1c61422f8d44674de147959d0991811  ios/Langform/Langform/PlaybackSwipe.js
+603e66296be71f84cda72e7cbe04b5be962049460f30c70aa913fceab9cdcbd7  ios/Langform/Langform/PlayerRect.js
+1d122b7c760a3848b7e6871c56d59b172a1df1296fb672ffb8f7094368323332  ios/Langform/Langform/FullscreenMotion.js
+ec90e49a600ff466f72a8a5325cc7e11578a019f69efa9714b85707e26b66432  ios/Langform/Langform/WatchAudio.js
+76097520d22c09fe284e6b04dcfe2b24651b5bd57c110ee3b6fcbcdbfd53cbd7  ios/Langform/Langform/YouTubeWebView.swift
+68d66b1027364bdc567308cccc8b9cab4022bc82887379e5ab1b5cb1fa969e3d  ios/Langform/Langform/PlayerRotationIntentPolicy.swift
+c1eed58db5f6733a41a904ff4c7d56a72bb5f4605e9e4163e5d9f08f91112940  ios/Langform/Langform/VideoLoadProbe.swift
+4c1bba185168dc774544bc77272cff86098defc4aa78bd7cb6e4390911079970  ios/Langform/Langform/PlaybackHoldDiagnostics.js
+```
+
+Die tatsächlichen UI-Testmethoden für `--only-testing`:
+
+```text
+LangformDeviceTests/DeviceAccessibilityTests/test13ActualHorizontalSwipesSeekFifteenSeconds
+LangformDeviceTests/DeviceAccessibilityTests/test14NaturalVideoEndKeepsInlineAndFullscreenTouchOperable
+LangformDeviceTests/DeviceAccessibilityTests/test15ExplicitWatchStartsUnmutedAndKeepsPlaybackOnResume
+LangformDeviceTests/DeviceAccessibilityTests/test16PhysicalRotationOpensFullscreenAndHonorsManualExit
+LangformDeviceTests/DeviceAccessibilityTests/test17FourThreeSidebarsAndEndedSurfaceSeekWithoutChangingPlayback
+```
+
+### Weitere vorhandene Änderungen
+
+README, Safari-Manifest/Summary und die Safari-Freundpaket-/Transkriptdateien enthalten bereits vor dieser Reparatur vorhandene Änderungen. Sie wurden erhalten und sind kein neuer, separat abgeschlossener Safari-Auftrag dieser Runde. Den vollständigen Arbeitsstand übernehmen und vor Bearbeitung deren eigenen Kontext lesen. Aktueller Status vor dem Speichern dieser Übergabe:
+
+```text
+ M README.md
+ M docs/VERBESSERUNGS_BACKLOG.md
+ M extension/manifest.json
+ M extension/src/summary.js
+ M ios/DeviceTests/LangformDeviceTests/DeviceAccessibilityTests.swift
+ M ios/Langform/Langform/FullscreenMotion.js
+ M ios/Langform/Langform/PlaybackHoldDiagnostics.js
+ M ios/Langform/Langform/PlaybackSwipe.js
+ M ios/Langform/Langform/PlayerRect.js
+ M ios/Langform/Langform/VideoLoadProbe.swift
+ M ios/Langform/Langform/YouTubeWebView.swift
+ M scripts/diagnostics/staged-fullscreen-native-fixture.py
+ M tests/app-views.test.js
+ M tests/fullscreen-motion.test.js
+ M tests/native-close-motion.test.js
+ M tests/native-fullscreen.test.js
+ M tests/native-initial-play.test.js
+ M tests/native-motion-geometry.test.js
+ M tests/native-playables-policy.test.js
+ M tests/native-player-priority.test.js
+ M tests/native-preload.test.js
+ M tests/native-stage-controller.test.js
+ M tests/native-staged-fullscreen.test.js
+ M tests/native-startup-identity.test.js
+ M tests/package.test.js
+ M tests/playback-audio-session.test.js
+ M tests/playback-swipe.test.js
+ M tests/player-media-discovery.test.js
+ M tests/player-scripts.test.js
+ M tests/silent-diagnostics.test.js
+ M tests/video-load-probe.test.js
+?? ios/Langform/Langform/PlayerRotationIntentPolicy.swift
+?? ios/Langform/Langform/WatchAudio.js
+?? scripts/build-safari-friend.py
+?? scripts/safari-friend/
+?? tests/native-rotation-intent.test.js
+?? tests/native-watch-audio.test.js
+?? tests/transcript.test.js
+?? tests/watch-audio.test.js
+```
+
+### Speicher und laufende Arbeit
+
+Zusätzliche ausdrücklich freigegebene unbenutzte Caches wurden bereinigt; zuletzt nach Abschluss etwa10,4 GiB frei. [Bereinigungspfad und Ergebnis](docs/qa/player-start-2026-10-14/inactive-cache-cleanup-result.json). Projekte, Daten, Signierung und Simulator sind erhalten. Frühere Cachefreigaben nicht als dauerhafte Löschfreigabe behandeln. Es laufen keine eigenen Playerprüfungen mehr; keine neue physische Installation, kein Commit/Push oder Threadtransfer durch diese Übergabe.
+
+## Historische Übergaben
+
+Die folgenden Abschnitte bleiben als datierte Historie erhalten. Angaben wie „Aktuell“, installierte ältere Builds, Testzahlen, Prozessnummern und Signierung beschreiben ihren damaligen Stand. Für die Fortsetzung gilt der Einstieg vom14.10.2026 oben und das aktuelle zentrale Backlog.
+
+## Historischer Einstieg vom 12. Oktober 2026
 
 Für die GitHub-Entwicklerübergabe gelten der [Einstieg im README](README.md#einstieg-für-entwickler), [AGENTS.md](AGENTS.md) und das [gemeinsame Backlog](docs/VERBESSERUNGS_BACKLOG.md). Der dort dokumentierte aktuelle Gerätebuild ist **1.0 (63)**; persönliche Gesten-/Ton-/Systemmedienabnahme und breite Simulatorwiederholung sind weiterhin offen. Der GitHub-Upload ist keine neue Installation oder Funktionsabnahme.
 

@@ -77,11 +77,14 @@ final class Stage: UIView {
         player!.frame = bounds
         player!.backgroundColor = .orange
         card.addSubview(player!)
+        card.addSubview(closeButton)
+        card.addSubview(miniPlaybackButton)
     }
     required init?(coder: NSCoder) { fatalError("unavailable") }
     func applyFullscreenSurface(_ t: CGFloat) -> Bool { false }
     func updatePlaybackControls() {}
     func updateChrome() {}
+    func cancelPendingMinimize() {}
     func showStartupPoster() {}
     func freezeReveal() {}
     func beginVideoCrop() {}
@@ -101,7 +104,10 @@ func pose(_ stage: Stage, presentation: Bool) -> [String: Any] {
     let player = presentation ? stage.player!.layer.presentation() ?? stage.player!.layer : stage.player!.layer
     let parent = presentation ? stage.layer.presentation() ?? stage.layer : stage.layer
     let t = player.affineTransform()
+    let close = presentation ? stage.closeButton.layer.presentation() ?? stage.closeButton.layer : stage.closeButton.layer
+    let playback = presentation ? stage.miniPlaybackButton.layer.presentation() ?? stage.miniPlaybackButton.layer : stage.miniPlaybackButton.layer
     return ["card": rect(card.frame), "playerPosition": [Double(player.position.x), Double(player.position.y)],
+            "close": rect(close.frame), "playback": rect(playback.frame),
             "playerScale": [Double(t.a), Double(t.d)],
             "picturePlane": rect(player.convert(stage.pictureRect, to: parent)),
             "presentationAvailable": stage.card.layer.presentation() != nil,
@@ -202,9 +208,13 @@ final class SceneDelegate: NSObject, UIWindowSceneDelegate {
                         "pictureDifferencePoints": maximumDifference(before, after, key: "picturePlane"),
                         "modelCardDifferencePoints": maximumDifference(before, immediateModel, key: "card"),
                         "modelPictureDifferencePoints": maximumDifference(before, immediateModel, key: "picturePlane"),
+                        "modelCloseDifferencePoints": maximumDifference(before, immediateModel, key: "close"),
+                        "modelPlaybackDifferencePoints": maximumDifference(before, immediateModel, key: "playback"),
                         "animationsRemoved": stage.settler == nil,
                         "firstFingerCardDifferencePoints": maximumDifference(before, firstFinger, key: "card"),
                         "firstFingerPictureDifferencePoints": maximumDifference(before, firstFinger, key: "picturePlane"),
+                        "firstFingerCloseDifferencePoints": maximumDifference(before, firstFinger, key: "close"),
+                        "firstFingerPlaybackDifferencePoints": maximumDifference(before, firstFinger, key: "playback"),
                         "reversedFingerCardDifferencePoints": maximumDifference(before, reversedFinger, key: "card"),
                         "reversedFingerPictureDifferencePoints": maximumDifference(before, reversedFinger, key: "picturePlane"),
                         "movedFinger": movedFinger,
@@ -230,6 +240,8 @@ final class SceneDelegate: NSObject, UIWindowSceneDelegate {
                             result["modeSpringGrabProgress"] = Double(stage.progress)
                             result["modeSpringCardDifferencePoints"] = maximumDifference(springBefore, springAfter, key: "card")
                             result["modeSpringPictureDifferencePoints"] = maximumDifference(springBefore, springAfter, key: "picturePlane")
+                            result["modeSpringCloseDifferencePoints"] = maximumDifference(springBefore, springAfter, key: "close")
+                            result["modeSpringPlaybackDifferencePoints"] = maximumDifference(springBefore, springAfter, key: "playback")
                             result["modeSpringFirstFingerCardDifferencePoints"] = maximumDifference(springBefore, springFinger, key: "card")
                             result["modeSpringFirstFingerPictureDifferencePoints"] = maximumDifference(springBefore, springFinger, key: "picturePlane")
                             stage.settle(.expanded)

@@ -53,6 +53,10 @@ class WebView {
 }
 class OpeningMotion { func complete() {} }
 class ReportStage {
+    func recordBackgroundPlaybackTransition(_ phase: String) {}
+    struct BackgroundPolicy { let preservesVisibility = false }
+    var backgroundCategoryHandoff: BackgroundPolicy?
+    func watchBackgroundCategoryTransition(_ phase: String) {}
   func cancelPendingMinimize() {}
     func finishFeedOpeningIfReady() {}
     let openingMotion = OpeningMotion()
@@ -65,9 +69,11 @@ class ReportStage {
     var loadingVideoID: String? = "abcdefghijk"
     var loadTicket = 1, videoLoadDiagnostics = Diagnostics(), startupStatus = PlayerStartupStatus()
     var viewportGeneration = 0
-    var videoSeekGeometry: (rect: CGRect, videoID: String, ticket: Int, viewport: Int)?
+    var videoSeekGeometry: (rect: CGRect, seek: CGRect, videoID: String, ticket: Int, viewport: Int)?
     var initialPlaybackIntent: PlayerInitialPlayback?
     var initialPlaybackCheckTicket: Int?
+    var watchAudioIntent: (ticket: Int, videoID: String)?
+    func clearWatchAudioIntent() { watchAudioIntent = nil }
     var startupVideoID: String? = "abcdefghijk", missingMediaTimeout: DispatchWorkItem?
     var spaStartTimeout: DispatchWorkItem?, pendingTimestampURL: URL?, pendingRect: CGRect?
     var videoRect = CGRect(x: 0, y: 40, width: 400, height: 225)
@@ -80,6 +86,8 @@ class ReportStage {
     func considerReveal() { revealChecks += 1 }
     func advanceVideoProbe(_ dict: [String: Any], id: String) {}
     func startInitialPlaybackIfEligible(id: String) {}
+    func startWatchAudioIfEligible(id: String) {}
+    func finishPhysicalRotationIntent() {}
     ${declaration(source, "rememberVideoSeekGeometry")}
     ${declaration(source, "takeVideoReport")}
     ${declaration(source, "resetPlayerStartupForVideo")}

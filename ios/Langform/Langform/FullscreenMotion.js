@@ -1,7 +1,15 @@
 (function (win) {
   'use strict';
   if (!win || !win.document || win.__langformFullscreen) return;
-  var doc = win.document, state = null, idle = 0, alive = true, serial = 0, geometryTrace = null, fullscreenProbe = null, contextReveals = [],inlineSizeOwner=null;
+  var doc = win.document, state = null, idle = 0, alive = true, serial = 0, geometryTrace = null, fullscreenProbe = null, contextReveals = [],inlineSizeOwner=null,rotationContacts=new Set(),inlineContact=null,inlineContactEvents=new WeakSet(),nativeInlineContact=null,nativeInlineGeneration=0;
+  function pageInactive() {
+    try { var visibility=win.__langformRealVisibility; if (visibility && typeof visibility.inactive==='function') return !!visibility.inactive(); } catch (_) {}
+    return !!doc.hidden;
+  }
+  function realHidden() {
+    try { var visibility=win.__langformRealVisibility; if (visibility && typeof visibility.hidden==='function') return !!visibility.hidden(); } catch (_) {}
+    return !!doc.hidden;
+  }
   var reduced = win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)');
   var initialID = id();
   var style = doc.createElement('style');
@@ -27,18 +35,29 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
 [data-langform-fullscreen-exit-context] { opacity:0!important; }
 [data-langform-fullscreen-player] .ytp-chrome-top, [data-langform-fullscreen-player] .ytp-chrome-bottom, [data-langform-fullscreen-player] .player-controls-content { visibility:hidden!important; }
 #langform-fullscreen-ui { position:fixed; inset:0; z-index:2147483646; color:#fff; font:14px -apple-system,BlinkMacSystemFont,sans-serif; touch-action:manipulation; }
+/* Gesture feedback has its own row below the title and 44pt top controls.
+   The Hold/Swipe modules also serve inline playback and set a pixel top there;
+   this fullscreen-only override keeps that shared placement untouched. */
+#langform-fullscreen-ui #langform-playback-hold,
+#langform-fullscreen-ui #langform-playback-swipe-status,
+#langform-fullscreen-ui #langform-playback-zoom-status { top:calc(58px + env(safe-area-inset-top))!important; }
+/* A tall original caption can meet this row. Only an observed collision
+   leases the safe side position; PlayerSettings releases it with the badge. */
+#langform-fullscreen-ui[data-caption-status-side] #langform-playback-hold,
+#langform-fullscreen-ui[data-caption-status-side] #langform-playback-swipe-status,
+#langform-fullscreen-ui[data-caption-status-side] #langform-playback-zoom-status { left:calc(20px + env(safe-area-inset-left))!important; transform:none!important; }
 #langform-fullscreen-ui[data-exiting] { pointer-events:none; }
-#langform-fullscreen-ui[data-exiting] .lf-fs-controls { visibility:hidden; }
 #langform-fullscreen-ui[data-entering] { pointer-events:none; }
 #langform-fullscreen-ui[data-entering] .lf-fs-controls { visibility:hidden; }
 #langform-fullscreen-ui .lf-fs-controls { opacity:1; transition:opacity 140ms ease-out,transform 200ms cubic-bezier(.16,1,.3,1); }
+#langform-fullscreen-ui[data-exiting] .lf-fs-controls { opacity:0; pointer-events:none; transition:opacity 90ms ease-out; }
 #langform-fullscreen-ui[data-hidden] .lf-fs-controls { opacity:0; pointer-events:none; }
 #langform-fullscreen-ui[data-hidden] .lf-fs-top, #langform-fullscreen-ui[data-hidden] .lf-fs-bottom { transform:translateY(var(--lf-fs-offset)); }
 #langform-fullscreen-ui[data-hidden] .lf-fs-center { transform:translate(-50%,-50%) scale(.96); }
 #langform-fullscreen-ui button svg { display:block; width:24px; height:24px; margin:auto; fill:currentColor; transition:transform 180ms cubic-bezier(.16,1,.3,1); }
 #langform-fullscreen-ui .lf-fs-center button svg { width:32px; height:32px; }
-#langform-fullscreen-ui button { transition:transform 160ms cubic-bezier(.16,1,.3,1),background-color 120ms ease-out; width:44px; height:44px; padding:0; border:0; border-radius:50%; color:#fff; background:transparent; font:22px -apple-system,sans-serif; cursor:pointer; }
-#langform-fullscreen-ui button:active { background:#ffffff25; transform:scale(.94); }
+#langform-fullscreen-ui button { transition:transform var(--lf-duration-pressOut,160ms) var(--lf-ease-enter,cubic-bezier(.16,1,.3,1)),background-color 120ms ease-out; width:44px; height:44px; padding:0; border:0; border-radius:50%; color:#fff; background:transparent; font:22px -apple-system,sans-serif; cursor:pointer; }
+#langform-fullscreen-ui button:active { background:#ffffff25; transition-duration:var(--lf-duration-pressIn,80ms); transform:scale(calc(1 - (1 - var(--lf-scale-icon,.94)) * (1 - var(--lf-reduce-spatial-motion,0)))); }
 #langform-fullscreen-ui [data-action=back]:active svg { transform:translateX(-3px) rotate(-10deg); }
 #langform-fullscreen-ui [data-action=forward]:active svg { transform:translateX(3px) rotate(10deg); }
 #langform-fullscreen-ui [data-action=play] svg { animation:lf-fs-glyph 160ms cubic-bezier(.16,1,.3,1); }
@@ -91,6 +110,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
 #langform-fullscreen-ui .lf-fs-feedback svg { width:32px; height:32px; fill:currentColor; }
 #langform-fullscreen-ui .lf-fs-feedback[data-kind=back] .lf-fs-feedback-content svg { transform:scaleX(-1); }
 @media (prefers-reduced-motion:reduce) { #langform-fullscreen-ui .lf-fs-controls, #langform-fullscreen-ui button, #langform-fullscreen-ui button svg, #langform-fullscreen-ui .lf-fs-speed-panel { transition:none!important; animation:none!important; } #langform-fullscreen-ui button:active, #langform-fullscreen-ui button:active svg { transform:none!important; } #langform-fullscreen-ui input::-webkit-slider-thumb { transition:none; } #langform-fullscreen-ui input:active::-webkit-slider-thumb { transform:none; } #langform-fullscreen-ui .lf-fs-feedback { display:none!important; } }
+@media (prefers-reduced-motion:reduce) { #langform-fullscreen-ui[data-exiting] .lf-fs-controls { transition:opacity 90ms ease-out!important; } }
 `;
   (doc.head || doc.documentElement).appendChild(style);
   function id() { try { return win.location.pathname === '/watch' ? new URL(win.location.href).searchParams.get('v') || '' : ''; } catch (_) { return ''; } }
@@ -136,6 +156,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     var top = node('div','lf-fs-top lf-fs-controls',ui);
     button(top,'exit','Vollbild schließen','close'); node('span','lf-fs-title',top);
     if (win.__langformFullscreenExitProtocol === 1) button(top,'search','Suchen (Vollbild verlassen)','search');
+    node('div','lf-fs-settings-host',top);
     var center = node('div','lf-fs-center lf-fs-controls',ui);
     button(center,'back','10 Sekunden zurück','back'); button(center,'play','Wiedergabe','play'); button(center,'forward','10 Sekunden vor','forward');
     var bottom = node('div','lf-fs-bottom lf-fs-controls',ui); node('div','lf-fs-chapters',bottom);
@@ -230,7 +251,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     previous.node.remove();
   }
   function feedback(s,kind,amount) {
-    if (state !== s || !matching(s) || ad(s) || doc.hidden || (reduced && reduced.matches) || typeof s.ui.animate !== 'function') { clearFeedback(s); return; }
+    if (state !== s || !matching(s) || ad(s) || pageInactive() || (reduced && reduced.matches) || typeof s.ui.animate !== 'function') { clearFeedback(s); return; }
     var now = win.performance.now(), previous = s.feedback;
     if (amount && previous && previous.kind === kind && now < previous.until) amount += previous.amount;
     clearFeedback(s);
@@ -267,17 +288,34 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     return posted;
   }
   function clearIdle() { if (idle) win.clearTimeout(idle); idle = 0; }
+  function clearTransitionDeadline(s) {
+    if (s.transitionDeadline) win.clearTimeout(s.transitionDeadline);
+    s.transitionDeadline=0;
+  }
+  function armTransitionDeadline(s,phase) {
+    clearTransitionDeadline(s);
+    var deadline=win.setTimeout(function () {
+      if(state!==s || s.phase!==phase || s.transitionDeadline!==deadline)return;
+      s.transitionDeadline=0;
+      // A missing native reply or permanently mismatched viewport must release
+      // input. This is an abort, never a geometry commit or a playback request.
+      finishClose(s,phase==='entering'?'enter-confirmation-timeout':'exit-confirmation-timeout',true);
+    },4000);
+    s.transitionDeadline=deadline;
+  }
   function visible(show) {
     if (!state) return;
+    if (pageInactive()) { clearIdle(); return; }
     if (state.phase === 'exiting' || state.phase === 'entering') { clearIdle(); return; }
-    if (state.video.paused || state.video.ended || state.speedOpen || state.controlContact) show = true;
+    if (state.video.paused || state.video.ended || state.speedOpen || state.controlContact || state.settings && state.settings.isOpen()) show = true;
     if (!show) clearFeedback(state);
     if (state.ui.hasAttribute('data-hidden') === show) state.ui.toggleAttribute('data-hidden', !show);
     state.controls.forEach(function (node) { attribute(node,'aria-hidden',show ? 'false' : 'true'); });
+    if(win.__langformPlayerSettings && win.__langformPlayerSettings.refreshCaptions)win.__langformPlayerSettings.refreshCaptions();
     state.ui.querySelectorAll('button,input').forEach(function (node) { if (!node.closest('.lf-fs-speed-panel') && node.tabIndex !== (show ? 0 : -1)) node.tabIndex = show ? 0 : -1; });
     clearIdle();
-    if (show && !state.video.paused && !state.video.ended && !state.dragging && !state.speedOpen && !state.controlContact && !(state.chapters && state.chapters.isOpen && state.chapters.isOpen()) && !state.ui.contains(doc.activeElement)) {
-      idle = win.setTimeout(function () { idle = 0; if (state && !state.dragging && !state.speedOpen && !state.controlContact && !(state.chapters && state.chapters.isOpen && state.chapters.isOpen()) && !state.ui.contains(doc.activeElement)) visible(false); }, 3000);
+    if (show && !state.video.paused && !state.video.ended && !state.dragging && !state.speedOpen && !state.controlContact && !(state.settings && state.settings.isOpen()) && !(state.chapters && state.chapters.isOpen && state.chapters.isOpen()) && !state.ui.contains(doc.activeElement)) {
+      idle = win.setTimeout(function () { idle = 0; if (state && !state.dragging && !state.speedOpen && !state.controlContact && !(state.settings && state.settings.isOpen()) && !(state.chapters && state.chapters.isOpen && state.chapters.isOpen()) && !state.ui.contains(doc.activeElement)) visible(false); }, 3000);
     }
   }
   function time(value) { value = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0; var hours = Math.floor(value / 3600), minutes = Math.floor(value / 60) % 60, seconds = value % 60; return (hours ? hours + ':' + String(minutes).padStart(2,'0') : String(minutes)) + ':' + String(seconds).padStart(2,'0'); }
@@ -299,12 +337,54 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     }
     attribute(s.range,'aria-valuetext', time(scrubTime(s))); progress(s);
     updateSpeed(s,true);
+    if (s.settings) s.settings.update();
     if (s.chapters) s.chapters.update();
     if (video.paused || video.ended) visible(true);
   }
+  function leaseAttribute(s,node,name) {
+    // A page may replace a whole player branch with cloneNode. The copy then
+    // carries our inert/CSS attributes, while the original cleanup nodes are
+    // detached. Keep an exact transaction/node marker and original values so
+    // only copies of our own lease can be restored after that replacement.
+    if(!s.leases)s.leases=[];
+    if(!s.leaseToken)s.leaseToken='lf-'+String(++serial);
+    var lease=s.leases.find(function(entry){return entry.node===node;});
+    if(!lease){
+      lease={node:node,key:s.leaseToken+':'+s.leases.length,marker:node.getAttribute('data-langform-fullscreen-lease'),attributes:[]};
+      s.leases.push(lease);node.setAttribute('data-langform-fullscreen-lease',lease.key);
+    }
+    if(name&&!lease.attributes.some(function(entry){return entry[0]===name;}))lease.attributes.push([name,node.getAttribute(name)]);
+  }
   function mark(s,node,name) {
+    leaseAttribute(s,node,name);
     s.attributes.push([node,name,node.getAttribute(name)]); node.setAttribute(name,'');
     if (s.ownedObserver && (name.indexOf('data-langform-fullscreen-exit-') === 0 || name.indexOf('data-langform-fullscreen-enter-') === 0)) s.ownedObserver.observe(node,{attributes:true,attributeFilter:[name]});
+  }
+  function releaseCopiedLeases(s,transform) {
+    var connected=Array.from(doc.querySelectorAll('[data-langform-fullscreen-lease]'));
+    (s.leases || []).forEach(function(lease){
+      connected.filter(function(node){return node!==lease.node && node.getAttribute('data-langform-fullscreen-lease')===lease.key;}).forEach(function(node){
+        if(lease.node===s.video){
+          function restorePair(key,applied,original){
+            if(!applied||!original||node.style.getPropertyValue(key)!==applied[0]||node.style.getPropertyPriority(key)!==applied[1])return;
+            if(original[0])node.style.setProperty(key,original[0],original[1]);else node.style.removeProperty(key);
+          }
+          ['width','height'].forEach(function(key,index){restorePair(key,s.dimensionApplied&&s.dimensionApplied[index],(s.videoDimensionLatest||s.videoDimensions||[])[index]);});
+          ['top','left'].forEach(function(key,index){restorePair(key,s.positionApplied&&s.positionApplied[index],(s.videoPositionLatest||s.videoPositions||[])[index]);});
+          restorePair('transform',['none',''],transform);
+        }
+        lease.attributes.forEach(function(entry){
+          // Preserve a page change that already replaced the copied value.
+          if(node.getAttribute(entry[0])===''){
+            if(entry[1]===null)node.removeAttribute(entry[0]);else node.setAttribute(entry[0],entry[1]);
+          }
+        });
+        if(lease.marker===null)node.removeAttribute('data-langform-fullscreen-lease');else node.setAttribute('data-langform-fullscreen-lease',lease.marker);
+      });
+      if(lease.node.getAttribute('data-langform-fullscreen-lease')===lease.key){
+        if(lease.marker===null)lease.node.removeAttribute('data-langform-fullscreen-lease');else lease.node.setAttribute('data-langform-fullscreen-lease',lease.marker);
+      }
+    });
   }
   function restoreScroll(s) {
     if (!s.scroll || id() !== s.id) return;
@@ -337,11 +417,52 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if (geometryTrace.frame) win.cancelAnimationFrame(geometryTrace.frame);
     flushGeometryTrace(geometryTrace); geometryTrace = null;
   }
-  function beginGeometryTrace(s,direction) {
+  function beginGeometryTrace(s,direction,motionWindow) {
     if (win.__langformFullscreenDiagnostics !== true) return;
     stopGeometryTrace();
+    if (direction==='exit' && !motionWindow) s.exitGeometryWindow={token:s.exitToken,source:mediaSource(s.video),restarted:false};
     var trace = {s:s,token:direction==='enter' ? s.enterToken : s.exitToken,direction:direction,rows:[],origin:win.performance.now(),end:win.performance.now()+2600,sequence:0,frame:0,phase:'waiting'};
     geometryTrace = trace;
+    // Opt-in only: fixed paint categories, never CSS strings or page content.
+    // 0 transparent/none, 1 opaque black, 2 opaque white, 3 other.
+    function paint(node) {
+      if (!node) return 0;
+      try {
+        var css=win.getComputedStyle(node),value=String(css.backgroundColor || '').trim().toLowerCase();
+        if (css.display==='none' || css.visibility==='hidden' || css.opacity==='0' || !value || value==='transparent') return 0;
+        var match=value.match(/^rgba?\(\s*([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/);
+        if (!match) return 3;
+        var alpha=match[4]===undefined?1:Number(match[4]);
+        if (alpha===0) return 0;
+        if (alpha!==1) return 3;
+        var channels=match.slice(1,4).map(Number);
+        return channels.every(function(value){return value===0;})?1:channels.every(function(value){return value===255;})?2:3;
+      } catch (_) { return 3; }
+    }
+    // Roles: none, HTML, BODY, player root, direct video parent, other.
+    function paintRole(node) { return !node?0:node===doc.documentElement?1:node===doc.body?2:node===s.root?3:node===s.video.parentElement?4:5; }
+    function exitPaint(row) {
+      row.exitWatchContextVisible=state===s && !!s.exitWatchContextVisible;
+      row.exitBackdropLeased=state===s && !!s.exitBackdrops && s.exitBackdrops.length>0;
+      row.exitRevealsActive=contextReveals.length>0;
+      row.exitHTMLPaint=paint(doc.documentElement);row.exitBodyPaint=paint(doc.body);
+      row.exitHitPaint=0;row.exitHitDepth=0;row.exitHitRole=0;
+      row.exitAncestorPaint=0;row.exitAncestorDepth=0;row.exitAncestorRole=0;
+      var x=Math.max(0,Math.min(8,Number(win.innerWidth)-1)),y=Math.max(0,Number(win.innerHeight)*.75),hits=[];
+      try { hits=typeof doc.elementsFromPoint==='function'?doc.elementsFromPoint(x,y):typeof doc.elementFromPoint==='function'?[doc.elementFromPoint(x,y)]:[]; } catch (_) {}
+      for (var i=0;i<Math.min(12,hits.length);i++) {
+        var hitPaint=paint(hits[i]);
+        if (hitPaint) { row.exitHitPaint=hitPaint;row.exitHitDepth=i+1;row.exitHitRole=paintRole(hits[i]);break; }
+      }
+      // A small black player must not hide the paint owner of the empty lower
+      // viewport: inspect only ancestors whose actual box covers this point.
+      for (var node=s.video.parentElement,depth=1;node && depth<=12;node=node.parentElement,depth++) {
+        var box=node.getBoundingClientRect();
+        if (x<box.left || x>=box.right || y<box.top || y>=box.bottom) continue;
+        var ancestorPaint=paint(node);
+        if (ancestorPaint) { row.exitAncestorPaint=ancestorPaint;row.exitAncestorDepth=depth;row.exitAncestorRole=paintRole(node);break; }
+      }
+    }
     function sample() {
       if (geometryTrace !== trace) return;
       var now = win.performance.now();
@@ -350,17 +471,29 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       var header = doc.querySelector('ytm-mobile-topbar-renderer,ytm-mobile-topbar-renderer-v2');
       var active = state===s && (direction==='enter' ? s.phase==='entering' : s.phase==='exiting');
       var held = direction==='enter' ? s.enterHandoff : s.handoff;
-      var row = {sequence:++trace.sequence,documentMilliseconds:now-trace.origin,phase:active ? (held && (direction!=='enter' || s.enterPreparedTarget || s.enterTarget) ? 'handoff' : 'waiting') : trace.phase,
+      var row = {sequence:++trace.sequence,documentMilliseconds:now-trace.origin,traceMotionWindow:!!motionWindow,phase:active ? (held && (direction!=='enter' || s.enterPreparedTarget || s.enterTarget) ? 'handoff' : 'waiting') : trace.phase,
         viewportWidth:Number(win.innerWidth),viewportHeight:Number(win.innerHeight),scrollX:Number(win.scrollX),scrollY:Number(win.scrollY),
         pictureX:picture.x,pictureY:picture.y,pictureWidth:picture.width,pictureHeight:picture.height,
         videoX:outer.x,videoY:outer.y,videoWidth:outer.width,videoHeight:outer.height,
         rootX:root.x,rootY:root.y,rootWidth:root.width,rootHeight:root.height,
         intrinsicWidth:Number(s.video.videoWidth),intrinsicHeight:Number(s.video.videoHeight),currentTime:Number(s.video.currentTime),
-        paused:!!s.video.paused,hidden:!!doc.hidden,held:!!held&&state===s,rootFixed:s.root.hasAttribute('data-langform-fullscreen-player'),
+        paused:!!s.video.paused,hidden:realHidden(),held:!!held&&state===s,rootFixed:s.root.hasAttribute('data-langform-fullscreen-player'),
         exitContextHidden:direction==='exit' && !!s.exitContext && s.exitContext.length>0 && state===s,
         exitUsingCachedDestination:direction==='exit' && !!s.exitUsingCachedDestination,
+        exitHandoffToInlineCalls:direction==='exit' ? s.exitHandoffToInlineCalls || 0 : 0,
+        exitRequestEpochMilliseconds:direction==='exit' ? s.exitRequestEpochMilliseconds || 0 : 0,
         exitMotionBeforeResize:direction==='exit' && !!s.exitMotion && Math.abs(win.innerWidth-s.exitMotion.source.width)<=2 && Math.abs(win.innerHeight-s.exitMotion.source.height)<=2,
         exitMotionRejectedReason:direction==='exit' ? s.exitMotionRejectedReason || 0 : 0};
+      if (direction==='exit' && s.exitDiagnosticPose) Object.keys(s.exitDiagnosticPose).forEach(function(key){row[key]=s.exitDiagnosticPose[key];});
+      if (direction==='exit' && s.exitMotion && s.exitMotion.diagnostics) {
+        Object.keys(s.exitMotion.diagnostics).forEach(function(key){row[key]=s.exitMotion.diagnostics[key];});
+        try {
+          var animation=s.exitAnimation,timing=animation && animation.effect && animation.effect.getComputedTiming();
+          if(animation && Number.isFinite(animation.currentTime))row.exitAnimationMilliseconds=animation.currentTime;
+          if(timing && Number.isFinite(timing.progress))row.exitAnimationProgress=timing.progress;
+        } catch (_) {}
+      }
+      if (direction==='exit') exitPaint(row);
       row.inlineSizeOwned=!!inlineSizeOwner&&inlineSizeOwner.video===s.video;
       row.inlineSizeSuspended=row.inlineSizeOwned&&state===s;
       row.playerSetSizeAvailable=typeof s.root.setSize==='function';
@@ -373,6 +506,15 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       trace.frame = win.requestAnimationFrame(sample);
     }
     trace.frame = win.requestAnimationFrame(sample);
+  }
+  function restartExitGeometryTrace(s) {
+    if (win.__langformFullscreenDiagnostics!==true || state!==s || s.phase!=='exiting' || !matching(s)) return;
+    var window=s.exitGeometryWindow;
+    if (!window || window.restarted || window.token!==s.exitToken || !window.source || window.source!==mediaSource(s.video)) return;
+    // Native rotation preparation may arrive after the short request window.
+    // One source-bound second window observes that actual handoff; duplicate
+    // callbacks cannot extend either the duration or the per-window row cap.
+    window.restarted=true;beginGeometryTrace(s,'exit',true);
   }
   function restoreAttribute(entry) { if (entry[2] === null) entry[0].removeAttribute(entry[1]); else entry[0].setAttribute(entry[1],entry[2]); }
   function pinPose(s,box,clip,enter) {
@@ -405,13 +547,15 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     });
   }
   function setVideoDimensions(s,values) {
+    if(state===s)leaseAttribute(s,s.video);
     values=values.map(function(value,index){return stylePair(index===0?'width':'height',value);});
     s.dimensionApplied=values.map(function(value){return value.slice();});
     ['width','height'].forEach(function(key,index){var value=values[index];if(s.video.style.getPropertyValue(key)===value[0]&&s.video.style.getPropertyPriority(key)===value[1])return;if(value[0])s.video.style.setProperty(key,value[0],value[1]);else s.video.style.removeProperty(key);});
   }
   function naturalVideoDimensions(s,fullscreen) {
     rememberVideoDimensions(s);
-    setVideoDimensions(s,fullscreen || inlineSizeOwner && inlineSizeOwner.video===s.video ? [['100%','important'],['100%','important']] : s.videoDimensionLatest);
+    var owner=inlineSizeOwner&&inlineSizeOwner.video===s.video?inlineSizeOwner:null;
+    setVideoDimensions(s,fullscreen || owner ? owner&&!fullscreen&&owner.inlinePose ? [[owner.inlinePose.width+'px','important'],[owner.inlinePose.height+'px','important']] : [['100%','important'],['100%','important']] : s.videoDimensionLatest);
   }
   function rememberVideoPositions(s) {
     if (!s.videoPositionLatest) s.videoPositionLatest=s.videoPositions.map(function (value) { return value.slice(); });
@@ -436,9 +580,10 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       if (s.video.style.getPropertyValue(key)!==value[0] || s.video.style.getPropertyPriority(key)!==value[1]) s.video.style.setProperty(key,value[0],value[1]);
     });
   }
-  function naturalVideoPositions(s) {
+  function naturalVideoPositions(s,fullscreen) {
     if (!ownsInlinePositions(s)) return;
-    rememberVideoPositions(s);setVideoPositions(s,[['0px','important'],['0px','important']]);
+    var pose=!fullscreen&&inlineSizeOwner.inlinePose;
+    rememberVideoPositions(s);setVideoPositions(s,[[pose?pose.top+'px':'0px','important'],[pose?pose.left+'px':'0px','important']]);
   }
   function ownerMatches(owner) {
     var info=owner&&data(owner.root);
@@ -474,6 +619,15 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     var owner=inlineSizeOwner;if(!owner)return;
     if(!ownerMatches(owner)){releaseInlineSizeOwner();return;}
     var s=state&&state.video===owner.video?state:null,source=s || previousState&&previousState.video===owner.video&&previousState,pose=s&&(s.enterHandoff?s.enterPose:s.handoff?s.exitPose:null);
+    var fullscreen=s&&s.root.hasAttribute('data-langform-fullscreen-player');
+    if(owner.inlinePose){
+      var currentRoot=owner.root.getBoundingClientRect();
+      if(owner.inlinePose.source!==mediaSource(owner.video) || !s &&
+          (Math.abs(currentRoot.width-owner.inlinePose.rootWidth)>1 || Math.abs(currentRoot.height-owner.inlinePose.rootHeight)>1)){
+        if(s){finishClose(s,'media-source-changed',true);return;}
+        releaseInlineSizeOwner();return;
+      }
+    }
     if (owner.positions && owner.positionSource!==mediaSource(owner.video)) {
       // A held pose belongs to the old media source. Remove the transaction
       // before restoring author !important positioning on its replacement.
@@ -481,7 +635,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       releaseInlinePositions(owner,source);
     }
     if(source)rememberVideoDimensions(source);
-    owner.entries.forEach(function(entry){var node=entry[0],key=entry[1],wanted=stylePair(key,[node===owner.video&&pose?pose[key]+'px':'100%','important']),value=wanted[0],index=key==='width'?0:1,current=[node.style.getPropertyValue(key),node.style.getPropertyPriority(key)],applied=entry[4],pin=source&&node===source.video&&source.dimensionApplied&&source.dimensionApplied[index];
+    owner.entries.forEach(function(entry){var node=entry[0],key=entry[1],wanted=stylePair(key,[node===owner.video&&pose?pose[key]+'px':node===owner.video&&owner.inlinePose&&!fullscreen?owner.inlinePose[key]+'px':'100%','important']),value=wanted[0],index=key==='width'?0:1,current=[node.style.getPropertyValue(key),node.style.getPropertyPriority(key)],applied=entry[4],pin=source&&node===source.video&&source.dimensionApplied&&source.dimensionApplied[index];
       if(source&&node===source.video&&source.videoDimensionLatest){entry[2]=source.videoDimensionLatest[index][0];entry[3]=source.videoDimensionLatest[index][1];}
       else if(!(applied&&current[0]===applied[0]&&current[1]===applied[1] || pin&&current[0]===pin[0]&&current[1]===pin[1])){entry[2]=current[0];entry[3]=current[1];}
       entry[4]=wanted;
@@ -491,7 +645,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if (owner.positions) {
       if (source) rememberVideoPositions(source);
       owner.positions.forEach(function (entry,index) {
-        var wanted=positionPair([pose ? (index===0?pose.y:pose.x)+'px' : '0px','important']),value=wanted[0],current=[owner.video.style.getPropertyValue(entry[0]),owner.video.style.getPropertyPriority(entry[0])],applied=entry[3],pin=source&&source.positionApplied&&source.positionApplied[index];
+        var wanted=positionPair([pose ? (index===0?pose.y:pose.x)+'px' : owner.inlinePose&&!fullscreen?(index===0?owner.inlinePose.top:owner.inlinePose.left)+'px':'0px','important']),value=wanted[0],current=[owner.video.style.getPropertyValue(entry[0]),owner.video.style.getPropertyPriority(entry[0])],applied=entry[3],pin=source&&source.positionApplied&&source.positionApplied[index];
         if (source && source.videoPositionLatest) { entry[1]=source.videoPositionLatest[index][0];entry[2]=source.videoPositionLatest[index][1]; }
         else if (!(applied && current[0]===applied[0] && current[1]===applied[1] || pin && current[0]===pin[0] && current[1]===pin[1])) { entry[1]=current[0];entry[2]=current[1]; }
         entry[3]=wanted;
@@ -501,7 +655,9 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     }
   }
   function claimInlinePositions(owner,s) {
-    if (owner.positions || !s.inlinePlacementEligible || s.inlineDestination.source!==mediaSource(s.video)) return;
+    if (!s.inlineDestination || s.inlineDestination.source!==mediaSource(s.video)) return;
+    if(s.inlineContainedPose)owner.inlinePose=s.inlineContainedPose;
+    if (owner.positions || !s.inlinePlacementEligible && !s.inlineContainedPose) return;
     rememberVideoPositions(s);
     owner.positions=['top','left'].map(function (key,index) { return [key,s.videoPositionLatest[index][0],s.videoPositionLatest[index][1],null]; });
     owner.positionSource=mediaSource(s.video);
@@ -517,7 +673,8 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     var owner={id:s.id,root:s.root,video:s.video,container:container,entries:entries};
     // A YouTube resize can leave landscape top/left values after width/height
     // have recovered. Own placement only for the saved, untransformed video
-    // that originally filled its inline player at top/left zero.
+    // that originally filled its inline player, or its confirmed centered 4:3
+    // pose inside that same stable root. No foreign source inherits this pose.
     claimInlinePositions(owner,s);
     owner.observer=new win.MutationObserver(applyInlineSizeOwner);inlineSizeOwner=owner;
     owner.observer.observe(container,{attributes:true,attributeFilter:['style']});owner.observer.observe(s.video,{attributes:true,attributeFilter:['style','src']});
@@ -534,7 +691,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     s.attributes = s.attributes.filter(function (entry) { if (entry[1] !== 'data-langform-fullscreen-enter-video') return true; restoreAttribute(entry); return false; });
     if (s.enterStyle) { s.enterStyle.remove(); s.enterStyle = null; }
     if(s.videoDimensions)setVideoDimensions(s,keepTransform?[['100%','important'],['100%','important']]:s.videoDimensionLatest || s.videoDimensions);
-    if (keepTransform) naturalVideoPositions(s);
+    if (keepTransform) naturalVideoPositions(s,true);
     if (keepTransform) s.fullscreenTransform=s.enterTransform;
     else restoreTransform(s,s.enterTransform);
   }
@@ -550,7 +707,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     s.video.style.setProperty('transform','none');
     s.video.removeAttribute('data-langform-fullscreen-enter-video');
     naturalVideoDimensions(s,true);
-    naturalVideoPositions(s);
+    naturalVideoPositions(s,true);
     var target = {picture:pictureBox(s.video),rect:s.video.getBoundingClientRect(),root:s.root.getBoundingClientRect()};
     s.video.style.setProperty('transform','none');
     s.video.setAttribute('data-langform-fullscreen-enter-video','');
@@ -580,7 +737,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
         Math.abs(s.enterTarget.width-win.innerWidth)>2 || Math.abs(s.enterTarget.height-win.innerHeight)>2) return;
     var destination=fullscreenDestination(s),current=pictureBox(s.video);
     if (!fullscreenDestinationReady(s,destination) || ['x','y','width','height'].some(function (key) { return Math.abs(destination.picture[key]-current[key])>1; })) { confirmEnterViewport(s); return; }
-    clearEnterPose(s,true); s.phase = 'open'; s.ui.removeAttribute('data-entering'); s.ui.inert = false;
+    clearTransitionDeadline(s);clearEnterPose(s,true); s.phase = 'open'; s.ui.removeAttribute('data-entering'); s.ui.inert = false;
     if (geometryTrace && geometryTrace.s === s && geometryTrace.direction==='enter') { geometryTrace.phase='committed'; geometryTrace.end=Math.min(geometryTrace.end,win.performance.now()+500); }
     try { var bridge = nativeBridge(); if (bridge) bridge.postMessage({kind:'enter-commit',open:true,href:s.href,videoID:s.id,token:s.enterToken}); } catch (_) {}
     win.dispatchEvent(new win.Event('player-fullscreen-change')); visible(true);
@@ -661,6 +818,32 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     s.fullscreenAttributes.forEach(function (entry) { if (entry[1] === 'data-langform-fullscreen-ancestor') mark(s,entry[0],'data-langform-fullscreen-exit-ancestor'); });
     s.handoff = true; exitPose(s,box,clip);
   }
+  function leaseExitBackdrop(s) {
+    if (s.exitBackdrops) return;
+    // The inline layout must be restored before its natural destination can
+    // settle. Keep only the document paint beneath that live video dark while
+    // its watch branches are still hidden; never fade or replace the media.
+    s.exitBackdrops = [doc.documentElement,doc.body].filter(Boolean).map(function (node) {
+      var original=[node.style.getPropertyValue('background-color'),node.style.getPropertyPriority('background-color')],hadStyle=node.hasAttribute('style');
+      leaseAttribute(s,node);
+      var lease=s.leases.find(function (entry) { return entry.node===node; });
+      node.style.setProperty('background-color','#000','important');
+      return {node:node,key:lease.key,original:original,hadStyle:hadStyle,applied:node.style.getPropertyValue('background-color')};
+    });
+  }
+  function restoreExitBackdrop(s) {
+    (s.exitBackdrops || []).forEach(function (entry) {
+      var copies=Array.from(doc.querySelectorAll('[data-langform-fullscreen-lease]')).filter(function (node) { return node!==entry.node && node.getAttribute('data-langform-fullscreen-lease')===entry.key; });
+      [entry.node].concat(copies).forEach(function (node) {
+        // A later author color or priority owns its new value. Restore only
+        // the exact color/priority still leased by this exit transaction.
+        if (node.style.getPropertyValue('background-color')!==entry.applied || node.style.getPropertyPriority('background-color')!=='important') return;
+        if (entry.original[0]) node.style.setProperty('background-color',entry.original[0],entry.original[1]); else node.style.removeProperty('background-color');
+        if (!entry.hadStyle && !node.style.length) node.removeAttribute('style');
+      });
+    });
+    s.exitBackdrops=null;
+  }
   function prepareInlineLayout(s) {
     if (s.placeholder) s.placeholder.remove();
     s.fullscreenAttributes.forEach(restoreAttribute);
@@ -668,6 +851,13 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
   }
   function cancelContextReveal() {
     contextReveals.forEach(function (animation) { try { animation.cancel(); } catch (_) {} }); contextReveals=[];
+  }
+  function exitPlayerContext(s,node) {
+    var host=s.root.closest('ytm-player,ytd-player,#player-container-id') || s.root;
+    return host===node || host.contains(node);
+  }
+  function keepExitContextInert(s,node) {
+    if (!node.closest('[inert]')) mark(s,node,'inert');
   }
   function hideExitContext(s) {
     if (!s.exitContext) s.exitContext=[];
@@ -682,14 +872,18 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       Array.from(branch.parentElement.children).forEach(function (node) {
         if (node===branch || node===s.ui || /^(SCRIPT|STYLE|LINK|META)$/.test(node.tagName) ||
             s.exitContext.some(function (entry) { return entry[0]===node; })) return;
+        if (s.exitWatchContextVisible && !exitPlayerContext(s,node)) { keepExitContextInert(s,node); return; }
         s.exitContext.push([node,'data-langform-fullscreen-exit-context',node.getAttribute('data-langform-fullscreen-exit-context')]);
+        leaseAttribute(s,node,'data-langform-fullscreen-exit-context');
         node.setAttribute('data-langform-fullscreen-exit-context','');
       });
     }
   }
-  function revealExitContext(s,animate) {
-    (s.exitContext || []).forEach(function (entry) {
+  function revealExitContext(s,animate,watchOnly) {
+    s.exitContext=(s.exitContext || []).filter(function (entry) {
       var node=entry[0];
+      if (watchOnly && exitPlayerContext(s,node)) return true;
+      if (watchOnly) keepExitContextInert(s,node);
       restoreAttribute(entry);
       if (animate && node.isConnected && !(reduced && reduced.matches) && typeof node.animate==='function') {
         try {
@@ -698,15 +892,86 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
           animation.onfinish=function () { contextReveals=contextReveals.filter(function (value) { return value!==animation; }); animation.cancel(); };
         } catch (_) {}
       }
+      return false;
     });
-    s.exitContext=[];
   }
   function plainBox(rect) { return {x:rect.x,y:rect.y,width:rect.width,height:rect.height}; }
   function stageInsets() {
     var insets=win.__langformStageInsets || {};
     return ['top','right','bottom','left'].map(function (key) { return Number(insets[key]) || 0; });
   }
-  function cacheInlineDestination(s) {
+  function readInlineDestination(s) {
+    var css=win.getComputedStyle(s.video);
+    return {picture:pictureBox(s.video),rect:plainBox(s.video.getBoundingClientRect()),root:plainBox(s.root.getBoundingClientRect()),
+      viewport:{width:Number(win.innerWidth),height:Number(win.innerHeight)},scroll:{x:Number(win.scrollX)||0,y:Number(win.scrollY)||0},
+      fit:css.objectFit,position:css.objectPosition,ratio:Number(s.video.videoWidth)/Number(s.video.videoHeight),insets:stageInsets(),
+      video:s.video,rootNode:s.root,source:mediaSource(s.video),transform:[s.video.style.getPropertyValue('transform'),s.video.style.getPropertyPriority('transform')],clip:css.clipPath};
+  }
+  function uniformRootScale(value) {
+    if (!value || value==='none') return 1;
+    var scale=/^scale\(\s*([\d.]+)\s*\)$/.exec(value);
+    if(scale)return Number(scale[1]);
+    var matrix=/^matrix\(([^)]+)\)$/.exec(value),v=matrix&&matrix[1].split(',').map(Number);
+    return v && v.length===6 && v.every(Number.isFinite) && Math.abs(v[0]-v[3])<.00001 && v.slice(1,3).concat(v.slice(4)).every(function(n){return Math.abs(n)<.00001;}) ? v[0] : NaN;
+  }
+  function inlineContactMatches(c) {
+    return !!c && (!c.terminal || c.terminal.eventPhase!==0) && inlineContactOwnerMatches(c);
+  }
+  function inlineContactOwnerMatches(c) {
+    return !!c && alive && !state && !pageInactive() && matching(c) && !ad(c) && !nativeFullscreen(c.video) &&
+      doc.getElementById('movie_player')===c.root && (c.root.querySelector('video.html5-main-video')||c.root.querySelector('video'))===c.video &&
+      mediaSource(c.video)===c.saved.source && c.video.readyState>=2 && !c.video.seeking && !c.video.error &&
+      !(win.__langformStageInsets && win.__langformStageInsets.nativeMini===true) &&
+      !(typeof win.__langformHasOpenOverlay==='function' && win.__langformHasOpenOverlay());
+  }
+  function clearNativeInlineContact() {
+    nativeInlineGeneration++;
+    if(nativeInlineContact && nativeInlineContact.timer)win.clearTimeout(nativeInlineContact.timer);
+    nativeInlineContact=null;
+  }
+  // Native UIKit cancels WebKit's contact before its own pan releases. Retain
+  // only the passive target geometry; this never authorizes a fullscreen entry.
+  function nativeInlineContactMatches(lease) {
+    var age=lease ? win.performance.now()-lease.created : NaN;
+    if(!lease || lease.generation!==nativeInlineGeneration || !Number.isFinite(age) || age<0 || age>5000 ||
+        !lease.contact.upward || !inlineContactOwnerMatches(lease.contact))return false;
+    // Owner callbacks may synchronously invalidate this consumed lease or move
+    // time past its deadline. Recheck after the final callback returns.
+    age=win.performance.now()-lease.created;
+    return lease.generation===nativeInlineGeneration && Number.isFinite(age) && age>=0 && age<=5000;
+  }
+  function retainNativeInlineContact(c,event) {
+    clearNativeInlineContact();
+    if(event.type!=='touchcancel' || !c.upward || !inlineContactMatches(c) || event.touches && event.touches.length)return;
+    var lease={contact:c,created:win.performance.now(),generation:nativeInlineGeneration,timer:0};
+    nativeInlineContact=lease;
+    lease.timer=win.setTimeout(function(){if(nativeInlineContact===lease)clearNativeInlineContact();},5000);
+  }
+  function takeNativeInlineContact() {
+    var lease=nativeInlineContact;nativeInlineContact=null;
+    if(lease && lease.timer){win.clearTimeout(lease.timer);lease.timer=0;}
+    return lease;
+  }
+  function previewInlineDestination(s,current,nativeLease) {
+    var c=nativeLease ? nativeLease.contact : inlineContact;inlineContact=null;
+    if(!(nativeLease ? nativeInlineContactMatches(nativeLease) : inlineContactMatches(c)) || c.video!==s.video || c.root!==s.root || !c.upward)return null;
+    var saved=c.saved,css=win.getComputedStyle(s.root),scale=uniformRootScale(css.transform),origin=String(css.transformOrigin||'').split(/\s+/),ox=parseFloat(origin[0]),oy=parseFloat(origin[1]);
+    // Only YouTube's documented-by-capture bottom-centre up-swipe preview is
+    // recognized. This cache never requests entry or rewrites that visible pose.
+    if(!/^scale\(\s*[\d.]+\s*\)$/.test(s.root.style.transform) || !(scale>1 && scale<=1.25001) ||
+        !/^(bottom center|center bottom)$/.test(s.root.style.transformOrigin) ||
+        !(Math.abs(ox-saved.root.width/2)<=1 && Math.abs(oy-saved.root.height)<=1 || /^(bottom center|center bottom)$/.test(css.transformOrigin)) ||
+        Math.abs(saved.viewport.width-current.viewport.width)>.5 || Math.abs(saved.viewport.height-current.viewport.height)>.5 ||
+        Math.abs(saved.scroll.x-current.scroll.x)>.5 || Math.abs(saved.scroll.y-current.scroll.y)>.5 ||
+        saved.insets.some(function(v,i){return Math.abs(v-current.insets[i])>.5;}) || saved.fit!==current.fit || saved.position!==current.position ||
+        saved.clip!==current.clip || Math.abs(saved.ratio-current.ratio)>.0001 || saved.transform.some(function(v,i){return v!==current.transform[i];}))return null;
+    function corresponds(before,after){var x=saved.root.x+saved.root.width/2,y=saved.root.y+saved.root.height;
+      return Math.abs(after.x-(x+(before.x-x)*scale))<=1 && Math.abs(after.y-(y+(before.y-y)*scale))<=1 &&
+        Math.abs(after.width-before.width*scale)<=1 && Math.abs(after.height-before.height*scale)<=1;}
+    return ['picture','rect','root'].every(function(key){return corresponds(saved[key],current[key]);}) &&
+      (!nativeLease || nativeInlineContactMatches(nativeLease)) ? saved : null;
+  }
+  function cacheInlineDestination(s,nativeLease) {
     if(inlineSizeOwner&&inlineSizeOwner.video===s.video)applyInlineSizeOwner();
     var css=win.getComputedStyle(s.video);
     s.videoDimensions=['width','height'].map(function(key){var entry=inlineSizeOwner&&inlineSizeOwner.video===s.video&&inlineSizeOwner.entries.find(function(value){return value[0]===s.video&&value[1]===key;});return entry?[entry[2],entry[3]]:[s.video.style.getPropertyValue(key),s.video.style.getPropertyPriority(key)];});
@@ -719,12 +984,19 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     });
     s.videoPositionLatest=s.videoPositions.map(function (value) { return value.slice(); });
     if (inlineSizeOwner && inlineSizeOwner.video===s.video && inlineSizeOwner.positions) s.positionApplied=['top','left'].map(function (key) { return [s.video.style.getPropertyValue(key),s.video.style.getPropertyPriority(key)]; });
-    s.inlineDestination={picture:pictureBox(s.video),rect:plainBox(s.video.getBoundingClientRect()),root:plainBox(s.root.getBoundingClientRect()),
-      viewport:{width:Number(win.innerWidth),height:Number(win.innerHeight)},scroll:{x:Number(win.scrollX)||0,y:Number(win.scrollY)||0},
-      fit:css.objectFit,position:css.objectPosition,ratio:Number(s.video.videoWidth)/Number(s.video.videoHeight),insets:stageInsets(),
-      video:s.video,rootNode:s.root,source:mediaSource(s.video),transform:[s.video.style.getPropertyValue('transform'),s.video.style.getPropertyPriority('transform')],clip:css.clipPath};
+    var current=readInlineDestination(s);s.inlineDestination=previewInlineDestination(s,current,nativeLease)||current;
+    clearNativeInlineContact();
     s.inlinePlacementEligible=css.position==='absolute' && Math.abs(parseFloat(css.top))<=.5 && Math.abs(parseFloat(css.left))<=.5 &&
       (!css.transform || css.transform==='none') && ['x','y','width','height'].every(function (key) { return Math.abs(s.inlineDestination.rect[key]-s.inlineDestination.root[key])<=1; });
+    var saved=s.inlineDestination,top=saved.rect.y-saved.root.y,left=saved.rect.x-saved.root.x;
+    if(css.position==='absolute' && (!css.transform || css.transform==='none') && saved.source && validBox(saved.root) && validBox(saved.rect) &&
+        Math.abs(saved.ratio-4/3)<.0001 && Math.abs(saved.rect.width-saved.rect.height*saved.ratio)<=1 &&
+        Math.abs(saved.rect.height-saved.root.height)<=1 && Math.abs(top)<=1 && left>=0 &&
+        saved.rect.width<saved.root.width-2 && Math.abs(left-(saved.root.width-saved.rect.width)/2)<=1 &&
+        Math.abs(parseFloat(css.top)-top)<=.5 && Math.abs(parseFloat(css.left)-left)<=.5){
+      s.inlineContainedPose={width:saved.rect.width,height:saved.rect.height,top:top,left:left,
+        rootWidth:saved.root.width,rootHeight:saved.root.height,source:saved.source};
+    }
   }
   function cachedInlineDestination(s,destination,target) {
     var saved=s.inlineDestination,insets=stageInsets(),ratio=Number(s.video.videoWidth)/Number(s.video.videoHeight);
@@ -861,12 +1133,15 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if(!s || s.phase!=='exiting' || s.id!==expectedID || s.exitToken!==token || !s.exitMotion) return false;
     freezeExitHandoff(s);s.exitMotion=null;s.exitUsingCachedDestination=false;s.handoffComplete=false;return true;
   }
-  function prepareExitMotion(expectedID,token,width,height,deadline,requestTicket) {
+  function prepareExitMotion(expectedID,token,width,height,deadline,requestTicket,curve) {
+    var receivedEpoch=Date.now();
     var s=state;
     if(!s || s.phase!=='exiting' || s.id!==expectedID || s.exitToken!==token || !matching(s) || ad(s)) return false;
     function reject(reason){s.exitMotionRejectedReason=reason;return false;}
     if(!Number.isFinite(width)||!Number.isFinite(height)||width<=0||height<=0||!Number.isFinite(deadline)||
-        requestTicket!==undefined&&(!Number.isSafeInteger(requestTicket)||requestTicket<0))return reject(1);
+        requestTicket!==undefined&&(!Number.isSafeInteger(requestTicket)||requestTicket<0) ||
+        curve!==undefined&&['cubic-bezier(.42,0,.58,1)','cubic-bezier(.42,0,1,1)','cubic-bezier(0,0,.58,1)','linear'].indexOf(curve)<0)return reject(1);
+    restartExitGeometryTrace(s);
     var saved=exitMotionCache(s,width,height);
     if(!saved)return reject(2);
     var from=pictureBox(s.video),source={width:Number(win.innerWidth),height:Number(win.innerHeight)},fromClip=win.getComputedStyle(s.video).clipPath,
@@ -884,17 +1159,24 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if(s.exitFrame){win.cancelAnimationFrame(s.exitFrame);s.exitFrame=0;}
     freezeExitHandoff(s);exitPose(s,from,fromClip);
     var motion={source:source,width:width,height:height,target:saved.picture,visible:visible,deadline:deadline,requestTicket:requestTicket,ready:false};
+    if(win.__langformFullscreenDiagnostics===true){
+      var pinned=pictureBox(s.video);
+      motion.diagnostics={exitMotionReceivedEpochMilliseconds:receivedEpoch,exitMotionSetupEpochMilliseconds:Date.now(),exitMotionDurationMilliseconds:remaining,
+        exitMotionFromWidth:from.width,exitMotionFromHeight:from.height,exitMotionPinnedWidth:pinned.width,exitMotionPinnedHeight:pinned.height};
+    }
     s.exitMotion=motion;s.exitMotionRejectedReason=0;s.handoffComplete=false;
     if(reduced&&reduced.matches)return finishExitMotion(s,motion);
     if(typeof s.video.animate!=='function'){s.exitMotion=null;return reject(8);}
     var animation;
-    try{animation=s.video.animate(frames,{duration:remaining,easing:'cubic-bezier(.2,0,.25,1)',fill:'forwards'});}catch(_){s.exitMotion=null;return reject(8);}
+    try{animation=s.video.animate(frames,{duration:remaining,easing:curve || 'cubic-bezier(.2,0,.25,1)',fill:'forwards'});}catch(_){s.exitMotion=null;return reject(8);}
+    if(motion.diagnostics)motion.diagnostics.exitAnimationCreatedEpochMilliseconds=Date.now();
     s.exitAnimation=animation;
     animation.onfinish=function(){if(state===s&&s.exitMotion===motion&&s.exitAnimation===animation)finishExitMotion(s,motion);};
     return true;
   }
   function handoffToInline(s,destination) {
     if (state !== s || !matching(s)) return;
+    if(win.__langformFullscreenDiagnostics===true)s.exitHandoffToInlineCalls=(s.exitHandoffToInlineCalls || 0)+1;
     var from = pictureBox(s.video);
     if (!validBox(from)) return;
     if (s.exitAnimation) { s.exitAnimation.cancel(); s.exitAnimation = null; }
@@ -933,6 +1215,10 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
   }
   function finishClose(s,reason,reportBeforeRestore) {
     if (state !== s) return false;
+    s.downExitPose=null;
+    if(downPreview && downPreview.s===s)clearDownPreview();
+    if (reason) cancelContextReveal();
+    clearTransitionDeadline(s);
     resetZoom(s,'fullscreen-close');
     var activeEnterTransform = s.enterHandoff ? s.enterTransform : s.fullscreenTransform;
     state = null; clearIdle(); clearFeedback(s);
@@ -943,6 +1229,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if (geometryTrace && geometryTrace.s === s) { geometryTrace.phase = reason ? 'cancelled' : 'committed'; geometryTrace.end = Math.min(geometryTrace.end,win.performance.now()+500); }
     if (reportBeforeRestore) emit(false,s,reason);
     try { if (s.chapters) s.chapters.close(); } catch (_) { /* still restore the fullscreen transaction */ }
+    try { if (s.settings) s.settings.dispose(); } catch (_) { /* still restore the fullscreen transaction */ }
     if (s.adObserver) s.adObserver.disconnect();
     if (s.dimensionObserver) s.dimensionObserver.disconnect();
     if (s.ownedObserver) s.ownedObserver.disconnect();
@@ -951,6 +1238,8 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     // Rejoin the document's flow in the same turn as removing its placeholder.
     // Native has already confirmed the destination viewport on a normal exit.
     s.attributes.reverse().forEach(function (entry) { try { if (entry[2] === null) entry[0].removeAttribute(entry[1]); else entry[0].setAttribute(entry[1],entry[2]); } catch (_) {} });
+    restoreExitBackdrop(s);
+    releaseCopiedLeases(s,s.exitTransform || activeEnterTransform);
     if (s.exitStyle) s.exitStyle.remove();
     if (s.enterStyle) s.enterStyle.remove();
     var ownSize=inlineSizeOwner && inlineSizeOwner.video===s.video;
@@ -974,6 +1263,23 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     }
     return true;
   }
+  function refreshExitCaptions(s,target) {
+    if(s.exitCaptionResizeAttempted || typeof s.root.setSize!=='function' || !s.root.querySelector('.ytp-caption-window-container .caption-window'))return false;
+    var token=s.exitToken,source=mediaSource(s.video);
+    function owner(){return state===s && s.phase==='exiting' && s.exitToken===token && matching(s) && !ad(s) && !pageInactive() && !nativeFullscreen(s.video) &&
+      doc.getElementById('movie_player')===s.root && (s.root.querySelector('video.html5-main-video')||s.root.querySelector('video'))===s.video && mediaSource(s.video)===source;}
+    if(!source || !s.inlineDestination || s.inlineDestination.source!==source || !owner() || (s.exitTarget||s.exitPreparedTarget)!==target)return false;
+    // YouTube's public setSize() invalidates its own caption windows through
+    // player resize. Keep font preferences untouched and call only once after
+    // a stable inline layout, while original controls/captions are still hidden.
+    s.exitCaptionResizeAttempted=true;
+    try{s.root.setSize();}catch(_){}
+    if(state!==s)return true;
+    if(!owner()){finishClose(s,'media-source-changed',true);return true;}
+    // Original resize can also rewrite video geometry or synchronously change
+    // the target viewport. Reconfirm both natural frames before any reveal.
+    hideExitContext(s);confirmExitViewport(s);return true;
+  }
   function confirmExitViewport(s) {
     if (state !== s || s.phase !== 'exiting' || !matching(s) || ad(s)) return;
     if(s.exitMotion&&!s.exitMotion.ready){
@@ -983,7 +1289,9 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     var target = s.exitTarget || s.exitPreparedTarget || s.inlineDestination && s.inlineDestination.viewport;
     if (!target) return;
     var viewport = {width:Number(win.innerWidth),height:Number(win.innerHeight)};
-    if (Math.abs(target.width - viewport.width) > 2 || Math.abs(target.height - viewport.height) > 2) { freezeExitHandoff(s); return; }
+    if (Math.abs(target.width - viewport.width) > 2 || Math.abs(target.height - viewport.height) > 2) {
+      leaseExitBackdrop(s);s.exitWatchContextVisible=false;cancelContextReveal();hideExitContext(s);freezeExitHandoff(s);return;
+    }
     // Every confirmed exit needs bounded hydration, including rejected or
     // cancelled staged motion. Otherwise its hidden watch context and inert
     // controls can survive forever while YouTube keeps a stale media size.
@@ -1020,7 +1328,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
         if (state === s && (s.exitTarget || s.exitPreparedTarget) === target && matching(s) &&
             Math.abs(target.width - Number(win.innerWidth)) <= 2 && Math.abs(target.height - Number(win.innerHeight)) <= 2) {
           var next=inlineDestination(s);
-          var fallbackInline=s.inlinePlacementEligible && s.inlineDestination && s.inlineDestination.source===mediaSource(s.video) &&
+          var fallbackInline=(s.inlinePlacementEligible || s.inlineContainedPose) && s.inlineDestination && s.inlineDestination.source===mediaSource(s.video) &&
             cachedInlineDestination(s,first,target) && cachedInlineDestination(s,next,target);
           if((s.exitMotion&&s.exitMotion.ready || fallbackInline)&&s.exitTarget&&!s.inlineSizeApplied&&validBox(first.root)&&validBox(next.root)&&
               Math.abs(next.root.width-win.innerWidth)<=2 && Math.abs(next.root.width-s.inlineDestination.root.width)<=2 &&
@@ -1028,6 +1336,16 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
             s.inlineSizeApplied=claimInlineSizeOwner(s);if(s.inlineSizeApplied){confirmExitViewport(s);return;}
           }
           if (!inlineDestinationReady(s,first) || !inlineDestinationReady(s,next) || destinationDistance(first,next)>0.5) { confirmExitViewport(s); return; }
+          if(refreshExitCaptions(s,target))return;
+          // The real inline viewport and two natural layout frames now agree.
+          // Let the watch header/details appear alongside the remaining live
+          // media handoff, instead of leaving a blank page until its commit.
+          // Original player controls and all input remain owned until then.
+          // Restore the author canvas before transparent watch text appears.
+          // A viewport reversal reacquires it only while that context is hidden.
+          // Reveal those watch fragments in the same paint as their canvas;
+          // fading them from zero would briefly expose an empty white page.
+          restoreExitBackdrop(s);s.exitWatchContextVisible=true;revealExitContext(s,false,true);
           var current=pictureBox(s.video),distance=Math.max(Math.abs(next.picture.x-current.x),Math.abs(next.picture.y-current.y),Math.abs(next.picture.width-current.width),Math.abs(next.picture.height-current.height));
           if (s.handoffComplete && distance<=1) { if (s.exitTarget) finishClose(s); return; }
           if(s.exitMotion&&s.exitMotion.ready){
@@ -1062,13 +1380,22 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
   }
   function beginExit(s,action) {
     if (state !== s || s.phase === 'exiting') return false;
+    // Consume the admitted contact's visible pose before its individual
+    // decoration or Zoom can be reset. Pinning below happens in this turn.
+    var hadGesturePreview=!!s.downExitPose || !!(downPreview && downPreview.s===s);
+    var gesturePose=consumeDownExitPose(s);
+    if(hadGesturePreview && !gesturePose)return false;
+    var diagnosticBefore=win.__langformFullscreenDiagnostics===true ? pictureBox(s.video) : null;
     resetZoom(s,'fullscreen-exit');
     if (s.enterFrame) { win.cancelAnimationFrame(s.enterFrame); s.enterFrame = 0; }
     freezeEnterHandoff(s);
-    var picture=pictureBox(s.video),outer=s.video.getBoundingClientRect();
+    if(gesturePose && (!matching(s) || ad(s) || pageInactive() || mediaSource(s.video)!==gesturePose.source))return false;
+    var picture=gesturePose?gesturePose.picture:pictureBox(s.video),outer=gesturePose?gesturePose.outer:s.video.getBoundingClientRect();
+    if(diagnosticBefore)s.exitDiagnosticPose={exitBeforeResetWidth:diagnosticBefore.width,exitBeforeResetHeight:diagnosticBefore.height,
+      exitAfterResetWidth:picture.width,exitAfterResetHeight:picture.height};
     if (!validBox(picture)) return finishClose(s,'geometry-unavailable',true);
-    s.phase = 'exiting'; s.exitToken = String(++serial); clearIdle(); clearFeedback(s);
-    var currentClip=win.getComputedStyle(s.video).clipPath;
+    s.phase = 'exiting'; leaseExitBackdrop(s); s.exitToken = String(++serial); clearIdle(); clearFeedback(s);armTransitionDeadline(s,'exiting');
+    var currentClip=gesturePose?gesturePose.clip:win.getComputedStyle(s.video).clipPath;
     holdExitPicture(s,picture,currentClip&&currentClip!=='none'?currentClip:pictureClip(picture,outer));
     hideExitContext(s);
     beginGeometryTrace(s,'exit');
@@ -1076,19 +1403,21 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if (s.speedOpen) setSpeedOpen(s,false,false);
     s.ui.setAttribute('data-exiting',''); s.ui.inert = true;
     listen(s,win,'resize',function () { confirmExitViewport(s); });
-    listen(s,doc,'visibilitychange',function () { if (doc.hidden) finishClose(s,'inactive',true); });
+    ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){listen(s,doc,name,function () { if (pageInactive()) finishClose(s,'inactive',true); });});
     if (win.visualViewport) listen(s,win.visualViewport,'resize',function () { confirmExitViewport(s); });
-    if (reduced && typeof reduced.addEventListener === 'function') listen(s,reduced,'change',function () { if (reduced.matches && s.handoff) { if(s.exitMotion&&!s.exitMotion.ready)finishExitMotion(s,s.exitMotion);else{freezeExitHandoff(s);confirmExitViewport(s);} } });
+    if (reduced && typeof reduced.addEventListener === 'function') listen(s,reduced,'change',function () { if (reduced.matches && s.handoff) { cancelContextReveal();if(s.exitMotion&&!s.exitMotion.ready)finishExitMotion(s,s.exitMotion);else{freezeExitHandoff(s);confirmExitViewport(s);} } });
     try {
       var bridge = nativeBridge();
       if (!bridge) return finishClose(s,'bridge-unavailable',true);
       var request = {kind:'exit-request',open:false,href:s.href,videoID:s.id,token:s.exitToken};
       if (action === 'search') request.action = 'search';
+      if(win.__langformFullscreenDiagnostics===true)s.exitRequestEpochMilliseconds=Date.now();
       bridge.postMessage(request);
       return state === s;
     } catch (_) { return finishClose(s,'bridge-unavailable',true); }
   }
   function close(expectedID, reason, reportBeforeRestore, action) {
+    clearNativeInlineContact();
     if (!state || (expectedID && expectedID !== state.id)) return false;
     var s = state;
     if (!reason && !reportBeforeRestore && alive && matching(s) && !ad(s) && !nativeFullscreen(s.video) && win.__langformFullscreenExitProtocol === 1) return beginExit(s,action);
@@ -1096,7 +1425,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     return finishClose(s,reason,reportBeforeRestore);
   }
   function listen(s,node,event,fn) { node.addEventListener(event,fn); s.events.push([node,event,fn]); }
-  function open() {
+  function open(nativeLease) {
     if (state || !alive || !id() || !style.isConnected || !nativeBridge()) return false;
     stopGeometryTrace();
     cancelContextReveal();
@@ -1106,8 +1435,8 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if (!video || nativeFullscreen(video) || !matching(s) || ad(s)) return false;
     try {
     var enterProtocol = win.__langformFullscreenEnterProtocol === 1, inlinePicture, inlineOuter;
-    var inlineRoot=root.getBoundingClientRect(),inlineVideo=video.getBoundingClientRect();
-    cacheInlineDestination(s);
+    cacheInlineDestination(s,nativeLease);
+    var inlineRoot=s.inlineDestination.root,inlineVideo=s.inlineDestination.rect;
     s.dimensionObserver=new win.MutationObserver(function(){
       if(state!==s)return;rememberVideoDimensions(s);
       var pose=s.enterHandoff?s.enterPose:s.handoff?s.exitPose:null;
@@ -1148,11 +1477,19 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       s.enterStyle=doc.createElement('style'); s.enterStyle.id='langform-fullscreen-enter-style'; (doc.head || doc.documentElement).appendChild(s.enterStyle);
       mark(s,video,'data-langform-fullscreen-enter-video'); enterPose(s,inlinePicture,pictureClip(inlinePicture,inlineOuter));
       ui.setAttribute('data-entering',''); ui.inert=true;
+      armTransitionDeadline(s,'entering');
       listen(s,win,'resize',function () { confirmEnterViewport(s); });
       if (win.visualViewport) listen(s,win.visualViewport,'resize',function () { confirmEnterViewport(s); });
       beginGeometryTrace(s,'enter');
     }
     state = s; doc.body.appendChild(ui); s.presented = true;
+    if (win.__langformPlayerSettings && typeof win.__langformPlayerSettings.mount === 'function') {
+      s.settings=win.__langformPlayerSettings.mount({host:ui.querySelector('.lf-fs-settings-host'),videoID:s.id,root:s.root,video:s.video,onActivity:function () {
+        if(state!==s)return;
+        if(s.settings && s.settings.isOpen()){if(s.speedOpen)setSpeedOpen(s,false,false);if(s.chapters && s.chapters.dismiss)s.chapters.dismiss();}
+        visible(true);
+      }});
+    }
     Array.from(doc.body.children).forEach(function (node) { if (node !== ui && node !== style) mark(s,node,'inert'); });
     // Observe only our CSS ownership attributes, never the page's full attribute stream.
     s.ownedObserver = new win.MutationObserver(route);
@@ -1229,11 +1566,27 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       if (state === s) visible(true);
     }
     function resetSnap(preserveTarget) { if (!preserveTarget) s.pendingScrubTime = null; s.pointerScrub = false; if (s.chapters && s.chapters.resetSnap) s.chapters.resetSnap(); }
+    function finishScrub(commit,release) {
+      var target = scrubTime(s), contact = s.scrubContact;
+      s.scrubContact = null; s.dragging = false;
+      if (commit && state === s && s.phase === 'open' && !pageInactive() && seekable(s) &&
+          (!contact || !contact.cancelled && contact.source === mediaSource(s.video))) {
+        target = Math.min(s.video.duration,Math.max(0,target));
+        if (Number.isFinite(target) && s.video.currentTime !== target) s.video.currentTime = target;
+      }
+      resetSnap(); update(); visible(true);
+      // WebKit can omit change after a script-written chapter detent. Commit
+      // on our matching release; consume a later native change of this same
+      // value so fractional chapter times are not rounded or sought twice.
+      s.releasedScrubValue = release ? s.range.value : null;
+    }
     listen(s,s.range,'input',function () {
+      if (s.scrubContact && s.scrubContact.cancelled) return;
       if (!matching(s) || ad(s)) { close(); return; }
       clearFeedback(s);
       if (s.speedOpen) setSpeedOpen(s,false,false);
-      s.dragging = true; s.pendingScrubTime = null; clearIdle();
+      s.dragging = true; s.pendingScrubTime = null; s.releasedScrubValue = null; clearIdle();
+      if (s.scrubContact) s.scrubContact.dirty = true;
       if (s.pointerScrub && seekable(s) && s.chapters && s.chapters.snap) {
         var result = s.chapters.snap(Number(s.range.value),Math.max(0,s.range.getBoundingClientRect().width - 14),true);
         s.pendingScrubTime = result.value;
@@ -1245,25 +1598,39 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       update();
     });
     listen(s,s.range,'change',function () {
-      if (seekable(s)) s.video.currentTime = Math.min(s.video.duration,Math.max(0,scrubTime(s)));
-      s.dragging = false; resetSnap(); update(); visible(true);
+      if (s.releasedScrubValue !== null && s.releasedScrubValue === s.range.value) { s.releasedScrubValue = null; return; }
+      finishScrub(true,false);
     });
+    listen(s,win,'pointerdown',function (event) {
+      if (s.scrubContact && event.pointerId !== s.scrubContact.pointerId) {
+        var contact = s.scrubContact; finishScrub(false,true); contact.cancelled = true; s.scrubContact = contact;
+      }
+    },true);
     listen(s,ui,'pointerdown',function (event) {
       beginControlContact(event,'pointer');
       var button = event.target.closest && event.target.closest('button');
       s.speedPointer = button ? {button:button,until:win.performance.now() + 800} : null;
-      if (event.target === s.range && seekable(s)) { resetSnap(); s.pointerScrub = true; s.dragging = true; clearIdle(); }
+      if (event.target === s.range && seekable(s) && event.isPrimary !== false && (event.button === undefined || event.button === 0)) {
+        resetSnap(); s.releasedScrubValue = null; s.scrubContact = {pointerId:event.pointerId,dirty:false,source:mediaSource(s.video)};
+        s.pointerScrub = true; s.dragging = true; clearIdle();
+      }
     });
-    listen(s,win,'pointerup',function (event) { endControlContact(event); if (s.dragging) { s.dragging = false; resetSnap(true); visible(true); } });
-    listen(s,win,'pointercancel',function (event) { endControlContact(event); s.speedPointer = null; if (s.dragging || s.pendingScrubTime !== null) { s.dragging = false; resetSnap(); update(); visible(true); } });
+    listen(s,win,'pointerup',function (event) {
+      endControlContact(event);
+      if (s.scrubContact && event.pointerId === s.scrubContact.pointerId) finishScrub(s.scrubContact.dirty,true);
+    });
+    listen(s,win,'pointercancel',function (event) {
+      endControlContact(event); s.speedPointer = null;
+      if ((!s.scrubContact || event.pointerId === s.scrubContact.pointerId) && (s.dragging || s.pendingScrubTime !== null)) finishScrub(false,true);
+    });
     listen(s,win,'lostpointercapture',endControlContact);
-    listen(s,win,'blur',function () { endControlContact(); });
+    listen(s,win,'blur',function () { endControlContact(); if (s.dragging || s.pendingScrubTime !== null) finishScrub(false,true); });
     if (typeof win.PointerEvent !== 'function') {
       listen(s,ui,'touchstart',function (event) { beginControlContact(event,'touch'); });
       listen(s,win,'touchend',endControlContact);
       listen(s,win,'touchcancel',endControlContact);
     }
-    listen(s,s.range,'keydown',function () { resetSnap(); });
+    listen(s,s.range,'keydown',function () { s.scrubContact = null; s.releasedScrubValue = null; resetSnap(); });
     listen(s,s.speedButton,'keydown',function (event) {
       if (state !== s) return;
       if (!matching(s) || ad(s)) { close(s.id); return; }
@@ -1302,7 +1669,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     listen(s,video,'error',function () { clearFeedback(s); updateSpeed(s); if (s.speedOpen) setSpeedOpen(s,false,true); });
     listen(s,video,'waiting',function () { if (s.feedback && s.feedback.kind === 'play') clearFeedback(s); });
     listen(s,video,'webkitbeginfullscreen',function () { close(); });
-    listen(s,doc,'visibilitychange',function () { if (doc.hidden) { endControlContact(); clearFeedback(s); if (s.phase==='entering') { close(s.id,'inactive',true); return; } if (s.speedOpen) setSpeedOpen(s,false,false); } });
+    ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){listen(s,doc,name,function () { if (pageInactive()) { if (s.dragging || s.pendingScrubTime !== null) finishScrub(false,true); s.scrubContact = null; s.speedPointer = null; endControlContact(); clearIdle(); clearFeedback(s); if (s.phase==='entering') { close(s.id,'inactive',true); return; } if (s.speedOpen) setSpeedOpen(s,false,false); } else if (state === s && s.phase === 'open') { update(); visible(true); } });});
     if (reduced && reduced.addEventListener) listen(s,reduced,'change',function () { if (reduced.matches) { clearFeedback(s); if (s.phase==='entering') { freezeEnterHandoff(s); confirmEnterViewport(s); } } s.speedPanel.toggleAttribute('data-reduced-motion',!!reduced.matches); });
     s.adObserver = new win.MutationObserver(route); s.adObserver.observe(root,{attributes:true,attributeFilter:['class']});
     update(); if (state !== s) return false;
@@ -1418,6 +1785,70 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
   }
   var globals = [];
   function global(node,name,fn,capture) { var options = typeof capture === 'object' ? capture : !!capture; node.addEventListener(name,fn,options); globals.push([node,name,fn,options]); }
+  function rememberInlineContact(event) {
+    if(!event || inlineContactEvents.has(event))return;inlineContactEvents.add(event);
+    var isTouch=!!event.touches,start=/^(pointerdown|touchstart)$/.test(event.type),end=/^(pointerup|pointercancel|touchend|touchcancel)$/.test(event.type),c=inlineContact;
+    if(start)clearNativeInlineContact();
+    if(isTouch && event.touches.length>1 || !isTouch && (event.pointerType && event.pointerType!=='touch' || event.isPrimary===false)) { inlineContact=null;return; }
+    var point=isTouch ? (end?Array.from(event.changedTouches||[]).find(function(p){return c&&p.identifier===c.touch;}):event.touches[0]) : event;
+    if(start){
+      if(c && !c.ended && isTouch && c.touch===undefined && point && Math.hypot(point.clientX-c.x,point.clientY-c.y)<=2 && inlineContactMatches(c)) { c.touch=point.identifier;return; }
+      inlineContact=null;
+      // A paired Pointer/Touch start is one contact; any additional start is
+      // not allowed to replace the original geometry after preview has begun.
+      if(c || state || event.defaultPrevented || !point || !Number.isFinite(point.clientX) || !Number.isFinite(point.clientY) || !(win.innerHeight>win.innerWidth))return;
+      var target=event.target,root=doc.getElementById('movie_player'),video=root&&(root.querySelector('video.html5-main-video')||root.querySelector('video'));
+      if(!target || !target.closest || !root || !video || target.closest('button,a,input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="button"],[role="slider"],[hidden],[inert]'))return;
+      var host=root.closest('ytm-player,ytd-player,#player-container-id')||root;
+      if(!host.contains(target))return;
+      c={id:id(),root:root,video:video,x:point.clientX,y:point.clientY,pointer:isTouch?undefined:event.pointerId,touch:isTouch?point.identifier:undefined,upward:false};
+      try{
+        c.saved=readInlineDestination(c);
+        var box=c.saved.picture,css=win.getComputedStyle(root),zoom=win.__langformPlaybackZoom&&win.__langformPlaybackZoom.getState&&win.__langformPlaybackZoom.getState();
+        if(!inlineContactMatches(c) || !c.saved.source || !['picture','rect','root'].every(function(k){return validBox(c.saved[k]);}) ||
+            Math.abs(uniformRootScale(css.transform)-1)>.00001 || !Number.isFinite(uniformRootScale(css.transform)) ||
+            zoom&&(zoom.gesturing||zoom.scale>1.01) || point.clientX<box.x || point.clientX>box.x+box.width || point.clientY<box.y || point.clientY>box.y+box.height-44)return;
+        inlineContact=c;
+      }catch(_){inlineContact=null;}
+      return;
+    }
+    if(!c)return;
+    // Once Touch has paired with Pointer, only Touch terminates the contact.
+    // iOS may deliver pointercancel and its microtasks before touchcancel/G_a.
+    if(!isTouch && c.touch!==undefined)return;
+    if(!point || isTouch && point.identifier!==c.touch || !isTouch && event.pointerId!==c.pointer || !inlineContactMatches(c)){inlineContact=null;return;}
+    var dx=point.clientX-c.x,dy=point.clientY-c.y;
+    if(Number.isFinite(dx)&&Number.isFinite(dy))c.upward=dy<-8 && -dy>Math.abs(dx)*1.2;
+    if(end){
+      c.ended=true;c.terminal=event;
+      retainNativeInlineContact(c,event);
+      // Original touchend AND touchcancel call fullscreen synchronously before
+      // resetting scale(1). A real event may checkpoint microtasks between its
+      // listeners: eventPhase gates use to this dispatch; the next task cleans up.
+      win.setTimeout(function(){if(inlineContact===c)inlineContact=null;},0);
+    }
+  }
+  // A physical rotation is independent of touch activation. Never use it to
+  // move the picture away from a finger that already owns a contact.
+  function rotationContact(event) {
+    // Zoom and Swipe precede this listener and can consume real starts/ends.
+    // Their narrow observeContact handoff keeps the same physical contact set.
+    // Losing pointer capture ends gesture ownership, not the finger contact.
+    if(!event || !/^(pointerdown|pointerup|pointercancel|touchstart|touchend|touchcancel)$/.test(event.type))return;
+    rememberInlineContact(event);
+    if(event.touches){rotationContacts.clear();Array.from(event.touches).forEach(function(point){rotationContacts.add('t'+point.identifier);});}
+    else if(event.type==='pointerdown')rotationContacts.add('p'+event.pointerId);
+    else rotationContacts.delete('p'+event.pointerId);
+  }
+  ['pointerdown','pointerup','pointercancel','lostpointercapture','touchstart','touchend','touchcancel'].forEach(function(name){global(win,name,rotationContact,{capture:true,passive:true});});
+  ['pointermove','touchmove'].forEach(function(name){global(win,name,rememberInlineContact,{capture:true,passive:true});});
+  global(win,'blur',function(){rotationContacts.clear();touch=null;inlineContact=null;clearNativeInlineContact();});
+  ['yt-navigate-start','resize','scroll'].forEach(function(name){global(win,name,function(){inlineContact=null;clearNativeInlineContact();},{capture:true,passive:true});});
+  ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){global(doc,name,function(){
+    // Backgrounding can interrupt contacts without delivering their ends.
+    // Reset inline and fullscreen contacts as the other gesture owners do.
+    if(pageInactive()){rotationContacts.clear();touch=null;inlineContact=null;clearNativeInlineContact();}
+  });});
   // YouTube mobile controls can enter AV fullscreen from touchend before any
   // synthesized click. Window capture runs before its document/target handlers.
   global(win,'touchstart',touchStart,{capture:true,passive:true});
@@ -1427,6 +1858,9 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
   global(win,'tap',click,true);
   global(win,'click',click,true);
   function route() {
+    if(downPreview && (!downPreviewOwner(downPreview) || !downPreviewStylesOwned(downPreview)))clearDownPreview();
+    if(nativeInlineContact && !nativeInlineContactMatches(nativeInlineContact))clearNativeInlineContact();
+    if(inlineContact&&!inlineContactMatches(inlineContact))inlineContact=null;
     if(inlineSizeOwner&&!ownerMatches(inlineSizeOwner))releaseInlineSizeOwner();
     if (fullscreenProbe && id() !== fullscreenProbe.id) stopFullscreenProbe('cancelled');
     if (state && (!matching(state) || ad(state))) close();
@@ -1443,7 +1877,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     win.removeEventListener('player-fullscreen-change',probe.changed);
     doc.removeEventListener('pointerdown',probe.input,true);
     doc.removeEventListener('touchstart',probe.input,true);
-    doc.removeEventListener('visibilitychange',probe.hidden);
+    ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){doc.removeEventListener(name,probe.hidden);});
     if (phase!=='finished' && state && state.id===probe.id) close(probe.id,'diagnostic-cancelled',true);
     probeMark(probe,phase); return true;
   }
@@ -1451,12 +1885,12 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if (cycles===undefined) cycles=1;
     if (holdMilliseconds===undefined) holdMilliseconds=3000;
     if (win.__langformFullscreenProbeEnabled!==true || win.__langformFullscreenDiagnostics!==true ||
-        fullscreenProbe || state || !alive || doc.hidden || id()!==expectedID ||
+        fullscreenProbe || state || !alive || pageInactive() || id()!==expectedID ||
         typeof token!=='string' || !token || !Number.isInteger(cycles) || cycles<1 || cycles>6 ||
         !Number.isFinite(holdMilliseconds) || holdMilliseconds<200 || holdMilliseconds>3000) return false;
     var probe={id:expectedID,token:token,href:String(win.location.href),phase:'entering',hold:0,timeout:0,cycles:cycles,completed:0};
     var hold=holdMilliseconds;
-    function current() { return fullscreenProbe===probe && alive && !doc.hidden && id()===probe.id; }
+    function current() { return fullscreenProbe===probe && alive && !pageInactive() && id()===probe.id; }
     probe.changed=function () {
       if (!current()) { stopFullscreenProbe('cancelled'); return; }
       if (probe.phase==='entering' && state && state.phase==='open' && state.id===probe.id && matching(state)) {
@@ -1475,11 +1909,11 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       } else if (!state && probe.phase!=='inline') stopFullscreenProbe('cancelled');
     };
     probe.input=function (event) { if (event.isTrusted) stopFullscreenProbe('cancelled'); };
-    probe.hidden=function () { if (doc.hidden) stopFullscreenProbe('cancelled'); };
+    probe.hidden=function () { if (pageInactive()) stopFullscreenProbe('cancelled'); };
     fullscreenProbe=probe;
     win.addEventListener('player-fullscreen-change',probe.changed);
     doc.addEventListener('pointerdown',probe.input,true); doc.addEventListener('touchstart',probe.input,true);
-    doc.addEventListener('visibilitychange',probe.hidden);
+    ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){doc.addEventListener(name,probe.hidden);});
     probe.timeout=win.setTimeout(function () { if (fullscreenProbe===probe) stopFullscreenProbe('timeout'); },Math.min(58000,2000+cycles*(4000+2*hold)));
     if (!open()) { stopFullscreenProbe('cancelled'); return false; }
     return true;
@@ -1505,7 +1939,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
   function pagehide(event) {
     stopFullscreenProbe('cancelled');
     cancelContextReveal();
-    alive = false; touch = null; trailing = null; rejected = null; close(null,'pagehide');releaseInlineSizeOwner(); stopGeometryTrace(); observer.disconnect(); restoreAPIs();
+    alive = false; touch = null; trailing = null; rejected = null; inlineContact=null; clearNativeInlineContact(); rotationContacts.clear(); close(null,'pagehide');releaseInlineSizeOwner(); stopGeometryTrace(); observer.disconnect(); restoreAPIs();
     globals.forEach(function (entry) { entry[0].removeEventListener(entry[1],entry[2],entry[3]); });
     style.remove();
     if (!event.persisted) {
@@ -1533,18 +1967,237 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
   }
   function getZoomContext() {
     var s=state;
-    if (!alive || !s || s.phase!=='open' || !matching(s) || ad(s) || doc.hidden || nativeFullscreen(s.video) ||
+    if (!alive || !s || s.phase!=='open' || !matching(s) || ad(s) || pageInactive() || nativeFullscreen(s.video) ||
         !s.ui.isConnected || s.ui.inert) return null;
     var container=s.video.closest('.html5-video-container'),rect=s.root.getBoundingClientRect();
     if (!container || !s.root.contains(container) || !validBox({x:rect.left,y:rect.top,width:rect.width,height:rect.height}) ||
         Math.abs(rect.left)>1 || Math.abs(rect.top)>1 || Math.abs(rect.width-win.innerWidth)>2 || Math.abs(rect.height-win.innerHeight)>2) return null;
     return {id:s.id,root:s.root,video:s.video,container:container,ui:s.ui,rect:rect,
-      blocked:!!(s.speedOpen || s.dragging || s.pendingScrubTime!==null || s.chapters && s.chapters.isOpen && s.chapters.isOpen())};
+      blocked:!!(s.speedOpen || s.dragging || s.pendingScrubTime!==null || s.settings && s.settings.isOpen() || s.chapters && s.chapters.isOpen && s.chapters.isOpen())};
   }
-  win.__langformFullscreen = { isOpen:function () { route(); return !!state; }, exit:close,getZoomContext:getZoomContext,
+  function rotationOwner(expectedID, allowSeeking, gestureEntry) {
+    try {
+      if(typeof expectedID!=='string' || !expectedID || !alive || pageInactive() || id()!==expectedID || !nativeBridge() ||
+          (!gestureEntry && (rotationContacts.size || touch)) || win.__langformStageInsets && win.__langformStageInsets.nativeMini===true ||
+          typeof win.__langformIsNativeDragging==='function' && win.__langformIsNativeDragging() ||
+          typeof win.__langformHasOpenOverlay==='function' && win.__langformHasOpenOverlay())return null;
+      var root=doc.getElementById('movie_player'),video=root && (root.querySelector('video.html5-main-video') || root.querySelector('video'));
+      var source=video && (video.currentSrc || video.src || ''),info=root && data(root);
+      if(!root || !video || !root.isConnected || !video.isConnected || !root.contains(video) ||
+          doc.getElementById('movie_player')!==root || (root.querySelector('video.html5-main-video') || root.querySelector('video'))!==video ||
+          !info || info.video_id!==expectedID || ad({root:root,video:video}) || nativeFullscreen(video) ||
+          !source || video.readyState<2 || !(video.videoWidth>0) || !(video.videoHeight>0) || video.error ||
+          video.webkitCurrentPlaybackTargetIsWireless || video.remote && video.remote.state==='connected' ||
+          (video.seeking && allowSeeking!==true))return null;
+      var report=win.__langformMeasureVideo && win.__langformMeasureVideo();
+      if(!report || report.playerVideoID!==expectedID || !report.hasVideo || !report.mediaReady ||
+          report.navigationToken && (!report.navigationComplete || !report.navigationMediaLoaded))return null;
+      // Helpers may synchronously replace media or navigate. Revalidate after
+      // the read and let open()/close() retain their own transaction guards.
+      if(id()!==expectedID || pageInactive() || doc.getElementById('movie_player')!==root ||
+          (root.querySelector('video.html5-main-video') || root.querySelector('video'))!==video || (video.currentSrc || video.src || '')!==source ||
+          !matching({id:expectedID,root:root,video:video}) || ad({root:root,video:video}) || nativeFullscreen(video) ||
+          video.readyState<2 || !(video.videoWidth>0) || !(video.videoHeight>0) || video.error ||
+          (video.seeking && allowSeeking!==true))return null;
+      return {id:expectedID,root:root,video:video};
+    }catch(_){return null;}
+  }
+  function enterForRotation(expectedID, gestureEntry, nativeLease) {
+    var current=rotationOwner(expectedID,false,gestureEntry===true);
+    if(!current || state)return false;
+    try {
+      if(current.root.closest('[hidden],[inert],[aria-hidden="true"]') || current.video.closest('[hidden],[inert],[aria-hidden="true"]'))return false;
+      for(var node=current.video;node;node=node.parentElement){var css=win.getComputedStyle(node);if(css.display==='none' || css.visibility==='hidden' || css.opacity==='0')return false;}
+      var rect=(current.video.ended ? current.root : current.video).getBoundingClientRect();
+      if(!validBox(rect) || rect.width<=8 || rect.height<=8 || rect.right<=0 || rect.bottom<=0 || rect.left>=win.innerWidth || rect.top>=win.innerHeight)return false;
+      return open(nativeLease);
+    }catch(_){return false;}
+  }
+  function exitForRotation(expectedID) {
+    // A released seek may still be buffering. Returning the same owned open
+    // fullscreen does not need its media seek to finish; a new entry still does.
+    var current=rotationOwner(expectedID,true),s=state;
+    if(!current || !s || s.phase!=='open' || s.root!==current.root || s.video!==current.video ||
+        !matching(s) || s.controlContact || s.dragging || s.pointerScrub || s.pendingScrubTime!==null ||
+        s.speedOpen || s.settings && s.settings.isOpen() || s.chapters && s.chapters.isOpen && s.chapters.isOpen())return false;
+    try {var zoom=win.__langformPlaybackZoom && win.__langformPlaybackZoom.getState && win.__langformPlaybackZoom.getState();if(zoom && zoom.gesturing)return false;}catch(_){return false;}
+    return close(expectedID);
+  }
+  win.__langformFullscreen = { isOpen:function () { route(); return !!state; }, enter:function(expectedID){return enterForRotation(expectedID,false);},enterForGesture:function(expectedID){return enterForRotation(expectedID,true,takeNativeInlineContact());},exitForRotation:exitForRotation,exit:close,getZoomContext:getZoomContext,observeContact:rotationContact,
     prepareEnter:function (id,token,width,height,deadline,curve) { return enterViewport(id,token,width,height,false,deadline,curve); },
     finishEnter:function (id,token,width,height,deadline,curve) { return enterViewport(id,token,width,height,true,deadline,curve); },
     prepareExit:prepareExit, finishExit:finishExit, prepareExitMotion:prepareExitMotion,cancelExitMotion:cancelExitMotion };
+  // The native card pan deliberately excludes custom fullscreen: its timeline,
+  // menu and pinch belong to this surface. A free downward contact exits once
+  // at the real release, leaving an enlarged picture's one-finger pan to Zoom.
+  var downContact=null, downClick=null,downPreview=null,downPreviewSerial=0;
+  function downReduced(){var motion=win.__langformMotion;return !!(motion && motion.reduceSpatialMotion || reduced && reduced.matches);}
+  function downPreviewOwner(p){
+    return !!p && state===p.s && p.s.phase==='open' && matching(p.s) && !ad(p.s) && !pageInactive() &&
+      !nativeFullscreen(p.video) && p.s.id===p.id && p.s.root===p.root && p.s.video===p.video &&
+      doc.getElementById('movie_player')===p.root && (p.root.querySelector('video.html5-main-video')||p.root.querySelector('video'))===p.video && mediaSource(p.video)===p.source;
+  }
+  function downPreviewStylesOwned(p){
+    return p.video.getAttribute('data-langform-fullscreen-follow')===p.token && p.keys.every(function(key){
+      var applied=p.applied[key];return applied && p.video.style.getPropertyValue(key)===applied[0] && p.video.style.getPropertyPriority(key)===applied[1];
+    });
+  }
+  function clearDownPreview(){
+    var p=downPreview;if(!p)return;
+    downPreview=null;p.s.downExitPose=null;
+    if(downContact && downContact.s===p.s)downContact=null;
+    if(p.observer)p.observer.disconnect();
+    if(p.timer)win.clearTimeout(p.timer);
+    if(p.animation){p.animation.onfinish=null;p.animation.cancel();p.animation=null;}
+    var nodes=[p.video];
+    // A replacement branch may copy our decoration before the old owner is
+    // retired. Only copies carrying this unique local lease are considered.
+    Array.from(doc.querySelectorAll('[data-langform-fullscreen-follow="'+p.token+'"]')).forEach(function(node){if(nodes.indexOf(node)<0)nodes.push(node);});
+    nodes.forEach(function(node){
+      p.keys.forEach(function(key){
+        var applied=p.applied[key],original=p.original[key];
+        if(!applied || node.style.getPropertyValue(key)!==applied[0] || node.style.getPropertyPriority(key)!==applied[1])return;
+        if(original[0])node.style.setProperty(key,original[0],original[1]);else node.style.removeProperty(key);
+      });
+      if(node.getAttribute('data-langform-fullscreen-follow')===p.token)node.removeAttribute('data-langform-fullscreen-follow');
+    });
+  }
+  function downPreviewPose(p){
+    var css=win.getComputedStyle(p.video),parts=String(css.translate || '0px 0px').trim().split(/\s+/),scale=String(css.scale || '1').trim().split(/\s+/).map(Number);
+    var y=parts.length>1?parseFloat(parts[1]):0,k=scale[0];
+    if(!Number.isFinite(y) || !Number.isFinite(k) || scale.length>1&&Math.abs(scale[1]-k)>.0001)return null;
+    return {y:y,scale:k};
+  }
+  function applyDownPreview(p,y,scale){
+    var values={'translate':'0px '+y+'px','scale':String(scale),'transform-origin':'50% 50%'};
+    p.keys.forEach(function(key){p.video.style.setProperty(key,values[key]);p.applied[key]=[p.video.style.getPropertyValue(key),p.video.style.getPropertyPriority(key)];});
+  }
+  function beginDownPreview(c,dy){
+    var p=downPreview;
+    if(p){
+      if(p.s!==c.s || !downPreviewOwner(p) || !downPreviewStylesOwned(p)){clearDownPreview();p=null;}
+      else if(p.animation){
+        var pose=downPreviewPose(p);if(!pose || !downPreviewOwner(p) || !downPreviewStylesOwned(p)){clearDownPreview();return null;}
+        p.animation.onfinish=null;p.animation.cancel();p.animation=null;
+        if(p.timer)win.clearTimeout(p.timer);p.timer=0;p.generation++;
+        applyDownPreview(p,pose.y,pose.scale);p.origin=pose;p.startDy=dy;
+      }
+    }
+    if(!p){
+      if(downContact!==c)return null;
+      if(!win.CSS || typeof win.CSS.supports!=='function' || !win.CSS.supports('translate','0px 1px') || !win.CSS.supports('scale','1'))return null;
+      var video=c.s.video,css=win.getComputedStyle(video),box=video.getBoundingClientRect();
+      // A page-owned individual transform remains its own gesture. Do not
+      // compose a second preview over it, even when Zoom reports no owner.
+      if(!validBox(box) || video.hasAttribute('data-langform-fullscreen-follow') ||
+          !/^(none|0px(?: 0px){0,2})$/.test(css.translate || 'none') || !/^(none|1(?: 1){0,2})$/.test(css.scale || 'none') || downContact!==c || downOwner()!==c.s || mediaSource(video)!==c.source)return null;
+      p={s:c.s,id:c.s.id,root:c.s.root,video:video,source:c.source,token:String(++downPreviewSerial),keys:['translate','scale','transform-origin'],original:{},applied:{},generation:0,animation:null,timer:0,origin:{y:0,scale:1},startDy:12};
+      p.keys.forEach(function(key){p.original[key]=[video.style.getPropertyValue(key),video.style.getPropertyPriority(key)];});
+      downPreview=p;video.setAttribute('data-langform-fullscreen-follow',p.token);applyDownPreview(p,0,1);
+      p.observer=new win.MutationObserver(function(){if(downPreview===p && (!downPreviewOwner(p) || !downPreviewStylesOwned(p)))clearDownPreview();});
+      p.observer.observe(video,{attributes:true,attributeFilter:['style','src','class','data-langform-fullscreen-follow']});
+      p.observer.observe(p.root,{attributes:true,attributeFilter:['class'],childList:true});
+    }
+    return p;
+  }
+  function followDownPreview(c,dy){
+    var p=beginDownPreview(c,dy);if(!p)return;
+    if(downContact!==c || !downPreviewOwner(p) || !downPreviewStylesOwned(p)){clearDownPreview();return;}
+    var delta=dy-p.startDy,u=(delta<0?-1:1)*(1-Math.exp(-Math.abs(delta)/100)),reducedMotion=downReduced(),limit=reducedMotion?12:28;
+    var y=Math.max(0,Math.min(limit,p.origin.y+limit*u)),scale=reducedMotion?1:Math.max(.965,Math.min(1,p.origin.scale-.035*u));
+    applyDownPreview(p,Math.round(y*1000)/1000,Math.round(scale*100000)/100000);
+  }
+  function returnDownPreview(){
+    var p=downPreview;if(!p)return;
+    if(!downPreviewOwner(p) || !downPreviewStylesOwned(p) || downOwner()!==p.s || downReduced() || typeof p.video.animate!=='function'){clearDownPreview();return;}
+    var pose=downPreviewPose(p);if(!pose || !downPreviewOwner(p) || !downPreviewStylesOwned(p) || Math.abs(pose.y)<.1&&Math.abs(pose.scale-1)<.0001){clearDownPreview();return;}
+    if(p.animation){p.animation.onfinish=null;p.animation.cancel();p.animation=null;}
+    if(p.timer)win.clearTimeout(p.timer);p.timer=0;
+    applyDownPreview(p,pose.y,pose.scale);
+    var frames=[],omega=24,damping=.94,frequency=omega*Math.sqrt(1-damping*damping),duration=240;
+    for(var index=0;index<=24;index++){
+      var t=duration/1000*index/24,rest=index===24?0:Math.exp(-damping*omega*t)*(Math.cos(frequency*t)+damping*omega/frequency*Math.sin(frequency*t));
+      frames.push({translate:'0px '+(pose.y*rest)+'px',scale:String(1+(pose.scale-1)*rest)});
+    }
+    var generation=++p.generation,animation;
+    try{animation=p.video.animate(frames,{duration:duration,easing:'linear',fill:'forwards'});}catch(_){clearDownPreview();return;}
+    p.animation=animation;
+    function finish(){if(downPreview===p && p.generation===generation && p.animation===animation)clearDownPreview();}
+    animation.onfinish=finish;p.timer=win.setTimeout(finish,duration+100);
+  }
+  function consumeDownExitPose(s){
+    var pending=s.downExitPose;s.downExitPose=null;
+    var p=pending&&pending.preview || downPreview;
+    if(!p || p.s!==s)return null;
+    var valid=downPreview===p && downPreviewOwner(p) && downPreviewStylesOwned(p) &&
+      (!pending || pending.id===s.id && pending.root===s.root && pending.video===s.video && pending.source===mediaSource(s.video) && win.performance.now()-pending.at>=0 && win.performance.now()-pending.at<=100);
+    var pose=null;
+    if(valid){var picture=pictureBox(s.video),outer=s.video.getBoundingClientRect(),clip=win.getComputedStyle(s.video).clipPath;if(validBox(picture) && downPreviewOwner(p) && downPreviewStylesOwned(p))pose={picture:picture,outer:outer,clip:clip,source:p.source};}
+    clearDownPreview();return pose;
+  }
+  function downOwner(){
+    var s=state;
+    if(!s || s.phase!=='open' || !matching(s) || ad(s) || pageInactive() || s.ui.inert || s.dragging || s.controlContact || s.speedOpen ||
+        s.settings && s.settings.isOpen() || s.chapters && s.chapters.isOpen && s.chapters.isOpen() ||
+        typeof win.__langformHasOpenOverlay==='function' && win.__langformHasOpenOverlay())return null;
+    try{var zoom=win.__langformPlaybackZoom && win.__langformPlaybackZoom.getState && win.__langformPlaybackZoom.getState();if(zoom && (zoom.scale>1.01 || zoom.gesturing))return null;}catch(_){return null;}
+    return s;
+  }
+  function downPoint(event,ended){
+    if(event.touches){var list=ended?event.changedTouches:event.touches;if(!ended && list.length!==1)return null;var point=Array.from(list || []).find(function(p){return !ended || downContact && p.identifier===downContact.pointer;});return point?{x:point.clientX,y:point.clientY,pointer:point.identifier}:null;}
+    if(event.pointerType && event.pointerType!=='touch' || event.isPrimary===false)return null;
+    return {x:event.clientX,y:event.clientY,pointer:event.pointerId};
+  }
+  function downStart(event){
+    if(downContact)clearDownPreview();downContact=null;downClick=null;
+    var s=downOwner(),target=event.target,p=downPoint(event,false);
+    if(!s || !p || event.defaultPrevented || !target || !target.closest ||
+        !s.ui.contains(target) && !s.root.contains(target) ||
+        target.closest('button,a,input,textarea,select,[contenteditable],[role=button],[role=slider],.lf-fs-controls,.lf-player-settings-layer,.lf-fs-chapter-panel')){clearDownPreview();return;}
+    downContact={s:s,pointer:p.pointer,x:p.x,y:p.y,lastX:p.x,lastY:p.y,at:win.performance.now(),source:mediaSource(s.video),accepted:false};
+  }
+  function downMove(event){
+    var c=downContact,p=downPoint(event,false);
+    if(!c)return;
+    if(!p || p.pointer!==c.pointer || downOwner()!==c.s || mediaSource(c.s.video)!==c.source){downContact=null;clearDownPreview();return;}
+    var dx=p.x-c.x,dy=p.y-c.y;c.lastX=p.x;c.lastY=p.y;
+    if(Math.abs(dx)>12 && Math.abs(dx)>=Math.abs(dy)){downContact=null;returnDownPreview();return;}
+    if(dy>12 && dy>Math.abs(dx)*1.15)c.accepted=true;
+    if(c.accepted){followDownPreview(c,dy);if(event.cancelable)event.preventDefault();}
+  }
+  function downEnd(event){
+    var c=downContact,p=downPoint(event,true);
+    if(!c)return;
+    if(!p || p.pointer!==c.pointer){downContact=null;clearDownPreview();return;}
+    downContact=null;
+    if(event.touches && event.touches.length || downOwner()!==c.s || mediaSource(c.s.video)!==c.source){clearDownPreview();return;}
+    if(event.type==='pointercancel' || event.type==='touchcancel'){returnDownPreview();return;}
+    var dx=p.x-c.x,dy=p.y-c.y,elapsed=Math.max(1,win.performance.now()-c.at);
+    if(dy<20 || dy<=Math.abs(dx)*1.15 || !(dy>=64 || dy/elapsed>.6)){returnDownPreview();return;}
+    if(event.cancelable)event.preventDefault();event.stopPropagation();
+    downClick={id:c.s.id,root:c.s.root,video:c.s.video,ui:c.s.ui,source:c.source,x:p.x,y:p.y,until:Date.now()+700};
+    if(downPreview && downPreview.s===c.s)c.s.downExitPose={preview:downPreview,id:c.s.id,root:c.s.root,video:c.s.video,source:c.source,at:win.performance.now()};
+    close(c.s.id);
+    if(downPreview && downPreview.s===c.s)clearDownPreview();
+  }
+  function consumeDownClick(event){
+    var c=downClick;if(!c)return false;
+    if(Date.now()>c.until || id()!==c.id || !c.root.isConnected || doc.getElementById('movie_player')!==c.root || c.root.querySelector('video')!==c.video || mediaSource(c.video)!==c.source){downClick=null;return false;}
+    var shared=c.root.closest('ytm-player,ytd-player,#player-container-id'),target=event.target;
+    if(!(event.detail>0) || !target || !target.closest || !(c.root.contains(target) || c.ui.contains(target) || shared && shared.contains(target)) || target.closest('button,a,input,textarea,select,[contenteditable],[role=button],[role=slider]') || Math.hypot(event.clientX-c.x,event.clientY-c.y)>44)return false;
+    downClick=null;if(event.cancelable)event.preventDefault();event.stopImmediatePropagation();return true;
+  }
+  win.__langformConsumeFullscreenGestureClick=consumeDownClick;
+  global(win,'click',consumeDownClick,true);
+  if(typeof win.PointerEvent==='function'){
+    global(win,'pointerdown',downStart,{capture:true,passive:true});global(win,'pointermove',downMove,{capture:true,passive:false});
+    ['pointerup','pointercancel'].forEach(function(name){global(win,name,downEnd,{capture:true,passive:false});});
+  }else{
+    global(win,'touchstart',downStart,{capture:true,passive:true});global(win,'touchmove',downMove,{capture:true,passive:false});
+    ['touchend','touchcancel'].forEach(function(name){global(win,name,downEnd,{capture:true,passive:false});});
+  }
+  ['blur','yt-navigate-start','pagehide','resize','lostpointercapture','langform-motion-change'].forEach(function(name){global(win,name,function(){downContact=null;downClick=null;clearDownPreview();});});
+  ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){global(doc,name,function(){if(pageInactive()){downContact=null;downClick=null;clearDownPreview();}});});
   if (win.__langformFullscreenProbeEnabled===true && win.__langformFullscreenDiagnostics===true) {
     win.__langformFullscreenDiagnosticProbe={run:runFullscreenProbe,cancel:function (token) {
       return !!fullscreenProbe && fullscreenProbe.token===token && stopFullscreenProbe('cancelled');

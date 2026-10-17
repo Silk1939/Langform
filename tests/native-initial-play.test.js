@@ -101,6 +101,10 @@ class Stage {
  var videoProbe: VideoLoadProbe?, videoProbeTicket: Int?
  var videoProbePlayCheck: (ticket: Int, request: Int)?, startingVideoProbePlayback = false
  var initialPlaybackIntent: PlayerInitialPlayback?, initialPlaybackCheckTicket: Int?, startingWatchPlayback = false
+ var watchAudioIntent: (ticket: Int, videoID: String)?
+ func clearWatchAudioIntent() { watchAudioIntent = nil }
+ var backgroundTransitions: [String] = []
+ func watchBackgroundCategoryTransition(_ phase: String) { backgroundTransitions.append(phase) }
  var executingInteractionProbe = false, videoLoadDiagnostics = Recorder(), updates = 0, reloads = 0, cancellations = 0
  var watchIntentURLs: [URL] = []
  init(diagnostic: Bool = false, flag: String? = "1", intent: Bool = false) {
@@ -278,6 +282,7 @@ let departed = Stage(intent:true)
 attempt(departed,diagnostic:false)
 let oldEligibility = departed.player.replies[0]
 departed.player.url = watch(b); departed.resetPlayerStartupForVideo(b); departed.state("playing")
+expect(departed.backgroundTransitions.last == "cancel", "a new source retires the previous background lease")
 expect(departed.initialPlaybackIntent == nil && departed.initialPlaybackCheckTicket == nil,
        "a non-native SPA identity change retires the old unclaimed authorization and its observation")
 departed.player.url = watch(a); departed.resetPlayerStartupForVideo(a); departed.state("unstarted")

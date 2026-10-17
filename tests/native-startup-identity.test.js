@@ -60,16 +60,22 @@ final class OpeningMotion {
   func complete() { completions += 1 }
 }
 final class Stage {
+    func recordBackgroundPlaybackTransition(_ phase: String) {}
+    struct BackgroundPolicy { let preservesVisibility = false }
+    var backgroundCategoryHandoff: BackgroundPolicy?
+    func watchBackgroundCategoryTransition(_ phase: String) {}
   func cancelPendingMinimize() {}
     func finishFeedOpeningIfReady() {}
   enum Mode { case closed, loading, expanded, mini }
   var mode = Mode.expanded, startupStatus = PlayerStartupStatus()
   var initialPlaybackIntent: PlayerInitialPlayback?
   var initialPlaybackCheckTicket: Int?
+  var watchAudioIntent: (ticket: Int, videoID: String)?
+  func clearWatchAudioIntent() { watchAudioIntent = nil }
   var startupVideoID: String? = a, missingMediaTimeout: DispatchWorkItem?
   var player: Web! = Web(), loadTicket = 1, loadingVideoID: String? = a, lastWatchURL: URL?
   var viewportGeneration = 0
-  var videoSeekGeometry: (rect: CGRect, videoID: String, ticket: Int, viewport: Int)?
+  var videoSeekGeometry: (rect: CGRect, seek: CGRect, videoID: String, ticket: Int, viewport: Int)?
   var videoPlaying = false, playerFullscreen = false, loadingViaSPA = false, loadCommitted = true
   var customFullscreenID: String?, customFullscreenEnter: Int?, customFullscreenExit: Int?
   var spaStartTimeout: DispatchWorkItem?, videoLoadDiagnostics = Diagnostics()
@@ -90,6 +96,8 @@ final class Stage {
   func considerReveal() {}
   func advanceVideoProbe(_ dict: [String: Any], id: String) {}
   func startInitialPlaybackIfEligible(id: String) {}
+  func startWatchAudioIfEligible(id: String) {}
+  func finishPhysicalRotationIntent() {}
   ${declaration(source, "private func playerMoved(")}
   ${declaration(source, "private func updateMissingMediaTimeout(")}
   ${declaration(source, "private func rememberVideoSeekGeometry(")}

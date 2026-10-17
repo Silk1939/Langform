@@ -6,8 +6,12 @@
   if (win.location.protocol !== "https:" || !/^(m\.|www\.)?youtube\.com$/.test(win.location.hostname)) return;
   win.__langformPlayerDiagnostics = true;
   var doc = win.document, active = true, rows = [], count = 0, flushTimer = 0, afterTimer = 0;
-  var route = 0, previousID = "", lastProgress = -Infinity;
-  var mediaEvents = ["loadstart", "loadedmetadata", "loadeddata", "play", "playing", "pause", "waiting", "stalled", "canplay", "seeking", "seeked", "emptied", "ended", "error", "webkitbeginfullscreen", "webkitendfullscreen", "progress", "timeupdate"];
+  function realHidden() {
+    try { var visibility=win.__langformRealVisibility; if (visibility && typeof visibility.hidden==='function') return !!visibility.hidden(); } catch (_) {}
+    return !!doc.hidden;
+  }
+  var route = 0, previousID = "", lastProgress = -Infinity, audioOwner = null, mediaToken = 0, sourceToken = 0;
+  var mediaEvents = ["loadstart", "loadedmetadata", "loadeddata", "play", "playing", "pause", "waiting", "stalled", "canplay", "seeking", "seeked", "emptied", "ended", "error", "volumechange", "ratechange", "webkitbeginfullscreen", "webkitendfullscreen", "progress", "timeupdate"];
   var touchEvents = ["pointerdown", "pointerup", "touchstart", "touchend", "click"];
 
   function context() {
@@ -21,6 +25,33 @@
   }
   function number(value) { return typeof value === "number" && isFinite(value) ? value : -1; }
   function quality(value) { return /^(auto|tiny|small|medium|large|hd720|hd1080|hd1440|hd2160|highres)$/.test(value || "") ? value : "unknown"; }
+  function sound(ctx) {
+    var root = ctx.root, video = ctx.video, value = {muted:!!(video && video.muted),volume:video ? number(video.volume) : -1,
+      rate:video ? number(video.playbackRate) : -1,apiVolume:-1,audioDecoded:-1,audioTracks:-1,audioEnabled:-1,audioSession:'unknown',audioSessionType:'unknown'};
+    if (!video) return value;
+    var source = String(video.currentSrc || video.src || '');
+    if (!audioOwner || audioOwner.video !== video || audioOwner.root !== root || audioOwner.source !== source || audioOwner.id !== ctx.id) {
+      if (!audioOwner || audioOwner.video !== video || audioOwner.root !== root || audioOwner.id !== ctx.id) mediaToken++;
+      sourceToken++; audioOwner = {root:root,video:video,source:source,id:ctx.id};
+    }
+    value.mediaToken = mediaToken; value.sourceToken = sourceToken;
+    try { if (root && typeof root.isMuted === 'function') { var muted = root.isMuted(); if (typeof muted === 'boolean') value.apiMuted = muted; } } catch (_) {}
+    try { if (root && typeof root.getVolume === 'function') { var volume = root.getVolume(); if (Number.isFinite(volume) && volume >= 0 && volume <= 100) value.apiVolume = volume; } } catch (_) {}
+    try { var decoded = video.webkitAudioDecodedByteCount; if (Number.isFinite(decoded) && decoded >= 0) value.audioDecoded = decoded; } catch (_) {}
+    try {
+      var tracks = video.audioTracks;
+      if (tracks && Number.isInteger(tracks.length) && tracks.length >= 0 && tracks.length <= 32) {
+        value.audioTracks = tracks.length; value.audioEnabled = 0;
+        for (var i = 0; i < tracks.length; i++) if (tracks[i].enabled) value.audioEnabled++;
+      }
+    } catch (_) {}
+    try {
+      var session = win.navigator.audioSession;
+      if (session && ['inactive','active','interrupted'].indexOf(session.state) >= 0) value.audioSession = session.state;
+      if (session && ['auto','playback','ambient','transient','transient-solo','play-and-record'].indexOf(session.type) >= 0) value.audioSessionType = session.type;
+    } catch (_) {}
+    return value;
+  }
   function snapshot(ctx) {
     var video = ctx.video, root = ctx.root, ahead = 0, state = -2, matches = false, actual = "unknown", cap = "unknown", manual = false;
     try {
@@ -36,7 +67,7 @@
       }
     } catch (err) { /* A player being replaced must not disrupt the page. */ }
     var toggle = doc.getElementById("player-controls-a11y-toggle");
-    return {
+    return Object.assign({
       route: route, hasVideo: !!video, playerMatches: matches, playerState: state,
       paused: video ? video.paused : false, seeking: video ? video.seeking : false,
       readyState: video ? video.readyState : -1, networkState: video ? video.networkState : -1,
@@ -44,13 +75,13 @@
       errorCode: video && video.error ? number(video.error.code) : 0,
       actualQuality: actual, requestedCap: cap, manualQuality: manual,
       controlsToggle: !!(toggle && toggle.tagName === "BUTTON" && !toggle.disabled && toggle.getAttribute("aria-disabled") !== "true"),
-      hidden: doc.hidden,
+      hidden: realHidden(),
       pageInert: !!(root && root.closest("[inert]")) || !!(doc.body && doc.body.hasAttribute("inert")),
       nativeVideoFullscreen: !!(video && (video.webkitDisplayingFullscreen || video.webkitPresentationMode === "fullscreen")),
       documentFullscreen: !!(doc.fullscreenElement || doc.webkitFullscreenElement),
       fullscreenUI: !!doc.getElementById("langform-fullscreen-ui"),
       fullscreenMarked: doc.documentElement.hasAttribute("data-langform-fullscreen")
-    };
+    },sound(ctx));
   }
   function flush() {
     win.clearTimeout(flushTimer); flushTimer = 0;

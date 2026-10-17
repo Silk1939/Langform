@@ -9,7 +9,7 @@ const root = path.join(__dirname, "..");
 test("Manifest ist Safari-taugliches MV3 für beide YouTube-Hosts", function () {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "extension/manifest.json"), "utf8"));
   assert.equal(manifest.manifest_version, 3);
-  assert.deepEqual(manifest.permissions, ["storage", "nativeMessaging"]);
+  assert.deepEqual(manifest.permissions, ["storage", "nativeMessaging", "clipboardWrite"]);
   assert.deepEqual(manifest.background.scripts, ["src/background.js"]);
   assert.equal(manifest.background.service_worker, "src/background.js");
   assert.deepEqual(manifest.content_scripts[0].matches, [
@@ -23,12 +23,14 @@ test("Manifest ist Safari-taugliches MV3 für beide YouTube-Hosts", function () 
     "src/hide.js",
     "src/controller.js",
     "src/summary.js",
+    "src/ad-skip.js",
     "src/ads.js",
+    "src/playback-shortcuts.js",
     "src/content.js",
   ]);
   assert.equal(manifest.content_scripts[1].world, "MAIN");
   assert.equal(manifest.content_scripts[1].run_at, "document_start");
-  assert.deepEqual(manifest.content_scripts[1].js, ["src/page-captions.js"]);
+  assert.deepEqual(manifest.content_scripts[1].js, ["src/page-adblock.js", "src/page-captions.js"]);
   assert.deepEqual(manifest.content_scripts[1].matches, manifest.content_scripts[0].matches);
   assert.deepEqual(manifest.web_accessible_resources[0].resources, ["src/page-captions.js"]);
   assert.equal(manifest.action.default_popup, "popup/popup.html");
@@ -86,8 +88,8 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   assert.match(web, /"langformOpenFeed"/);
   assert.match(web, /"langformPlayer"/);
   assert.match(web, /"WebViewLinks"/);
-  assert.match(web, /playerEarlyScriptNames = \["PlaybackQuality"\]/);
-  assert.match(web, /playerScriptNames = \["PlaybackZoom", "PlaybackSwipe", "PlaybackHold", "PlayerRect", "CaptionToggle", "CommentsMotion", "CommentReactions", "FullscreenChapters", "FullscreenMotion", "DownloadSource", "SystemMedia", "SponsorBlock", "WatchTools"\]/);
+  assert.match(web, /playerEarlyScriptNames = \["WatchBackgroundAudio", "PlaybackQuality"\]/);
+  assert.match(web, /playerScriptNames = \["PlaybackZoom", "PlaybackSwipe", "PlaybackHold", "PlayerRect", "WatchAudio", "CaptionToggle", "PlayerSettings", "CommentsMotion", "CommentReactions", "FullscreenChapters", "FullscreenMotion", "DownloadSource", "SystemMedia", "SponsorBlock", "WatchTools"\]/);
 
   // The swipe is a pan that never cancels the tap on play and never navigates.
   assert.doesNotMatch(web, /UISwipeGestureRecognizer/);
@@ -98,8 +100,10 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   const begin = swiftFunction(web, "gestureRecognizerShouldBegin");
   // Direction, interruption and cancellation behavior is executed against the
   // shipping Swift policy in native-gesture-policy.test.js.
-  assert.match(begin, /let begins = PlayerGesturePolicy\.canBegin\(/);
-  // Touches are cancelled only once the downward drag is recognized.
+  assert.match(begin, /let entry = acceptsFullscreenEntry\(drag\) \? fullscreenEntryBinding\(\) : nil/);
+  assert.match(begin, /fullscreenEntryAdmission = entry/);
+  assert.match(begin, /let begins = entry != nil \|\| PlayerGesturePolicy\.canBegin\(/);
+  // Touches are cancelled only once a picture-owned vertical gesture is recognized.
   assert.match(begin, /drag\.cancelsTouchesInView = begins/);
   assert.doesNotMatch(swiftFunction(web, "reveal"), /0\.6\b/);
   assert.doesNotMatch(web, /videoVisible/);
@@ -114,6 +118,17 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   // Without a rect the card crops the top 16:9, never an empty mask.
   assert.match(web, /PlayerViewportPolicy\.fallbackPicture\(in: bounds\.size\)/);
   const dragged = swiftFunction(web, "dragPlayer");
+  assert.doesNotMatch(dragged, /acceptsFullscreenEntry\(/, "accepted direction is not reclassified at began");
+  assert.match(dragged, /fullscreenEntryAdmissionIsCurrent\(entry\)/, "source and state are checked again at began");
+  const endDrag = swiftFunction(web, "endDrag");
+  assert.match(endDrag, /revokeFullscreenEntryAdmission\(\)/, "general cleanup preserves revocation until contact terminal");
+  assert.doesNotMatch(endDrag, /fullscreenEntryAdmissionRevoked = false/);
+  const receive = swiftFunction(web, "gestureRecognizer");
+  assert.match(receive, /guard gestureRecognizer === drag[\s\S]*fullscreenEntryAdmission = nil[\s\S]*fullscreenEntryAdmissionRevoked = false/);
+  for (const hook of ["cancelVideoProbeForInactivity", "appEnteredBackground", "playerSceneBecameInactive"]) {
+    assert.match(swiftFunction(web, hook), /revokeFullscreenEntryAdmission\(\)/, hook);
+  }
+  assert.match(swiftFunction(web, "playerSceneBecameInactive"), /scene === window\?\.windowScene[\s\S]*revokeFullscreenEntryAdmission/);
   assert.doesNotMatch(dragged, /goBack|history|load\(|evaluateJavaScript/);
   assert.doesNotMatch(dragged, /isScrollEnabled\s*=/, "der native Pan darf WebKit nicht zusätzlich per Scroll-Disable abbrechen");
   assert.match(dragged, /settle\(toMini \? \.mini : \.expanded/);
@@ -185,7 +200,7 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
     })
   );
   sources.forEach(function (text) {
-    assert.doesNotMatch(text, /\.pause\(\)|pauseVideo|stopVideo/);
+    assert.doesNotMatch(text, /\.pause\s*\(|(?:pauseVideo|stopVideo)\s*\(/);
   });
   sources.concat(fs.readFileSync(path.join(root, "ios/Langform/Langform/PlayerRect.js"), "utf8")).forEach(function (text) {
     assert.doesNotMatch(text, /video[\w.]*\.style\.(width|height|objectFit|display)\s*=/);

@@ -4,6 +4,10 @@
   'use strict';
   if (!win || !win.document || win.__langformSponsorBlock) return;
   var doc = win.document, key = 'langform.sponsorblock.enabled', active = true, navigating = false;
+  function pageInactive() {
+    try { var visibility=win.__langformRealVisibility; if (visibility && typeof visibility.inactive==='function') return !!visibility.inactive(); } catch (_) {}
+    return !!doc.hidden;
+  }
   var enabled = false, id = '', status = 'off', segments = [], pending = null, serial = 0, timer = 0;
   var cache = new Map(), attempted = new Set(), ignored = new Set(), lastSkip = null, waitingSkip = null, waitingUndo = null, skipped = 0, published = '';
   try { enabled = win.localStorage.getItem(key) === 'true'; } catch (_) {}
@@ -133,7 +137,7 @@
     var current = media();
     if (lastSkip && !owns(lastSkip,current)) { lastSkip = null; waitingUndo = null; publish(); }
     if (current && event.target === current.video) { waitingOwner(current); undoOwner(current); }
-    if (!enabled || status !== 'ready' || !current || event.target !== current.video || doc.hidden ||
+    if (!enabled || status !== 'ready' || !current || event.target !== current.video || pageInactive() ||
         current.video.paused || current.video.ended || current.video.seeking || current.video.error || current.video.readyState < 2) return;
     var video = current.video, duration = Number(video.duration), time = Number(video.currentTime);
     if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(time) || time < 0) return;
@@ -212,6 +216,7 @@
   win.addEventListener('popstate',navigate);
   win.addEventListener('pagehide',function () { active = false; cancel(); lastSkip = null; waitingSkip = null; waitingUndo = null; publish(); });
   win.addEventListener('pageshow',function () { active = true; navigate(); });
+  ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){doc.addEventListener(name,function () { if (pageInactive()) { waitingSkip = null; waitingUndo = null; } });});
   doc.addEventListener('DOMContentLoaded',navigate,{ once:true });
   navigate();
 })(window);

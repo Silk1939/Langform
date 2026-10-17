@@ -24,7 +24,7 @@ test('Native Playables-Policy blockiert Route/Spielorigin auch im Unterframe und
   const code = `
 import Foundation
 enum YouTubeWebView {
-  ${['isYouTube','isWatchPage','isPlayablePage','isPlayableResource'].map(name => declaration(source, 'static func ' + name + '(')).join('\n')}
+  ${['isYouTube','isWatchPage','isPlayablePage','isPlayableResource','isAccountPage','isAccountTransition'].map(name => declaration(source, 'static func ' + name + '(')).join('\n')}
 }
 class WKWebView {
   var media:[Bool] = [], scripts:[String] = [], stopped = false, suspensionDepth = 0
@@ -43,6 +43,15 @@ enum NavigationType { case linkActivated, backForward, other }
 struct Frame { var isMainFrame:Bool }
 struct WKNavigationAction { var request:URLRequest, targetFrame:Frame?, navigationType = NavigationType.other }
 class Stage {
+  // Preference implementation is executed by motion-system.test.js.
+  var motionSynchronizations = 0
+  func motionPreferencesChanged() { motionSynchronizations += 1 }
+  // Entry-admission ownership is exercised by native-player-interaction.test.js.
+  // This fixture owns the adjacent lifecycle behavior, with no pending entry.
+  func revokeFullscreenEntryAdmission() {}
+    func recordBackgroundPlaybackTransition(_ phase: String) {}
+    func watchBackgroundCategoryTransition(_ phase: String) {}
+  func clearWatchAudioIntent() {}
   func cancelPendingMinimize() {}
   func discardFeedOpening() {}
   enum Mode { case closed, loading, expanded, mini }
@@ -51,10 +60,11 @@ class Stage {
   var feed:WKWebView { feedTabs[activeTab]!.webView }
   var player:WKWebView? = WKWebView(), mode = Mode.closed, dismisser:Work?, cardMoving = false
   var playerWarmupNavigation:String?, playerWarmupAttempted = true, missingMediaTimeout:Work?
-  var ownsWatchPlayer = true, watches = 0, destinations = 0
+  var ownsWatchPlayer = true, watches = 0, destinations = 0, accountInvalidations = 0
   var rotationHeld = true, rotationCancellations = 0
   func feedState(for webView:WKWebView) -> FeedState? { feedTabs.values.first { $0.webView === webView } }
   func cancelPendingFeedSearch() {}
+  func evictCachedFeedsForAccountChange() { accountInvalidations += 1 }
   class Motion { func finish() {}; func cancel() {} }
   var feedMotion = Motion(), openingMotion = Motion()
   func finishClose() {}
@@ -63,6 +73,7 @@ class Stage {
   func cancelNativeRotation() { rotationHeld = false; rotationCancellations += 1 }
   func confirmCustomFullscreenEnter() {}
   func confirmCustomFullscreenExit() {}
+ func resumeFullscreenExitAfterInactivity() {}
   func cancelFeedPrewarm(discardLoading:Bool) {}
   func updateMissingMediaTimeout() {}
   func scheduleFeedPrewarm() {}
@@ -95,6 +106,8 @@ for raw in ["https://m.youtube.com/gaming","https://m.youtube.com/playables-news
   expect(s.navigate(raw,main:false) == .allow,"unrelated subframes and gaming videos retained")
 }
 expect(s.watches == 0 && s.destinations == 0,"no blocked game becomes a watch or feed navigation")
+expect(s.accountInvalidations == 0,"unrelated account iframe never evicts retained feed tabs")
+expect(s.navigate("https://m.youtube.com/logout", main:true) == .allow && s.accountInvalidations == 1, "explicit main-frame account action invalidates personal cache without being blocked")
 s.setFeedActivity(s.feed,active:true)
 let hidden = s.feedTabs[1]!.webView
 s.setFeedActivity(hidden,active:false)
@@ -111,6 +124,7 @@ expect(s.feedTabs.allSatisfy({$0.value.active == false && $0.value.webView.scrip
 expect(s.feed.scripts.contains(where:{$0.contains("__langformDiscardPlayables")}) && s.player!.scripts.contains(where:{$0.contains("__langformDiscardPlayables")}),"background purges game frames in both surfaces")
 expect(s.player!.media.isEmpty,"background game cleanup does not pause the owned video")
 s.appBecameActive()
+expect(s.motionSynchronizations == 1,"foreground also refreshes current motion preferences")
 expect(s.feedTabs[0]!.mediaSuspended == false && s.feedTabs[1]!.mediaSuspended == true,"foreground restores only the active feed preview policy")
 expect(s.feedTabs[0]!.webView.suspensionDepth == 0 && hidden.suspensionDepth == 1,"foreground releases exactly the active tab's hold")
 s.activeTab = 1; s.appBecameActive()

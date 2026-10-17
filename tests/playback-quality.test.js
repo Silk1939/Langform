@@ -6,7 +6,7 @@ const source = fs.readFileSync(require("node:path").join(__dirname, "../ios/Lang
 
 function page(t, options = {}) {
   const dom = new JSDOM('<div id="movie_player"><video></video></div>', {
-    url: "https://m.youtube.com/watch?v=abcdefghijk", runScripts: "outside-only"
+    url: "https://m.youtube.com/watch?v=abcdefghijk", runScripts: "outside-only", pretendToBeVisual: true
   });
   t.after(() => dom.window.close());
   const win = dom.window, root = win.document.getElementById("movie_player"), video = root.querySelector("video");
@@ -63,6 +63,36 @@ function page(t, options = {}) {
     playerID: value => { playerID = value; },
     status: () => JSON.parse(JSON.stringify(win.__langformGetQualityStatus())) };
 }
+
+test('explicit Auto leaves a manual rendition through the existing metered first-frame cap without playing',t=>{
+  const p=page(t);p.network({online:true,expensive:true,constrained:false,interface:'cellular'});
+  p.root.setPlaybackQualityRange('hd1080','hd1080');assert.equal(p.status().mode,'manual');
+  const before=p.calls.length;
+  assert.equal(p.win.__langformUseAdaptiveQuality('zyxwvutsrqp'),false);assert.equal(p.calls.length,before);assert.equal(p.status().mode,'manual');
+  assert.equal(p.win.__langformUseAdaptiveQuality('abcdefghijk'),true);assert.deepEqual(p.calls.at(-1),['auto','large']);assert.equal(p.status().mode,'adaptive');
+  assert.equal(p.state.paused,false);assert.equal(p.state.currentTime,10);
+});
+test('Auto cannot write quality while remote, offline or ad media owns the player',t=>{
+  for(const kind of ['remote','offline','ad']){const p=page(t);p.root.setPlaybackQualityRange('hd1080','hd1080');const count=p.calls.length;
+    if(kind==='remote')p.video.webkitCurrentPlaybackTargetIsWireless=true;if(kind==='offline')p.network({online:false,interface:'wifi'});if(kind==='ad')p.root.classList.add('ad-showing');
+    assert.equal(p.win.__langformUseAdaptiveQuality('abcdefghijk'),false,kind);assert.equal(p.calls.length,count,kind);assert.equal(p.status().mode,'manual',kind);
+  }
+});
+test('explicit Auto acknowledges a safely queued first-frame policy after a manual format reload',t=>{
+  const p=page(t);p.root.setPlaybackQualityRange('medium','medium');p.emit('loadedmetadata');assert.equal(p.status().mode,'manual');assert.equal(p.frames.size,0);
+  const count=p.calls.length;
+  assert.equal(p.win.__langformUseAdaptiveQuality('abcdefghijk'),true,'accepted frame-bound work is not an unavailable setting');
+  assert.equal(p.calls.length,count,'no quality command before the new picture');assert.equal(p.frames.size,1);assert.equal(p.status().mode,'adaptive');
+  p.picture();assert.deepEqual(p.calls.at(-1),['auto','hd720']);assert.equal(p.state.currentTime,10);assert.equal(p.state.paused,false);
+});
+test('unsupported first-frame observation rejects Auto without losing the confirmed manual mode',t=>{
+  const p=page(t,{noFrames:true});p.root.setPlaybackQualityRange('medium','medium');const count=p.calls.length;
+  assert.equal(p.win.__langformUseAdaptiveQuality('abcdefghijk'),false);assert.equal(p.status().mode,'manual');assert.equal(p.calls.length,count);
+});
+test('Auto rejects a disappeared physical medium without throwing or changing the prior manual intent',t=>{
+  const p=page(t);p.root.setPlaybackQualityRange('medium','medium');p.video.remove();const count=p.calls.length;
+  assert.equal(p.win.__langformUseAdaptiveQuality('abcdefghijk'),false);assert.equal(p.status().mode,'manual');assert.equal(p.calls.length,count);
+});
 
 test("Start erhält die aktuelle Qualität bis zum ersten tatsächlich dargestellten Bild", t => {
   const p = page(t, { deferPicture: true });
@@ -283,4 +313,15 @@ test("Seitenschließen beendet ausstehendes Buffering und Navigation startet neu
   p.picture();
   assert.deepEqual(p.calls.at(-1), ["auto", "hd720"]);
   assert.equal(p.calls.length, 2);
+});
+
+for(const signal of ['hidden','native-inactive'])test('real '+signal+' relay cancels pending quality work through masked visibility',t=>{
+  const p=page(t,{deferPicture:true});let inactive=false;
+  p.win.__langformRealVisibility={hidden:()=>signal==='hidden'&&inactive,inactive:()=>inactive};
+  Object.defineProperty(p.win.document,'hidden',{value:false,configurable:true});
+  assert.equal(p.frames.size,1,'first presentation callback was pending');
+  inactive=true;p.win.document.dispatchEvent(new p.win.Event('langform-real-visibilitychange'));p.picture();p.advance(10000);
+  assert.equal(p.frames.size,0);assert.equal(p.timers.size,0);assert.deepEqual(p.calls,[],'no background quality write');assert.deepEqual(p.resets,[]);
+  inactive=false;p.win.document.dispatchEvent(new p.win.Event('langform-real-visibilitychange'));p.picture();
+  assert.deepEqual(p.calls,[['auto','hd720']],'foreground observes a fresh frame without playback action');
 });

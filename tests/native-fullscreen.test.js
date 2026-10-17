@@ -25,16 +25,19 @@ test('Vollbild dreht nur den aktuellen Player und beendet den Modus bei Navigati
   const compiler = spawnSync('/usr/bin/xcrun', ['--find', 'swift'], { encoding: 'utf8' });
   if (compiler.status !== 0) return t.skip('Swift-Toolchain nicht verfügbar');
   const source = fs.readFileSync(path.join(__dirname, '../ios/Langform/Langform/YouTubeWebView.swift'), 'utf8');
-  const methods = ['cancelPendingMinimize', 'customFullscreenChanged', 'beginNativeRotation', 'cancelNativeRotation', 'confirmCustomFullscreenEnter', 'finishCustomFullscreenEnter', 'resetCustomFullscreen', 'beginCustomFullscreenExit', 'confirmCustomFullscreenExit', 'fullscreenChapterSnap', 'requestPlayerOrientation', 'cancelVideoProbeForInactivity', 'appBecameActive', 'openSearchInFeed', 'minimizePlayer', 'cancelPendingFeedSearch', 'activatePendingFeedSearch'].map(n => method(source, n)).join('\n');
+  const methods = ['pendingPhysicalFullscreenExitSource', 'cancelPendingMinimize', 'customFullscreenChanged', 'beginNativeRotation', 'cancelNativeRotation', 'confirmCustomFullscreenEnter', 'finishCustomFullscreenEnter', 'resetCustomFullscreen', 'beginCustomFullscreenExit', 'requestFullscreenExitPortrait', 'resumeFullscreenExitAfterInactivity', 'confirmCustomFullscreenExit', 'fullscreenChapterSnap', 'requestPlayerOrientation', 'cancelVideoProbeForInactivity', 'appBecameActive', 'openSearchInFeed', 'minimizePlayer', 'cancelPendingFeedSearch', 'activatePendingFeedSearch'].map(n => method(source, n)).join('\n');
   const controller = declaration(source, 'final class PlayerStageController:');
   const viewportPolicy = fs.readFileSync(path.join(__dirname, '../ios/Langform/Langform/PlayerViewportPolicy.swift'), 'utf8');
+  const rotationPolicy = fs.readFileSync(path.join(__dirname, '../ios/Langform/Langform/PlayerRotationIntentPolicy.swift'), 'utf8');
   const exercise = `
 import Foundation
 import CoreGraphics
 enum PlayerGesturePolicy { enum Position { case mini, expanded } }
 ${viewportPolicy}
+${rotationPolicy}
 enum StartupDiagnostics { static let enabled = false; static func videoMark(_ entry: [String: Any]) {}; static func mark(_ event: String) {} }
 class UISelectionFeedbackGenerator { var selections = 0; var prepared = 0; func selectionChanged() { selections += 1 }; func prepare() { prepared += 1 } }
+class UIApplication { enum State { case active, inactive }; static let shared=UIApplication(); var applicationState=State.active }
 enum UIInterfaceOrientationMask { case portrait, landscape }
 struct Geometry { let mask: UIInterfaceOrientationMask; static func iOS(interfaceOrientations: UIInterfaceOrientationMask) -> Geometry { Geometry(mask: interfaceOrientations) } }
 enum Orientation { case portrait, landscape; var isPortrait: Bool { self == .portrait } }
@@ -69,16 +72,29 @@ enum YouTubeWebView {
 }
 struct FeedState { let webView: WKWebView; var active = true }
 class Stage {
+  // Preference implementation is executed by motion-system.test.js.
+  var motionSynchronizations = 0
+  func motionPreferencesChanged() { motionSynchronizations += 1 }
+  // Entry-admission ownership is exercised by native-player-interaction.test.js.
+  // This fixture owns the adjacent lifecycle behavior, with no pending entry.
+  func revokeFullscreenEntryAdmission() {}
+    func recordBackgroundPlaybackTransition(_ phase: String) {}
+    func watchBackgroundCategoryTransition(_ phase: String) {}
  var minimizeRequestTicket = 0, pendingMinimizeRequest: Int?
  enum Mode { case closed, loading, expanded, mini }
  var mode = Mode.expanded, dragging = false, playerFullscreen = false
  var progress = 0.5, card = Card(), appliedProgress: Double?
  var customFullscreenID: String?, player: WKWebView! = WKWebView(), window: Window? = Window()
- struct CustomFullscreenExit { let videoID: String; let token: String; let ticket: Int; var opensSearchInFeed = false; var allowsCurrentOrientation = false; var waitingForRotation = false; var preparedViewport: CGSize?; var sentViewport: CGSize?; var sourceViewport:CGSize?;var motionViewport:CGSize?;var motionGeneration:Int?;var motionReady=false;var cancellingMotion=false;var rotationDeadlineMilliseconds:Double?;var rotationCSSCurve:String? }
+ struct CustomFullscreenExit { let videoID: String; let token: String; let ticket: Int; var opensSearchInFeed = false; var allowsCurrentOrientation = false; var waitingForRotation = false; var preparedViewport: CGSize?; var sentViewport: CGSize?; var sourceViewport:CGSize?;var motionViewport:CGSize?;var motionGeneration:Int?;var motionReady=false;var preRotationMotion=false;var portraitRequested=false;var cancellingMotion=false;var rotationDeadlineMilliseconds:Double?;var rotationCSSCurve:String? }
  typealias CustomFullscreenEnter = CustomFullscreenExit
  var customFullscreenEnter: CustomFullscreenEnter?
  var customFullscreenExit: CustomFullscreenExit?, loadTicket = 0, measurements = 0, layouts = 0
+ ${declaration(source, 'private struct PendingPhysicalFullscreenExit').replace('private struct', 'struct')}
+ var pendingPhysicalFullscreenExit:PendingPhysicalFullscreenExit?
  var activeRotationCoordinator: UIViewControllerTransitionCoordinator?, nativeRotationGeneration = 0
+ var rotationIntentPolicy = PlayerRotationIntentPolicy()
+ func finishPhysicalRotationIntent() {}
+ func clearWatchAudioIntent() {}
  var fullscreenCardRotationGeneration:Int?,nativeRotationTarget:CGSize?,nativeRotationDeadlineMilliseconds:Double?,nativeRotationCSSCurve:String?,fullscreenExitMotionTimeout:DispatchWorkItem?
  var bounds=CGRect(x:0,y:0,width:390,height:844)
  var fullscreenGeometryTrace: (videoID: String, token: String, ticket: Int, beganAt: TimeInterval, rows: Int)?
@@ -92,6 +108,7 @@ class Stage {
  ${declaration(source, 'private var ownsWatchPlayer:').replace('private var', 'var')}
  func settle(_ target: Mode) { settlements += 1; mode = target; cardMoving = true }
  func feedState(for web: WKWebView) -> FeedState? { web === feed ? FeedState(webView: web) : nil }
+ func dismissNativeSearch() {}
  lazy var onFullscreen: ((Bool) -> Void)? = { [weak self] in self?.events.append($0) }
  func freezeSettle() { cancelPendingMinimize(); freezeCount += 1 }; func freezeReveal() { freezeCount += 1 }; func updateChrome() { chromeUpdates += 1 }
  func apply(_ value: Double) { appliedProgress = value }
@@ -99,7 +116,7 @@ class Stage {
  func setFeedActivity(_ web: WKWebView, active: Bool) {}; func updateMissingMediaTimeout() {}; func scheduleFeedPrewarm() {}; func cancelVideoProbe() {}
  // Staged WebKit motion/ACK are exercised separately in native-staged-fullscreen.test.js.
  // This orientation/transaction harness follows its explicit unsupported-motion fallback.
- func requestFullscreenExitMotion(viewport:CGSize,deadline:Double) { customFullscreenExit?.sourceViewport=nil }
+ func requestFullscreenExitMotion(viewport:CGSize,deadline:Double,curve:String?=nil) { customFullscreenExit?.sourceViewport=nil; customFullscreenExit?.preRotationMotion=false; requestFullscreenExitPortrait() }
  func releaseFullscreenExitViewport() { customFullscreenExit?.sourceViewport=nil }
  func cancelFullscreenExitMotion() { customFullscreenExit?.sourceViewport=nil }
  func stop() { stops += 1; resetCustomFullscreen() }
@@ -356,6 +373,7 @@ inactive.initialPlaybackIntent=1;inactive.initialPlaybackCheckTicket=1
 inactive.cancelVideoProbeForInactivity();inactiveRotation.finish()
 expect(inactive.activeRotationCoordinator==nil && !inactive.customFullscreenEnter!.waitingForRotation && inactive.initialPlaybackIntent==nil && inactive.player!.scripts.count==1,"inactivity releases owned rotation and prevents obsolete completion from finishing")
 inactive.appBecameActive()
+expect(inactive.motionSynchronizations==1,"foreground also refreshes current motion preferences")
 expect(inactive.player!.scripts.count==2 && inactive.player!.scripts.last!.contains("finishEnter"),"resume confirms actual current orientation without holding a departed coordinator")
 
 weak var rotationStage:Stage?

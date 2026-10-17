@@ -7,6 +7,10 @@
   if (!/^(m\.|www\.)?youtube\.com$/.test(win.location.hostname)) return;
   win.__langformQuality = true;
   var doc = win.document;
+  function pageInactive() {
+    try { var visibility=win.__langformRealVisibility; if (visibility && typeof visibility.inactive==='function') return !!visibility.inactive(); } catch (_) {}
+    return !!doc.hidden;
+  }
   var network = { online: null, expensive: false, constrained: false, interface: "other" };
   var levels = ["small", "medium", "large", "hd720", "hd1080"];
   var active = true;
@@ -96,7 +100,7 @@
     clearWaiting();
   }
   function player() {
-    if (!active || !id || videoID() !== id) return null;
+    if (!active || pageInactive() || !id || videoID() !== id) return null;
     var candidate = doc.getElementById("movie_player");
     if (!candidate || typeof candidate.setPlaybackQualityRange !== "function" ||
         typeof candidate.getVideoData !== "function") return null;
@@ -181,7 +185,7 @@
   }
   function discover() {
     discoveryTimer = 0;
-    if (!active || !id) return;
+    if (!active || pageInactive() || !id) return;
     // Finding a player is enough: its one-shot frame acknowledgement and media
     // events own readiness. Do not poll or repeatedly alter its startup target.
     if (player()) { apply(); return; }
@@ -254,6 +258,30 @@
     try { actual = root && typeof root.getPlaybackQuality === "function" ? root.getPlaybackQuality() : ""; } catch (err) {}
     return { mode: manual ? "manual" : "adaptive", requestedCap: applied, confirmedCap: acknowledged ? applied : "", actual: actual || "", network: network };
   };
+  win.__langformUseAdaptiveQuality = function (expectedID) {
+    if (expectedID !== id || !player() || !media() || isAd() || remote(media()) || network.online === false) return false;
+    var previous = { manual:manual, applied:applied, acknowledged:acknowledged, ceiling:ceiling, stableSince:stableSince,
+      root:root, video:media(), source:media() && (media().currentSrc || media().src || '') };
+    // Explicit Auto choice rejoins the existing first-frame/network policy.
+    // Do not request an uncapped rendition or force media playback.
+    manual = false; applied = ""; acknowledged = false;
+    ceiling = startCeiling(); clearWaiting(); stableSince = 0;
+    if (apply()) return true;
+    // A manual rendition switch can invalidate the old first-frame lease.
+    // The explicit Auto choice is accepted once its new, owned frame callback
+    // is queued; the policy still makes no range write before that picture.
+    if (pictureRequest !== null && !pictureObservationFailed && player() === previous.root &&
+        media() === previous.video && pictureVideo === previous.video && pictureID === expectedID &&
+        pictureSource === previous.source && (previous.video.currentSrc || previous.video.src || '') === previous.source &&
+        network.online !== false && !isAd() && !remote(previous.video)) return true;
+    forgetPicture();
+    if (id === expectedID && videoID() === expectedID && doc.getElementById('movie_player') === previous.root &&
+        previous.root.querySelector('video') === previous.video && (previous.video.currentSrc || previous.video.src || '') === previous.source) {
+      manual = previous.manual; applied = previous.applied; acknowledged = previous.acknowledged;
+      ceiling = previous.ceiling; stableSince = previous.stableSince;
+    } else reset();
+    return false;
+  };
   ["loadstart", "loadedmetadata", "emptied"].forEach(function (name) {
     doc.addEventListener(name, function (event) {
       // Invalidate even while an ad or remote source owns this same element.
@@ -275,6 +303,15 @@
   win.addEventListener("yt-navigate-finish", navigate);
   win.addEventListener("state-navigateend", navigate);
   doc.addEventListener("DOMContentLoaded", navigate, { once: true });
+  ["visibilitychange", "langform-real-visibilitychange"].forEach(function (name) {
+    doc.addEventListener(name, function () {
+      if (pageInactive()) {
+        forgetPicture();
+        if (discoveryTimer) win.clearTimeout(discoveryTimer);
+        discoveryTimer = 0;
+      } else navigate();
+    });
+  });
   win.addEventListener("pagehide", function () {
     active = false; clearWaiting();
     forgetPicture();

@@ -1,6 +1,8 @@
 // YouTube ads on www.youtube.com and m.youtube.com. Ad slots are hidden by a
 // stylesheet. A video ad is skipped with YouTube's own skip button, or muted and
-// run to its end on the ad's media element. The main video is never sought,
+// run to its end on a directly seekable ad element. Buffered/blob ads finish
+// naturally: an exact-end seek can strand WebKit's MSE pipeline before frames.
+// The main video is never sought,
 // paused or styled, and nothing here runs on a timer.
 (function (root, factory) {
   var api = factory();
@@ -149,6 +151,14 @@
     return duration > 180;
   }
 
+  function bufferedAdMedia(video) {
+    // A blob URL is the MSE/MediaSource timeline, not a directly loaded file.
+    // Leave its natural ended/segment handoff to the original player, including
+    // after a replay or an ad-to-main transition on the same HTMLMediaElement.
+    return /^blob:/i.test(String(video.currentSrc || "")) ||
+      /^blob:/i.test(String(video.getAttribute("src") || "")) || !!video.srcObject;
+  }
+
   function handle(win) {
     var doc = win && win.document;
     var player = doc && playerRoot(doc);
@@ -177,7 +187,7 @@
       win.__langformAdMute = { video: video, was: !!video.muted };
     }
     if (!video.muted) video.muted = true;
-    if (mayBeMainMedia(win, video, duration)) return "mute";
+    if (mayBeMainMedia(win, video, duration) || bufferedAdMedia(video)) return "mute";
     if (Number(video.currentTime) < duration - 0.05) video.currentTime = duration;
     return "jump";
   }

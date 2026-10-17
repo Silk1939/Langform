@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import WebKit
 import CoreFoundation
+import AVFAudio
 
 /// Two web views on one stage. The feed stays on the page Tan came from. A video
 /// opens in the player view, which slides up over the feed. Swiping down on the
@@ -26,10 +27,10 @@ struct YouTubeWebView: UIViewControllerRepresentable {
     }
     /// Fresh YouTube sign-in. Used once, after Google rejects the webview user agent.
     static let signInRetryURL = URL(string: "https://accounts.google.com/ServiceLogin?service=youtube&hl=de&passive=true&continue=https://m.youtube.com/")!
-    static let scriptNames = ["ViewportLayout", "early", "logic", "hide", "controller", "summary", "page-captions", "ads", "ShortsBootstrap", "WatchOpening", "WebViewLinks"]
-    static let playerEarlyScriptNames = ["PlaybackQuality"]
-    static let playerScriptNames = ["PlaybackZoom", "PlaybackSwipe", "PlaybackHold", "PlayerRect", "CaptionToggle", "CommentsMotion", "CommentReactions", "FullscreenChapters", "FullscreenMotion", "DownloadSource", "SystemMedia", "SponsorBlock", "WatchTools"]
-    static let feedOnlyScriptNames = ["DiscoveryMenu", "FeedMotion"]
+    static let scriptNames = ["TouchPolicy", "ViewportLayout", "early", "logic", "hide", "controller", "summary", "page-captions", "ads", "ShortsBootstrap", "WatchOpening", "WebViewLinks", "CommunityPosts"]
+    static let playerEarlyScriptNames = ["WatchBackgroundAudio", "PlaybackQuality"]
+    static let playerScriptNames = ["PlaybackZoom", "PlaybackSwipe", "PlaybackHold", "PlayerRect", "WatchAudio", "CaptionToggle", "PlayerSettings", "CommentsMotion", "CommentReactions", "FullscreenChapters", "FullscreenMotion", "DownloadSource", "SystemMedia", "SponsorBlock", "WatchTools"]
+    static let feedOnlyScriptNames = ["DiscoveryMenu", "FeedMotion", "SearchResults"]
     // Bundled resources do not change during a launch. Reuse their assembled
     // source instead of reading every file synchronously on a first tab tap.
     private static let commonScriptSource = readScripts(scriptNames)
@@ -70,6 +71,14 @@ struct YouTubeWebView: UIViewControllerRepresentable {
     static func isAccountPage(_ url: URL?) -> Bool {
         let host = url?.host?.lowercased() ?? ""
         return host == "accounts.google.com" || host == "accounts.youtube.com"
+    }
+
+    static func isAccountTransition(_ url: URL?) -> Bool {
+        if isAccountPage(url) { return true }
+        guard let url, isYouTube(url) else { return false }
+        return ["/signin", "/signout", "/logout", "/account_switcher"].contains { path in
+            url.path == path || url.path.hasPrefix(path + "/")
+        }
     }
 
     static func videoID(_ url: URL?) -> String? {
@@ -125,7 +134,11 @@ struct YouTubeWebView: UIViewControllerRepresentable {
         let pagePreferences = WKWebpagePreferences()
         pagePreferences.preferredContentMode = .mobile
         configuration.defaultWebpagePreferences = pagePreferences
-        if StartupDiagnostics.enabled {
+        let audibleVideoProbe = !isFeed && VideoLoadProbe()?.requestsAudibleUserOpen == true
+        // This explicit read-only reproduction must observe the user's sound
+        // state, rather than install the unrelated quiet-fixture mute mask.
+        let audibleRouteProbe = !isFeed && StartupDiagnostics.audioRouteProbeEnabled
+        if StartupDiagnostics.enabled && !audibleVideoProbe && !audibleRouteProbe {
             configuration.userContentController.addUserScript(WKUserScript(
                 source: readScripts(["SilentDiagnostics"]), injectionTime: .atDocumentStart,
                 forMainFrameOnly: false, in: .page))
@@ -158,8 +171,13 @@ struct YouTubeWebView: UIViewControllerRepresentable {
             configuration.userContentController.addUserScript(WKUserScript(
                 source: readScripts(["StartupDiagnostics"]), injectionTime: .atDocumentStart,
                 forMainFrameOnly: true, in: .page))
+            if ProcessInfo.processInfo.environment["LANGFORM_NATIVE_SEARCH_PROBE"] == "1" {
+                configuration.userContentController.addUserScript(WKUserScript(
+                    source: readScripts(["SearchDiagnostics"]), injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true, in: .page))
+            }
         }
-        if !isFeed && StartupDiagnostics.playerEventsEnabled {
+        if !isFeed && StartupDiagnostics.playerObserverEnabled {
             configuration.userContentController.add(relay, contentWorld: .page, name: "langformPlayerDiagnostics")
             configuration.userContentController.addUserScript(WKUserScript(
                 source: readScripts(["PlayerDiagnostics"]), injectionTime: .atDocumentStart,
@@ -177,12 +195,16 @@ struct YouTubeWebView: UIViewControllerRepresentable {
                 forMainFrameOnly: true, in: .page))
         }
         if !isFeed && StartupDiagnostics.enabled && ProcessInfo.processInfo.environment["LANGFORM_HOLD_PROBE"] == "1" {
+            let gestureInputProbe = ProcessInfo.processInfo.environment["LANGFORM_GESTURE_INPUT_PROBE"] == "1"
             configuration.userContentController.addUserScript(WKUserScript(
-                source: readScripts(["PlaybackHoldDiagnostics"]), injectionTime: .atDocumentStart,
+                source: "window.__langformSettingsDeferredControlProbe = \(ProcessInfo.processInfo.environment["LANGFORM_SETTINGS_DEFERRED_CONTROL_PROBE"] == "1" ? "true" : "false");\nwindow.__langformGestureInputProbe = \(gestureInputProbe ? "true" : "false");\nwindow.__langformCommentsStructureProbe = \(ProcessInfo.processInfo.environment["LANGFORM_COMMENTS_STRUCTURE_PROBE"] == "1" ? "true" : "false");\n" + readScripts(["PlaybackHoldDiagnostics"]), injectionTime: .atDocumentStart,
                 forMainFrameOnly: true, in: .page))
         }
         let quietBootstrap = isFeed ? "window.__langformFeedActive = false;\n" :
-            "window.__langformFullscreenEnterProtocol = 1;\nwindow.__langformFullscreenExitProtocol = 1;\nwindow.__langformFullscreenDiagnostics = \(StartupDiagnostics.enabled);\nwindow.__langformFullscreenProbeEnabled = \(StartupDiagnostics.enabled && ProcessInfo.processInfo.environment["LANGFORM_FULLSCREEN_PROBE"] == "1" && PlayerInteractionProbe() != nil && VideoLoadProbe() != nil);\nif (location.pathname !== '/watch') window.__langformFeedActive = false;\n"
+            "window.__langformBackgroundAudioDiagnostics = \(StartupDiagnostics.enabled && BackgroundPlaybackProbe() != nil);\nwindow.__langformFullscreenEnterProtocol = 1;\nwindow.__langformFullscreenExitProtocol = 1;\nwindow.__langformFullscreenDiagnostics = \(StartupDiagnostics.enabled);\nwindow.__langformFullscreenProbeEnabled = \(StartupDiagnostics.enabled && ProcessInfo.processInfo.environment["LANGFORM_FULLSCREEN_PROBE"] == "1" && PlayerInteractionProbe() != nil && VideoLoadProbe() != nil);\nif (location.pathname !== '/watch') window.__langformFeedActive = false;\n"
+        let motionBootstrapScript = WKUserScript(source: LangformMotion.bootstrapSource,
+            injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page)
+        configuration.userContentController.addUserScript(motionBootstrapScript)
         let source = quietBootstrap + concatenatedScripts(scripts)
         if !source.isEmpty {
             configuration.userContentController.addUserScript(
@@ -194,7 +216,9 @@ struct YouTubeWebView: UIViewControllerRepresentable {
                 )
             )
         }
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = LangformWebView(frame: .zero, configuration: configuration)
+        webView.motionBootstrapScript = motionBootstrapScript
+        webView.allowsLinkPreview = false
         webView.isOpaque = false
         webView.backgroundColor = isFeed ? .systemBackground : .black
         webView.scrollView.backgroundColor = isFeed ? .clear : .black
@@ -369,6 +393,36 @@ final class PlayerStageController: UIViewController {
     }
 }
 
+/// Selection is owned by editable website fields. Player labels and feed cards
+/// must never offer WebKit's native copy/lookup menu during a playback hold.
+final class LangformWebView: WKWebView {
+    var motionBootstrapScript: WKUserScript?
+
+    /// Refresh the one app-owned snapshot in place. Retaining every other
+    /// script object preserves its content world, timing and relative order.
+    func synchronizeMotionPreferences() {
+        let source = LangformMotion.bootstrapSource
+        let controller = configuration.userContentController
+        if let installed = motionBootstrapScript, installed.source != source {
+            let scripts = controller.userScripts
+            if scripts.contains(where: { $0 === installed }) {
+                let replacement = WKUserScript(source: source, injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true, in: .page)
+                controller.removeAllUserScripts()
+                scripts.forEach { controller.addUserScript($0 === installed ? replacement : $0) }
+                motionBootstrapScript = replacement
+            }
+        }
+        evaluateJavaScript(LangformMotion.preferenceUpdateSource)
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(copy(_:)) || action == #selector(cut(_:)) ||
+            action == #selector(select(_:)) || action == #selector(selectAll(_:)) { return false }
+        return super.canPerformAction(action, withSender: sender)
+    }
+}
+
 final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIGestureRecognizerDelegate {
     private enum FeedTab: Hashable {
         case home, subscriptions, you
@@ -397,7 +451,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             switch self {
             case .home: path = "/"
             case .subscriptions: path = "/feed/subscriptions"
-            case .you: path = origin?.path == "/feed/library" ? "/feed/library" : "/feed/you"
+            case .you: path = YouTubeWebView.homeURL(for: origin).host == "m.youtube.com" ? "/feed/library" : "/feed/you"
             }
             return URL(string: path, relativeTo: YouTubeWebView.homeURL(for: origin))!.absoluteURL
         }
@@ -414,6 +468,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         var overlayOpen = false
         var failed = false
         var needsReload = false
+        var contentReady = false
+        var accountStale = false
         var refresh: FeedRefresh?
 
         init(webView: WKWebView, rootURL: URL) {
@@ -444,7 +500,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     /// The video element's box in the player view, in points. Read from the page, never set on it.
     private var videoRect: CGRect = .zero
     /// Contact priority requires a current main-video report, not a retained crop.
-    private var videoSeekGeometry: (rect: CGRect, videoID: String, ticket: Int, viewport: Int)?
+    private var videoSeekGeometry: (rect: CGRect, seek: CGRect, videoID: String, ticket: Int, viewport: Int)?
     private var videoPlaying = false
     private var startupStatus = PlayerStartupStatus()
     private var startupVideoID: String?
@@ -481,12 +537,26 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         var motionViewport: CGSize?
         var motionGeneration: Int?
         var motionReady = false
+        var preRotationMotion = false
+        var portraitRequested = false
         var cancellingMotion = false
+        var diagnosticMotionStarted = false
     }
     private var customFullscreenExit: CustomFullscreenExit?
+    private struct PendingPhysicalFullscreenExit {
+        let videoID: String
+        let ticket: Int
+        let rotationGeneration: Int
+        let player: ObjectIdentifier
+        let sourceViewport: CGSize
+        let expiresAt: TimeInterval
+    }
+    private var pendingPhysicalFullscreenExit: PendingPhysicalFullscreenExit?
     private let sponsorBlock = SponsorBlockService()
     private var sponsorBlockRequest: (token: String, videoID: String, ticket: Int)?
     private var activeRotationCoordinator: UIViewControllerTransitionCoordinator?
+    private var rotationIntentPolicy = PlayerRotationIntentPolicy()
+    private var observesPhysicalOrientation = false
     private var nativeRotationGeneration = 0
     private var fullscreenCardRotationGeneration: Int?
     private var nativeRotationTarget: CGSize?
@@ -509,6 +579,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private let fullscreenSelectionFeedback = UISelectionFeedbackGenerator()
     private var fullscreenSnapLastAt = -Double.infinity
     private var fullscreenExitDrag = false
+    private var fullscreenEnterDrag = false
     private var feedTabs: [FeedTab: FeedState] = [:]
     private var activeFeedTab: FeedTab = .home
     private var feedPrewarm: DispatchWorkItem?
@@ -521,6 +592,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private var feedSearchTicket = 0
     private var pendingFeedSearch: (view: ObjectIdentifier, ticket: Int)?
     private var feedSearchInFlight: Int?
+    private var nativeSearchOverlay: NativeSearchOverlay?
+    private var nativeSearchRecent: [String] = []
     private var minimizeRequestTicket = 0
     private var pendingMinimizeRequest: Int?
     private var feedFailed: Bool {
@@ -535,6 +608,16 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private var loadTicket = 0
     private var videoLoadDiagnostics = VideoLoadDiagnostics()
     private var videoProbe = VideoLoadProbe()
+    private var backgroundPlaybackProbe = BackgroundPlaybackProbe()
+    private var audioRouteProbe = AudioRouteProbe()
+    private var backgroundPlaybackWork: [DispatchWorkItem] = []
+    private var backgroundCategoryHandoff = WatchBackgroundAudioCategoryHandoff()
+    private var backgroundCategoryRequest: (number: Int, ticket: Int, id: String, token: Int?)?
+    private var backgroundCategorySerial = 0
+    private var backgroundContinuationRevoked = false
+    private var backgroundAudioInterrupted = false
+    private var backgroundLeaseDiagnosticTicket = 0
+    private var backgroundLeaseDiagnosticCount = 0
     private var videoProbeTicket: Int?
     private var videoProbeWork: DispatchWorkItem?
     private var videoProbeTimeout: DispatchWorkItem?
@@ -543,6 +626,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private var initialPlaybackIntent: PlayerInitialPlayback?
     private var initialPlaybackCheckTicket: Int?
     private var startingWatchPlayback = false
+    private var watchAudioIntent: (ticket: Int, videoID: String)?
+    private var watchAudioCheckTicket: Int?
     private var interactionProbe = PlayerInteractionProbe()
     private var interactionProbeWork: DispatchWorkItem?
     private var interactionProbeTimeout: DispatchWorkItem?
@@ -583,6 +668,16 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private var dragOrigin: CGFloat = 0
     private var dragRevealOrigin: CGFloat = 0
     private var dragCanTakeOver = false
+    private struct FullscreenEntryAdmission {
+        let videoID: String
+        let ticket: Int
+        let player: ObjectIdentifier
+        let mode: Mode
+    }
+    private var fullscreenEntryAdmission: FullscreenEntryAdmission?
+    // Revocation drops the old owner but remembers that its admitted contact
+    // must not be reclassified as a mini/crop drag before that contact ends.
+    private var fullscreenEntryAdmissionRevoked = false
     /// A rect the page reported while the card moved. Applied once it rests.
     private var pendingRect: CGRect?
     private var playerLayoutSize: CGSize = .zero
@@ -689,6 +784,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         Self.styleRound(collapseButton, diameter: 44)
         collapseButton.setImage(Self.symbol("chevron.down", size: 19), for: .normal)
         collapseButton.accessibilityLabel = "Verkleinern"
+        collapseButton.hapticRole = .commit
         collapseButton.alpha = 0
         collapseButton.addTarget(self, action: #selector(collapseTapped), for: .touchUpInside)
         addSubview(collapseButton)
@@ -770,8 +866,36 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                                                name: UIResponder.keyboardWillShowNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardDidHide),
                                                name: UIResponder.keyboardDidHideNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(reduceMotionChanged),
+        NotificationCenter.default.addObserver(self, selector: #selector(motionPreferencesChanged),
                                                name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(motionPreferencesChanged),
+                                               name: UIAccessibility.prefersCrossFadeTransitionsStatusDidChange, object: nil)
+        if backgroundCategoryHandoff?.preservesVisibility == true {
+            NotificationCenter.default.addObserver(self, selector: #selector(backgroundAudioInterruption(_:)),
+                                                   name: AVAudioSession.interruptionNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(backgroundAudioRouteChanged(_:)),
+                                                   name: AVAudioSession.routeChangeNotification, object: nil)
+        } else if audioRouteProbe != nil {
+            // A category-only comparison previously had no functional audio
+            // observers. Diagnose it without introducing cancellation actions.
+            NotificationCenter.default.addObserver(self, selector: #selector(audioRouteDiagnosticInterruption(_:)),
+                                                   name: AVAudioSession.interruptionNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(audioRouteDiagnosticRouteChange(_:)),
+                                                   name: AVAudioSession.routeChangeNotification, object: nil)
+        }
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        observesPhysicalOrientation = true
+        rotationIntentPolicy.reset(orientation: physicalPlayerOrientation)
+        NotificationCenter.default.addObserver(self, selector: #selector(physicalDeviceOrientationChanged),
+                                               name: UIDevice.orientationDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(resetPhysicalRotationBaseline),
+                                               name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(resetPhysicalRotationBaseline),
+                                               name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(playerSceneBecameInactive(_:)),
+                                               name: UIScene.willDeactivateNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(playerSceneBecameActive(_:)),
+                                               name: UIScene.didActivateNotification, object: nil)
         updateChrome()
         StartupDiagnostics.mark("feed-load-requested", once: true)
         home.rootNavigation = feedView.load(URLRequest(url: home.rootURL))
@@ -782,7 +906,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         guard player == nil else { return }
         let playerView = YouTubeWebView.makeWebView(
             relay: ScriptRelay(self),
-            messages: ["langformSummary", "langformOpenFeed", "langformPlayerRoute", "langformWatchIntent", "langformPlayer", "langformNavigateFeed", "langformOverlayState", "langformFullscreen", "langformOpening", "langformSystemMedia", "langformDownloads", "langformSponsorBlock"],
+            messages: ["langformSummary", "langformOpenFeed", "langformPlayerRoute", "langformWatchIntent", "langformPlayer", "langformNavigateFeed", "langformOverlayState", "langformFullscreen", "langformOpening", "langformSystemMedia", "langformBackgroundAudio", "langformDownloads", "langformSponsorBlock"],
             scripts: YouTubeWebView.scriptNames + YouTubeWebView.playerScriptNames
         )
         player = playerView
@@ -811,6 +935,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         guard !systemMediaSuspendedForOffline, mode == .expanded || mode == .mini, let player,
               YouTubeWebView.videoID(player.url) == id,
               let script = SystemMediaSnapshot.commandJavaScript(videoID: id, command: action, value: value) else { return }
+        if ["play", "pause", "toggle"].contains(action) { watchBackgroundCategoryTransition("interrupt") }
         player.evaluateJavaScript(script)
     }
 
@@ -821,6 +946,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             guard let self else { return }
             self.systemMediaSuspendedForOffline = active
             if active {
+                self.watchBackgroundCategoryTransition("cancel")
                 self.systemMedia.clear()
                 self.player?.pauseAllMediaPlayback(completionHandler: nil)
             } else if self.mode == .expanded || self.mode == .mini {
@@ -890,7 +1016,10 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     }
 
     func stop() {
+        watchBackgroundCategoryTransition("cancel")
+        recordBackgroundPlaybackTransition("cancel")
         sponsorBlock.cancel()
+        clearWatchAudioIntent()
         sponsorBlockRequest = nil
         cancelDownloadSourceRequest()
         systemMedia.clear()
@@ -912,6 +1041,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         cancelFeedPrewarm()
         loadingTimeout?.cancel()
         cancelSPAWaits()
+        revokeFullscreenEntryAdmission()
         loadTicket += 1
         settler?.stopAnimation(true)
         revealer?.stopAnimation(true)
@@ -919,6 +1049,14 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         settlingBetweenModes = false
         revealer = nil
         mode = .closed
+        rotationIntentPolicy.reset(orientation: physicalPlayerOrientation)
+        if observesPhysicalOrientation {
+            UIDevice.current.endGeneratingDeviceOrientationNotifications()
+            observesPhysicalOrientation = false
+        }
+        NotificationCenter.default.removeObserver(self, name: UIDevice.orientationDidChangeNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: UIScene.willDeactivateNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: UIScene.didActivateNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
@@ -926,6 +1064,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillShowNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardDidHideNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: UIAccessibility.prefersCrossFadeTransitionsStatusDidChange, object: nil)
         observations.removeAll()
         summaryTasks.values.forEach { $0.cancel() }
         summaryTasks.removeAll()
@@ -1010,7 +1149,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private func makeFeedTab(_ tab: FeedTab, origin: URL?) -> FeedState {
         let webView = YouTubeWebView.makeWebView(
             relay: ScriptRelay(self),
-            messages: ["langformSummary", "langformOpenWatch", "langformNavigateFeed", "langformOverlayState", "langformFeedReady", "langformFeedSearch", "langformOpening", "langformDownloads"],
+            messages: ["langformSummary", "langformOpenWatch", "langformNavigateFeed", "langformOverlayState", "langformFeedReady", "langformFeedSearch", "langformNativeSearch", "langformOpening", "langformDownloads"],
             scripts: YouTubeWebView.scriptNames,
             isFeed: true
         )
@@ -1057,14 +1196,21 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         feedTabs.values.first { $0.webView === webView }
     }
 
+    private func feedTabIsContentReady(_ tab: FeedTab) -> Bool {
+        guard let state = feedTabs[tab] else { return false }
+        return !state.needsReload && !state.accountStale && state.rootNavigation == nil && state.contentReady &&
+            state.webView.url?.host == state.rootURL.host && state.webView.url?.path == state.rootURL.path
+    }
+
     /// Switch the existing page into place. Its scroll position and DOM survive.
     /// Only a first visit, a lost web process, or a missing root history entry loads.
     private func activateFeedTab(_ tab: FeedTab, origin: URL?) {
         cancelPendingFeedSearch()
         cancelFeedPrewarm(keeping: tab)
-        if tab == .subscriptions {
-            StartupDiagnostics.mark(feedTabs[tab]?.needsReload == false && feedTabs[tab]?.rootNavigation == nil
-                ? "subscriptions-selected-cached" : "subscriptions-selected-loading")
+        if tab == .subscriptions || tab == .you {
+            StartupDiagnostics.mark(feedTabIsContentReady(tab)
+                ? (tab == .you ? "you-selected-cached" : "subscriptions-selected-cached")
+                : (tab == .you ? "you-selected-loading" : "subscriptions-selected-loading"))
         }
         let state = feedTabs[tab] ?? makeFeedTab(tab, origin: origin)
         let next = state.webView
@@ -1102,9 +1248,9 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private func restoreFeedRoot(_ state: FeedState, tab: FeedTab) {
         let webView = state.webView
         guard state.rootNavigation == nil else { return }
-        if !state.needsReload, FeedTab(url: webView.url) == tab { return }
+        if !state.needsReload, !state.accountStale, FeedTab(url: webView.url) == tab { return }
         state.failed = false
-        if !state.needsReload {
+        if !state.needsReload, !state.accountStale {
             let history = webView.backForwardList
             if let item = history.backList.reversed().first(where: { FeedTab(url: $0.url) == tab })
                 ?? history.forwardList.first(where: { FeedTab(url: $0.url) == tab }) {
@@ -1113,6 +1259,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             }
         }
         state.needsReload = false
+        state.accountStale = false
         state.rootNavigation = webView.load(URLRequest(url: state.rootURL))
     }
 
@@ -1173,22 +1320,34 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         webView.removeFromSuperview()
     }
 
-    /// Build Abos first, then prepare YouTube's player document without opening
+    private func evictCachedFeedsForAccountChange() {
+        cancelPendingFeedSearch()
+        nativeSearchRecent.removeAll()
+        cancelFeedPrewarm(discardLoading: true)
+        // Cookies stay in the shared WebKit store. Drop only retained account
+        // pages, so a subsequent tab selection cannot reveal an old account's
+        // history, playlists or back-forward cached root after sign-out.
+        for state in feedTabs.values { state.accountStale = true }
+        for tab in Array(feedTabs.keys) where tab != activeFeedTab { evictFeedTab(tab) }
+    }
+
+    /// Prepare Mein YouTube first, then Abos and the player shell without opening
     /// a video. User input postpones construction, but never throws away a tab
     /// download just because the user scrolls. Explicit video loads take priority.
     private func scheduleFeedPrewarm() {
-        guard feedPrewarm == nil, !backgroundPreparationDisabled, let feed,
+        guard feedPrewarm == nil, prewarmingTab == nil, !backgroundPreparationDisabled, let feed,
               mode != .loading, (mode == .closed || videoPlaying), !cardMoving,
               !keyboardVisible, !feedFailed,
               feedTabs[activeFeedTab]?.overlayOpen == false,
               FeedTab(url: feed.url) != nil,
-              feedTabs[.subscriptions] == nil || (mode == .closed && !playerWarmupAttempted) else { return }
+              feedTabs[.you] == nil || feedTabs[.subscriptions] == nil || (mode == .closed && !playerWarmupAttempted) else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.feedPrewarm = nil
-            guard !self.backgroundPreparationDisabled, let feed = self.feed,
+            guard self.prewarmingTab == nil, !self.backgroundPreparationDisabled, let feed = self.feed,
                   self.mode != .loading, (self.mode == .closed || self.videoPlaying), !self.cardMoving,
-                  !self.keyboardVisible, !self.feedFailed, !feed.isLoading,
+                  !self.keyboardVisible, !self.feedFailed,
+                  !feed.isLoading || self.feedTabs[self.activeFeedTab]?.contentReady == true,
                   self.feedTabs[self.activeFeedTab]?.overlayOpen == false,
                   FeedTab(url: feed.url) != nil,
                   UIApplication.shared.applicationState == .active,
@@ -1200,15 +1359,15 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                 self.scheduleFeedPrewarm()
                 return
             }
-            if self.feedTabs[.subscriptions] == nil {
-                let state = self.makeFeedTab(.subscriptions, origin: feed.url)
+            if let tab = [FeedTab.you, .subscriptions].first(where: { self.feedTabs[$0] == nil }) {
+                let state = self.makeFeedTab(tab, origin: feed.url)
                 state.webView.frame = self.bounds
                 state.webView.isHidden = false
                 state.webView.accessibilityElementsHidden = true
                 self.insertSubview(state.webView, belowSubview: feed)
                 self.setFeedActivity(state.webView, active: false)
-                self.prewarmingTab = .subscriptions
-                StartupDiagnostics.mark("subscriptions-preload-started")
+                self.prewarmingTab = tab
+                StartupDiagnostics.mark(tab == .you ? "you-preload-started" : "subscriptions-preload-started")
                 state.rootNavigation = state.webView.load(URLRequest(url: state.rootURL))
             } else if self.mode == .closed, self.prewarmingTab == nil, !self.playerWarmupAttempted {
                 self.playerWarmupAttempted = true
@@ -1254,6 +1413,10 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     }
 
     @objc private func appEnteredBackground() {
+        revokeFullscreenEntryAdmission()
+        watchBackgroundCategoryTransition("did-enter-background")
+        recordBackgroundPlaybackTransition("did-enter-background")
+        clearWatchAudioIntent()
         cancelPendingMinimize()
         discardFeedOpening()
         cancelNativeRotation()
@@ -1290,18 +1453,26 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     }
 
     @objc private func cancelVideoProbeForInactivity() {
+        revokeFullscreenEntryAdmission()
+        watchBackgroundCategoryTransition("will-resign-active")
+        recordBackgroundPlaybackTransition("will-resign-active")
         cancelNativeRotation()
         initialPlaybackIntent = nil
         initialPlaybackCheckTicket = nil
+        clearWatchAudioIntent()
         cancelVideoProbe()
     }
 
     @objc private func appBecameActive() {
+        motionPreferencesChanged()
+        watchBackgroundCategoryTransition("foreground")
+        recordBackgroundPlaybackTransition("did-become-active")
         StartupDiagnostics.mark("app-active")
         for state in feedTabs.values { setFeedActivity(state.webView, active: state.webView === feed) }
         updateMissingMediaTimeout()
         scheduleFeedPrewarm()
         confirmCustomFullscreenEnter()
+        resumeFullscreenExitAfterInactivity()
         confirmCustomFullscreenExit()
     }
 
@@ -1313,6 +1484,13 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     @objc private func keyboardDidHide() {
         keyboardVisible = false
         scheduleFeedPrewarm()
+    }
+
+    @objc private func motionPreferencesChanged() {
+        for webView in feedTabs.values.map(\.webView) + [player].compactMap({ $0 }) {
+            (webView as? LangformWebView)?.synchronizeMotionPreferences()
+        }
+        reduceMotionChanged()
     }
 
     @objc private func reduceMotionChanged() {
@@ -1381,7 +1559,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             confirmCustomFullscreenEnter()
             confirmCustomFullscreenExit()
         }
-        collapseButton.frame = CGRect(x: safeAreaInsets.left + 10, y: safeAreaInsets.top + 10, width: 44, height: 44)
+        collapseButton.frame = CGRect(x: safeAreaInsets.left + 10, y: safeAreaInsets.top + 2, width: 44, height: 44)
         backButton.frame = CGRect(x: safeAreaInsets.left + 12, y: bounds.height - safeAreaInsets.bottom - 68 - 44, width: 44, height: 44)
         guard !loadStatus.isHidden else { return }
         let statusWidth = min(420, max(0, bounds.width - 24))
@@ -1437,7 +1615,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         return startupVideoID == id
     }
 
-    private func rememberVideoSeekGeometry(_ rect: CGRect, videoID: String, playerVideoID: String?, hasVideo: Bool, viewport: CGSize) {
+    private func rememberVideoSeekGeometry(_ rect: CGRect, videoID: String, playerVideoID: String?, hasVideo: Bool, viewport: CGSize,
+                                           seekRect: CGRect? = nil, allowDisjointSeek: Bool = false) {
         guard let player, customFullscreenEnter == nil, customFullscreenExit == nil,
               PlayerViewportPolicy.matches(reported: viewport, current: player.bounds.size) else { return }
         guard hasVideo, playerVideoID == videoID, YouTubeWebView.videoID(player.url) == videoID,
@@ -1446,7 +1625,13 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             videoSeekGeometry = nil
             return
         }
-        videoSeekGeometry = (rect, videoID, loadTicket, viewportGeneration)
+        var seek = rect
+        if let area = seekRect, area.minX.isFinite, area.minY.isFinite, area.width.isFinite, area.height.isFinite,
+           area.width > 8, area.height > 8, CGRect(origin: .zero, size: viewport).contains(area),
+           allowDisjointSeek || area.intersects(rect) {
+            seek = area
+        }
+        videoSeekGeometry = (rect, seek, videoID, loadTicket, viewportGeneration)
     }
 
     /// In a settled Watch, even a left-edge picture contact belongs to the
@@ -1459,7 +1644,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
               geometry.videoID == YouTubeWebView.videoID(player.url), geometry.ticket == loadTicket,
               geometry.viewport == viewportGeneration, geometry.rect == videoRect,
               contact.x.isFinite, contact.y.isFinite else { return false }
-        let picture = player.convert(pictureRect, to: self)
+        let picture = player.convert(geometry.seek, to: self)
         guard picture.minX.isFinite, picture.minY.isFinite, picture.maxX.isFinite, picture.maxY.isFinite else { return false }
         let visible = picture.intersection(CGRect(origin: .zero, size: bounds.size))
         return !visible.isNull && visible.width > 8 && visible.height > 8 && visible.contains(contact)
@@ -1483,6 +1668,15 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             width = height / aspect
         }
         let bottom = bounds.height - safeAreaInsets.bottom - Self.bottomBarHeight - 10
+        // Keep44pt controls inside unusually wide/narrow pictures without
+        // exposing the surrounding WebKit page through a letterboxed crop.
+        // Preserve the picture ratio and never grow beyond the safe viewport.
+        let requiredScale = max(1, 44 / max(1, min(width, height)))
+        let availableWidth = max(1, bounds.width - safeAreaInsets.left - safeAreaInsets.right - 20)
+        let availableHeight = max(1, bottom - safeAreaInsets.top - 10)
+        let growth = max(1, min(requiredScale, min(availableWidth / width, availableHeight / height)))
+        width *= growth
+        height *= growth
         return CGRect(x: bounds.width - safeAreaInsets.right - width - 10, y: bottom - height, width: width, height: height)
     }
 
@@ -1516,8 +1710,9 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         player.center = CGPoint(x: origin.x + scale * full.width / 2, y: origin.y + scale * full.height / 2)
         card.layer.cornerRadius = 10 * t
         card.layer.borderWidth = min(1, max(0, t))
-        closeButton.frame = CGRect(x: box.width - 48, y: 4, width: 44, height: 44)
-        miniPlaybackButton.frame = CGRect(x: 4, y: 4, width: 44, height: 44)
+        let controls = PlayerViewportPolicy.miniControls(in: box.size, target: target.size, progress: t, correction: cropCorrection)
+        closeButton.frame = controls.close
+        miniPlaybackButton.frame = controls.playback
         let offStage = mode == .closed || mode == .loading
         // Use the same interpolation during direct dragging and the spring, so
         // grabbing a moving card does not abruptly change the buttons' opacity.
@@ -1614,7 +1809,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.videoProbe?.pending == request,
                   UIApplication.shared.applicationState == .active else { return }
-            self.openWatch(request.url)
+            self.openWatch(request.url, userInitiated: self.videoProbe?.requestsAudibleUserOpen == true)
             self.videoProbeTicket = self.loadTicket
             let timeout = DispatchWorkItem { [weak self] in
                 guard let self, self.videoProbe?.pending == request else { return }
@@ -1702,6 +1897,40 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private var awaitingInitialPlayback: Bool {
         initialPlaybackIntent?.matches(ticket: loadTicket, videoID: startupVideoID) == true &&
             initialPlaybackIntent?.awaitingMedia == true && startupStatus.state == .unstarted && startupStatus.issue.isEmpty
+    }
+
+    private func clearWatchAudioIntent() {
+        watchAudioIntent = nil
+        watchAudioCheckTicket = nil
+    }
+
+    /// Audio is one separate part of opening a new video. YouTube may already
+    /// be playing it muted, so that must not consume the sound intent early.
+    private func startWatchAudioIfEligible(id: String) {
+        guard let intent = watchAudioIntent, intent.ticket == loadTicket, intent.videoID == id,
+              mode == .loading || mode == .expanded || mode == .mini,
+              UIApplication.shared.applicationState == .active,
+              startupVideoID == id, loadingVideoID == id,
+              !playerOverlayOpen, !dragging, let player,
+              YouTubeWebView.videoID(player.url) == id else { return }
+        guard watchAudioCheckTicket == nil,
+              let data = try? JSONEncoder().encode(id),
+              let literal = String(data: data, encoding: .utf8) else { return }
+        let ticket = loadTicket
+        watchAudioCheckTicket = ticket
+        player.evaluateJavaScript("window.__langformApplyWatchAudio && window.__langformApplyWatchAudio(\(literal), '\(ticket)')") { [weak self, weak player] result, error in
+            guard let self, let player, self.player === player,
+                  self.watchAudioCheckTicket == ticket,
+                  self.watchAudioIntent?.ticket == ticket,
+                  self.watchAudioIntent?.videoID == id else { return }
+            self.watchAudioCheckTicket = nil
+            guard self.loadTicket == ticket, self.startupVideoID == id,
+                  YouTubeWebView.videoID(player.url) == id,
+                  UIApplication.shared.applicationState == .active,
+                  error == nil, result as? Bool == true else { return }
+            self.watchAudioIntent = nil
+            StartupDiagnostics.mark("video-watch-audio-intent-handled")
+        }
     }
 
     private func initialPlaybackMayStart(id: String, ticket: Int) -> Bool {
@@ -1947,10 +2176,15 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         playerWarmupNavigation = nil
         loadingTimeout?.cancel()
         cancelSPAWaits()
+        revokeFullscreenEntryAdmission()
         loadTicket += 1
         initialPlaybackCheckTicket = nil
         initialPlaybackIntent = userInitiated ? YouTubeWebView.videoID(url).map {
             PlayerInitialPlayback(ticket: loadTicket, videoID: $0)
+        } : nil
+        watchAudioCheckTicket = nil
+        watchAudioIntent = userInitiated ? YouTubeWebView.videoID(url).map {
+            (ticket: loadTicket, videoID: $0)
         } : nil
         videoLoadDiagnostics.begin(ticket: loadTicket, requestedAt: requestedAt, playerExisted: playerExisted)
         videoLoadDiagnostics.mark(.prepared, ticket: loadTicket)
@@ -2057,6 +2291,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         cancelDownloadSourceRequest()
         opening.reversing = true
         initialPlaybackIntent = nil
+        clearWatchAudioIntent()
         player?.stopLoading()
         suspendPreparedPlayer()
         opening.onCancelled = { [weak self, weak opening] in
@@ -2217,6 +2452,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     /// The player view loads at full size behind the opaque feed. WebKit sees it
     /// as visible and paints it; the user still sees and uses the feed.
     private func beginLoading() {
+        watchBackgroundCategoryTransition("cancel")
         cancelPendingMinimize()
         finishMiniContext()
         videoCropActive = false
@@ -2407,6 +2643,14 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         settlingBetweenModes = false
         let cardPose = card.layer.presentation()
         let playerPose = player?.layer.presentation()
+        let closeFrame = closeButton.layer.presentation().map {
+            CGRect(x: $0.position.x - $0.bounds.width / 2, y: $0.position.y - $0.bounds.height / 2,
+                   width: $0.bounds.width, height: $0.bounds.height)
+        } ?? closeButton.frame
+        let playbackFrame = miniPlaybackButton.layer.presentation().map {
+            CGRect(x: $0.position.x - $0.bounds.width / 2, y: $0.position.y - $0.bounds.height / 2,
+                   width: $0.bounds.width, height: $0.bounds.height)
+        } ?? miniPlaybackButton.frame
         let shown = cardPose?.bounds.size.height ?? card.bounds.height
         let transform = cardPose?.affineTransform() ?? card.transform
         animator.stopAnimation(true)
@@ -2426,6 +2670,9 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             let regular = PlayerViewportPolicy.surfaceGeometry(viewport: bounds, picture: pictureRect,
                 mini: miniFrame(), progress: progress, videoOnly: videoCropActive || mode == .mini)
             cropCorrection = PlayerViewportPolicy.SurfaceCorrection(shown: geometry, regular: regular, progress: progress)
+            let controls = PlayerViewportPolicy.miniControls(in: frame.size, target: miniFrame().size, progress: progress)
+            cropCorrection?.controls = PlayerViewportPolicy.ControlCorrection(shownClose: closeFrame, shownPlayback: playbackFrame,
+                regularClose: controls.close, regularPlayback: controls.playback)
         }
         UIView.performWithoutAnimation {
             card.transform = transform
@@ -2476,7 +2723,9 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
 
     /// Leaves the watch page and removes the card.
     @objc private func closePlayer() {
+        watchBackgroundCategoryTransition("cancel")
         cancelDownloadSourceRequest()
+        clearWatchAudioIntent()
         if feedOpening != nil { reverseFeedOpening(); return }
         finishMiniContext()
         cancelPendingFeedSearch()
@@ -2489,6 +2738,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         loadingTimeout = nil
         cancelSPAWaits()
         loadingViaSPA = false
+        revokeFullscreenEntryAdmission()
         loadTicket += 1
         loadingVideoID = nil
         playerWarmupNavigation = nil
@@ -2893,7 +3143,26 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     @objc private func dragPlayer(_ pan: UIPanGestureRecognizer) {
         switch pan.state {
         case .began:
+            let entry = fullscreenEntryAdmission
+            fullscreenEntryAdmission = nil
+            let revokedEntry = fullscreenEntryAdmissionRevoked
+            fullscreenEntryAdmissionRevoked = false
             cancelVideoProbe()
+            if revokedEntry {
+                drag.cancelsTouchesInView = false
+                return
+            }
+            if let entry {
+                guard fullscreenEntryAdmissionIsCurrent(entry) else {
+                    drag.cancelsTouchesInView = false
+                    return
+                }
+                fullscreenEnterDrag = true
+                setNativeDragging(true)
+                dragging = true
+                StartupDiagnostics.mark("drag-fullscreen-enter-began")
+                return
+            }
             if playerFullscreen {
                 fullscreenExitDrag = true
                 requestFullscreenExit()
@@ -2914,10 +3183,20 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             // entire scroll view here sends WebKit an additional touch cancellation.
             follow(pan)
         case .changed:
-            if fullscreenExitDrag { return }
+            if fullscreenExitDrag || fullscreenEnterDrag { return }
             if dragging && !edgeBackTracking { follow(pan) }
         case .ended, .cancelled, .failed:
+            fullscreenEntryAdmission = nil
+            fullscreenEntryAdmissionRevoked = false
             if fullscreenExitDrag { endDrag(); return }
+            if fullscreenEnterDrag {
+                let commits = PlayerGesturePolicy.finishesFullscreenEntry(
+                    ended: pan.state == .ended, translation: pan.translation(in: self), velocity: pan.velocity(in: self))
+                let id = nativeDragVideoID, ticket = loadTicket
+                endDrag()
+                if commits, let id { enterFullscreenFromSwipe(videoID: id, ticket: ticket) }
+                return
+            }
             guard dragging && !edgeBackTracking else { return }
             let travel = dragTravel
             let speed = pan.state == .ended ? pan.velocity(in: self).y : 0
@@ -2945,6 +3224,9 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     }
 
     private func endDrag() {
+        // Close/load/stop may run after delegate admission but before began.
+        // Preserve that contact's revocation until its terminal or next contact.
+        revokeFullscreenEntryAdmission()
         setNativeDragging(false)
         dragging = false
         dragRevealOrigin = 0
@@ -2952,6 +3234,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         edgeBackTracking = false
         edgeBackUsesPicture = false
         fullscreenExitDrag = false
+        fullscreenEnterDrag = false
         drag.cancelsTouchesInView = false
     }
 
@@ -2961,6 +3244,44 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         case .mini: return .mini
         case .closed, .loading: return nil
         }
+    }
+
+    private var fullscreenEntryStateAllows: Bool {
+        mode == .expanded && !playerFullscreen && customFullscreenID == nil && !playerOverlayOpen &&
+            bounds.height > bounds.width && revealer == nil && !cardMoving && !dragCanTakeOver &&
+            !edgeBackTracking && UIApplication.shared.applicationState == .active
+    }
+
+    private func acceptsFullscreenEntry(_ pan: UIPanGestureRecognizer) -> Bool {
+        fullscreenEntryStateAllows &&
+            PlayerGesturePolicy.canEnterFullscreen(translation: pan.translation(in: self), velocity: pan.velocity(in: self))
+    }
+
+    private func fullscreenEntryBinding() -> FullscreenEntryAdmission? {
+        guard let player, let id = YouTubeWebView.videoID(player.url), id == startupVideoID else { return nil }
+        return FullscreenEntryAdmission(videoID: id, ticket: loadTicket, player: ObjectIdentifier(player), mode: mode)
+    }
+
+    private func fullscreenEntryAdmissionIsCurrent(_ entry: FullscreenEntryAdmission) -> Bool {
+        guard fullscreenEntryStateAllows, let player else { return false }
+        return entry.mode == mode && entry.ticket == loadTicket && entry.player == ObjectIdentifier(player) &&
+            YouTubeWebView.videoID(player.url) == entry.videoID && startupVideoID == entry.videoID
+    }
+
+    private func revokeFullscreenEntryAdmission() {
+        if fullscreenEntryAdmission != nil { fullscreenEntryAdmissionRevoked = true }
+        fullscreenEntryAdmission = nil
+    }
+
+    private func enterFullscreenFromSwipe(videoID: String, ticket: Int) {
+        guard mode == .expanded, !playerFullscreen, customFullscreenID == nil,
+              !playerOverlayOpen, !dragging, !cardMoving, loadTicket == ticket,
+              bounds.height > bounds.width, let player,
+              YouTubeWebView.videoID(player.url) == videoID, startupVideoID == videoID,
+              let data = try? JSONEncoder().encode(videoID), let literal = String(data: data, encoding: .utf8) else { return }
+        // endDrag queued the input unlock first; the live JS owner validates
+        // media, ad, zoom, wireless and source ownership again before entering.
+        player.evaluateJavaScript("window.__langformFullscreen && window.__langformFullscreen.enterForGesture(\(literal))")
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -2990,6 +3311,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             return true
         }
         guard gestureRecognizer === drag else { return super.gestureRecognizerShouldBegin(gestureRecognizer) }
+        fullscreenEntryAdmission = nil
+        fullscreenEntryAdmissionRevoked = false
         // Custom fullscreen owns its timeline and controls; a vertical scrub
         // must not become the card's exit gesture.
         guard customFullscreenID == nil else { return false }
@@ -2999,7 +3322,9 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
               YouTubeWebView.isWatchPage(player.url) else { return false }
         // Expanded moves down, mini moves up; a grab during a spring can redirect
         // either way. Sideways scrubs and taps remain with the page/card control.
-        let begins = PlayerGesturePolicy.canBegin(
+        let entry = acceptsFullscreenEntry(drag) ? fullscreenEntryBinding() : nil
+        fullscreenEntryAdmission = entry
+        let begins = entry != nil || PlayerGesturePolicy.canBegin(
             position: position,
             isTransitioning: revealer != nil || (settler != nil && settlingBetweenModes),
             touchBeganWhileTransitioning: dragCanTakeOver,
@@ -3035,6 +3360,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                 && !view.isDescendant(of: startPlaybackButton)
         }
         guard gestureRecognizer === drag else { return true }
+        fullscreenEntryAdmission = nil
+        fullscreenEntryAdmissionRevoked = false
         guard customFullscreenID == nil else { return false }
         dragCanTakeOver = false
         if let view = touch.view,
@@ -3102,6 +3429,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     // MARK: Where each view goes
 
     private func feedMoved() {
+        if YouTubeWebView.isAccountTransition(feed.url) { evictCachedFeedsForAccountChange() }
         if YouTubeWebView.isPlayablePage(feed.url), let state = feedState(for: feed) {
             // SPA game routes bypass WKNavigationAction. Load a fresh root
             // instead of restoring a history item retaining its game context.
@@ -3151,10 +3479,12 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         // YouTube can change videos without openWatch(). Reset the old video's
         // retry state and timer once, preserving a new report that beat URL KVO.
         guard startupVideoID != id else { return }
+        watchBackgroundCategoryTransition("cancel")
         if let intent = initialPlaybackIntent, intent.videoID != id {
             initialPlaybackIntent = nil
             initialPlaybackCheckTicket = nil
         }
+        if let intent = watchAudioIntent, intent.videoID != id { clearWatchAudioIntent() }
         startupVideoID = id
         videoSeekGeometry = nil
         missingMediaTimeout?.cancel()
@@ -3174,7 +3504,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         updatePlaybackControls()
     }
 
-    private func showInFeed(_ url: URL) {
+    private func showInFeed(_ url: URL, forceReload: Bool = false) {
         guard !YouTubeWebView.isPlayablePage(url), !YouTubeWebView.isPlayableResource(url) else { return }
         cancelPendingFeedSearch()
         if let tab = FeedTab(url: url) {
@@ -3183,7 +3513,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         }
         let current = feed.url
         let same = current?.host == url.host && current?.path == url.path && current?.query == url.query
-        if !same {
+        if !same || forceReload {
             feed.load(URLRequest(url: url))
         }
     }
@@ -3198,10 +3528,80 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     }
 
     private func cancelPendingFeedSearch() {
+        dismissNativeSearch()
         pendingFeedSearch = nil
         feedSearchInFlight = nil
         feedSearchTicket += 1
         feed?.evaluateJavaScript("window.__langformCancelSearch && window.__langformCancelSearch()")
+    }
+
+    private func dismissNativeSearch() {
+        nativeSearchOverlay?.cancel()
+        nativeSearchOverlay?.removeFromSuperview()
+        nativeSearchOverlay = nil
+    }
+
+    private func nativeSearchChanged(_ body: [String: Any], from webView: WKWebView) {
+        guard webView === feed, feedState(for: webView)?.active == true,
+              UIApplication.shared.applicationState == .active, !cardMoving,
+              mode == .closed || mode == .mini,
+              let href = body["href"] as? String, href == webView.url?.absoluteString else { return }
+        let action = body["action"] as? String ?? "open"
+        if action == "focus" {
+            nativeSearchOverlay?.focus()
+            return
+        }
+        if action == "filter" {
+            guard let value = body["filter"] as? String, let filter = LangformSearchFilter(rawValue: value),
+                  let current = webView.url, current.path == "/results",
+                  let query = URLComponents(url: current, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "search_query" })?.value,
+                  let url = LangformSearchPolicy.resultsURL(query: query, filter: filter) else { return }
+            showInFeed(url)
+            return
+        }
+        guard action == "open" else { return }
+        if let value = body["ticket"] {
+            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite, number.doubleValue >= 0, number.doubleValue <= 9_007_199_254_740_991,
+                  number.doubleValue.rounded(.towardZero) == number.doubleValue,
+                  let request = pendingFeedSearch, request.view == ObjectIdentifier(webView),
+                  request.ticket == number.intValue, feedSearchInFlight == request.ticket else { return }
+        }
+        if let nativeSearchOverlay { nativeSearchOverlay.focus(); return }
+        let parts = webView.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
+        let query = parts?.path == "/results" ? parts?.queryItems?.first(where: { $0.name == "search_query" })?.value ?? "" : ""
+        let selected = query.isEmpty ? LangformSearchFilter.videos :
+            (LangformSearchFilter(rawValue: body["filter"] as? String ?? "") ?? LangformSearchPolicy.filter(from: webView.url))
+        let sourceURL = webView.url
+        let sourceNavigation = feedState(for: webView)?.navigation
+        let overlay = NativeSearchOverlay(query: query, filter: selected, recent: nativeSearchRecent)
+        overlay.frame = bounds
+        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        overlay.onClose = { [weak self, weak overlay] in
+            guard let self, let overlay, self.nativeSearchOverlay === overlay else { return }
+            self.dismissNativeSearch()
+        }
+        overlay.onSubmit = { [weak self, weak overlay, weak webView] query, filter in
+            guard let self, let overlay, let webView, self.nativeSearchOverlay === overlay,
+                  self.feed === webView, webView.url == sourceURL,
+                  self.feedState(for: webView)?.navigation === sourceNavigation,
+                  self.feedState(for: webView)?.active == true, !self.cardMoving,
+                  UIApplication.shared.applicationState == .active,
+                  self.mode == .closed || self.mode == .mini,
+                  let url = LangformSearchPolicy.resultsURL(query: query, filter: filter) else { return }
+            self.nativeSearchRecent.removeAll { $0.caseInsensitiveCompare(query) == .orderedSame }
+            self.nativeSearchRecent.insert(query, at: 0)
+            self.nativeSearchRecent = Array(self.nativeSearchRecent.prefix(20))
+            self.dismissNativeSearch()
+            // The canonical Videos URL can equal an Unwatched document after
+            // YouTube removed our extra parameter. A native Videos submission
+            // explicitly clears that document's retained extra filter.
+            self.showInFeed(url, forceReload: selected == .unwatched && filter == .videos)
+        }
+        nativeSearchOverlay = overlay
+        addSubview(overlay)
+        overlay.focus()
+        UIAccessibility.post(notification: .screenChanged, argument: overlay)
     }
 
     private func activatePendingFeedSearch() {
@@ -3234,6 +3634,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
 
     private func feedSearchDocumentChanged(_ webView: WKWebView) {
         guard webView === feed else { return }
+        dismissNativeSearch()
         let hadSearch = feedSearchInFlight != nil || pendingFeedSearch?.view == ObjectIdentifier(webView)
         feedSearchInFlight = nil
         if let request = pendingFeedSearch, request.view == ObjectIdentifier(webView) {
@@ -3334,6 +3735,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         }
         startupStatus.receive(state: dict["playbackState"] as? String,
                               issue: dict["playbackIssue"] as? String, hasVideo: hasVideo)
+        startWatchAudioIfEligible(id: id)
         if initialPlaybackIntent?.matches(ticket: loadTicket, videoID: id) == true,
            !loadingViaSPA || dict["navigationMediaLoaded"] as? Bool == true {
             initialPlaybackIntent?.observe(startupStatus.state)
@@ -3342,6 +3744,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         // activating a separate native session can interrupt resumed playback.
         if hasVideo, let playing = dict["playing"] as? Bool {
             videoPlaying = playing
+            if !playing && backgroundCategoryHandoff?.preservesVisibility != true { watchBackgroundCategoryTransition("cancel") }
         }
         if dict["kind"] as? String == "playback" {
             // Scroll-time status packets contain no geometry or readiness.
@@ -3371,8 +3774,17 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         }
         let viewport = CGSize(width: number("viewportWidth"), height: number("viewportHeight"))
         if customFullscreenEnter == nil && customFullscreenExit == nil && PlayerViewportPolicy.matches(reported: viewport, current: player.bounds.size) {
+            let seekFields = dict["seekRect"] as? [String: Any]
+            let seekRect: CGRect? = seekFields.flatMap { fields in
+                guard fields["videoID"] as? String == id,
+                      let x = fields["x"] as? NSNumber, let y = fields["y"] as? NSNumber,
+                      let width = fields["width"] as? NSNumber, let height = fields["height"] as? NSNumber else { return nil }
+                return CGRect(x: CGFloat(x.doubleValue), y: CGFloat(y.doubleValue),
+                              width: CGFloat(width.doubleValue), height: CGFloat(height.doubleValue))
+            }
             rememberVideoSeekGeometry(rect, videoID: id, playerVideoID: dict["playerVideoID"] as? String,
-                                      hasVideo: hasVideo, viewport: viewport)
+                                      hasVideo: hasVideo, viewport: viewport, seekRect: seekRect,
+                                      allowDisjointSeek: dict["playbackState"] as? String == "ended")
             let valid = rect.width > 8 && rect.height > 8
             // Playback state above remains independent from geometry. A queued
             // pre-rotation rect can never replace the new crop or pending rect.
@@ -3395,6 +3807,267 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         considerReveal()
         startInitialPlaybackIfEligible(id: id)
         advanceVideoProbe(dict, id: id)
+        if (dict["playing"] as? NSNumber)?.boolValue == true && (dict["mediaReady"] as? NSNumber)?.boolValue == true {
+            recordBackgroundPlaybackTransition("watch-ready")
+        }
+        finishPhysicalRotationIntent()
+    }
+
+    /// Separate exact opt-in; no background task, polling or playback changes.
+    private func recordBackgroundPlaybackTransition(_ phase: String) {
+        guard StartupDiagnostics.enabled, backgroundPlaybackProbe != nil else { return }
+        if phase != "watch-ready" {
+            backgroundPlaybackWork.forEach { $0.cancel() }
+            backgroundPlaybackWork.removeAll()
+        }
+        guard phase != "cancel", mode == .expanded || mode == .mini,
+              !systemMediaSuspendedForOffline, let player,
+              let id = YouTubeWebView.videoID(player.url), id == backgroundPlaybackProbe?.videoID,
+              let remaining = backgroundPlaybackProbe?.samples, remaining < BackgroundPlaybackProbe.maximumSamples else { return }
+        sampleBackgroundPlayback(phase)
+        guard phase == "did-enter-background", backgroundPlaybackProbe!.samples < BackgroundPlaybackProbe.maximumSamples else { return }
+        let ticket = loadTicket
+        for delay in [2.0, 6.0] {
+            let work = DispatchWorkItem { [weak self, weak player] in
+                guard let self, let player, self.player === player, self.loadTicket == ticket,
+                      YouTubeWebView.videoID(player.url) == id,
+                      UIApplication.shared.applicationState == .background else { return }
+                self.sampleBackgroundPlayback(delay == 2 ? "background+2s" : "background+6s")
+            }
+            backgroundPlaybackWork.append(work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+    }
+
+    private func sampleBackgroundPlayback(_ phase: String) {
+        guard StartupDiagnostics.enabled, mode == .expanded || mode == .mini,
+              !systemMediaSuspendedForOffline, let player,
+              let id = YouTubeWebView.videoID(player.url),
+              let number = backgroundPlaybackProbe?.claim(phase: phase, videoID: id),
+              let script = backgroundPlaybackProbe?.snapshotJavaScript() else { return }
+        let ticket = loadTicket, requested = ProcessInfo.processInfo.systemUptime
+        let requestedState = UIApplication.shared.applicationState.rawValue
+        let request: [String: Any] = ["event": "background-audio-probe", "phase": phase,
+                                    "sample": number, "ticket": ticket,
+                                    "requestedApplicationState": requestedState,
+                                    "requestedUptime": requested]
+        var initial = request; initial["kind"] = "requested"
+        StartupDiagnostics.videoMark(initial)
+        player.requestMediaPlaybackState { [weak self, weak player] state in
+            guard let self, let player, self.player === player, self.loadTicket == ticket,
+                  self.mode == .expanded || self.mode == .mini, !self.systemMediaSuspendedForOffline,
+                  YouTubeWebView.videoID(player.url) == id else { return }
+            var entry = request; entry["kind"] = "webkit"
+            entry["completionApplicationState"] = UIApplication.shared.applicationState.rawValue
+            entry["completionMilliseconds"] = max(0, (ProcessInfo.processInfo.systemUptime - requested) * 1000)
+            entry["mediaPlaybackState"] = state.rawValue
+            StartupDiagnostics.videoMark(entry)
+        }
+        player.evaluateJavaScript(script) { [weak self, weak player] result, error in
+            guard let self, let player, self.player === player, self.loadTicket == ticket,
+                  self.mode == .expanded || self.mode == .mini, !self.systemMediaSuspendedForOffline,
+                  YouTubeWebView.videoID(player.url) == id else { return }
+            var entry = request; entry["kind"] = "javascript"
+            entry["completionApplicationState"] = UIApplication.shared.applicationState.rawValue
+            entry["completionMilliseconds"] = max(0, (ProcessInfo.processInfo.systemUptime - requested) * 1000)
+            entry["error"] = error != nil
+            entry["snapshot"] = BackgroundPlaybackProbe.sanitized(result as? [String: Any] ?? [:])
+            StartupDiagnostics.videoMark(entry)
+        }
+    }
+
+    /// Current Watch background leases are source-bound. Explicit diagnostic
+    /// comparisons remain isolated; a category declaration never plays media.
+    private func watchBackgroundCategoryTransition(_ phase: String) {
+        guard let handoff = backgroundCategoryHandoff else { return }
+        if phase == "cancel" || phase == "foreground" {
+            handoff.cancel()
+            let previous = backgroundCategoryRequest
+            backgroundCategoryRequest = nil
+            backgroundContinuationRevoked = true
+            if phase == "foreground", handoff.preservesVisibility {
+                player?.evaluateJavaScript("window.__langformWatchBackgroundAudio && window.__langformWatchBackgroundAudio.foreground(\(backgroundCategorySerial))")
+            } else if let previous, let player,
+                      let data = try? JSONSerialization.data(withJSONObject: [previous.id, previous.ticket, previous.number]),
+                      let arguments = String(data: data, encoding: .utf8) {
+                player.evaluateJavaScript("window.__langformWatchBackgroundAudio && window.__langformWatchBackgroundAudio.cancel(...\(arguments))")
+            }
+            return
+        }
+        if phase == "interrupt" || phase == "did-enter-background" {
+            guard handoff.preservesVisibility, let current = backgroundCategoryRequest, let player,
+                  current.ticket == loadTicket, YouTubeWebView.videoID(player.url) == current.id,
+                  let data = try? JSONSerialization.data(withJSONObject: [current.id, current.ticket, current.number]),
+                  let arguments = String(data: data, encoding: .utf8) else { return }
+            if phase == "interrupt" {
+                backgroundContinuationRevoked = true
+                handoff.cancel()
+            }
+            let action = phase == "interrupt" ? "interrupt" : "background"
+            player.evaluateJavaScript("window.__langformWatchBackgroundAudio && window.__langformWatchBackgroundAudio.\(action)(...\(arguments))")
+            return
+        }
+        guard phase == "will-resign-active", backgroundCategoryRequest == nil,
+              mode == .expanded || mode == .mini, videoPlaying || handoff.preservesVisibility, !dragging,
+              !systemMediaSuspendedForOffline, let player,
+              let id = YouTubeWebView.videoID(player.url), id == startupVideoID, (handoff.videoID == nil || handoff.videoID == id),
+              let data = try? JSONSerialization.data(withJSONObject: [id, loadTicket, backgroundCategorySerial + 1, handoff.preservesVisibility]),
+              let arguments = String(data: data, encoding: .utf8) else { return }
+        backgroundCategorySerial += 1
+        backgroundContinuationRevoked = backgroundAudioInterrupted
+        let number = backgroundCategorySerial, ticket = loadTicket
+        backgroundCategoryRequest = (number, ticket, id, nil)
+        let requestedState = UIApplication.shared.applicationState.rawValue
+        player.evaluateJavaScript("window.__langformWatchBackgroundAudio ? window.__langformWatchBackgroundAudio.capture(...\(arguments)) : ({accepted:false})") { [weak self, weak player] result, error in
+            guard let self, let player, self.player === player, self.loadTicket == ticket,
+                  self.backgroundCategoryRequest?.number == number, self.backgroundCategoryRequest?.ticket == ticket,
+                  self.mode == .expanded || self.mode == .mini, self.videoPlaying || handoff.preservesVisibility, !self.dragging,
+                  !self.systemMediaSuspendedForOffline, YouTubeWebView.videoID(player.url) == id,
+                  self.startupVideoID == id, UIApplication.shared.applicationState != .active else { return }
+            guard error == nil, let values = result as? [String: Any], values["accepted"] as? Bool == true,
+                  values["videoID"] as? String == id, values["ticket"] as? Int == ticket,
+                  values["request"] as? Int == number, let token = values["token"] as? Int, token > 0 else {
+                StartupDiagnostics.videoMark(["event": "background-category-probe", "kind": "capture-rejected",
+                                              "ticket": ticket, "request": number,
+                                              "requestedApplicationState": requestedState,
+                                              "completionApplicationState": UIApplication.shared.applicationState.rawValue])
+                self.watchBackgroundCategoryTransition("cancel")
+                return
+            }
+            self.backgroundCategoryRequest = (number, ticket, id, token)
+            if handoff.preservesVisibility && (values["mayContinue"] as? Bool != true || self.backgroundContinuationRevoked) {
+                self.watchBackgroundCategoryTransition("interrupt")
+                StartupDiagnostics.videoMark(["event": "background-visibility-probe", "kind": "source-retained-paused",
+                                              "ticket": ticket, "request": number, "token": token])
+                return
+            }
+            let owner = WatchBackgroundAudioCategoryHandoff.Owner(videoID: id, ticket: ticket, token: token)
+            handoff.request(owner) { [weak self, weak player] outcome in
+                guard let self else { return }
+                let current = outcome.current && player != nil && self.player === player && self.loadTicket == ticket &&
+                    self.backgroundCategoryRequest?.number == number && self.backgroundCategoryRequest?.token == token &&
+                    (self.mode == .expanded || self.mode == .mini) && (self.videoPlaying || handoff.preservesVisibility) &&
+                    (!handoff.preservesVisibility || !self.backgroundContinuationRevoked) && !self.systemMediaSuspendedForOffline &&
+                    YouTubeWebView.videoID(player?.url) == id && UIApplication.shared.applicationState != .active
+                StartupDiagnostics.videoMark(["event": "background-category-probe", "kind": "result",
+                                              "ticket": ticket, "request": number, "token": token,
+                                              "applied": outcome.applied, "failed": outcome.failed, "current": current,
+                                              "categoryMilliseconds": outcome.milliseconds,
+                                              "categoryBefore": outcome.categoryBefore ?? "not-called",
+                                              "categoryAfter": outcome.categoryAfter ?? "not-called",
+                                              "requestedApplicationState": requestedState,
+                                              "completionApplicationState": UIApplication.shared.applicationState.rawValue])
+                if handoff.preservesVisibility, current, outcome.applied,
+                   let data = try? JSONSerialization.data(withJSONObject: [id, ticket, number, token, true]),
+                   let arguments = String(data: data, encoding: .utf8) {
+                    player?.evaluateJavaScript("window.__langformWatchBackgroundAudio && window.__langformWatchBackgroundAudio.categoryReady(...\(arguments))")
+                }
+            }
+        }
+    }
+
+    /// One host output snapshot, correlated with existing page rows. The
+    /// budget is claimed before any AVAudioSession getter; normal launches do
+    /// not read the session and no observation activates or changes playback.
+    private func recordAudioRouteSnapshot(kind: String, callbackUptime: Double,
+                                          previousRoute: AVAudioSessionRouteDescription? = nil, routeReason: String? = nil,
+                                          interruptionType: String? = nil, shouldResume: Bool? = nil,
+                                          interruptionReason: String? = nil, playerRow: [String: Any]? = nil) {
+        guard StartupDiagnostics.audioRouteProbeEnabled, audioRouteProbe != nil,
+              mode == .expanded || mode == .mini, let player,
+              let id = YouTubeWebView.videoID(player.url), startupVideoID == id else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let sample = audioRouteProbe?.claim(kind: kind, uptime: now) else { return }
+        let session = AVAudioSession.sharedInstance()
+        var values: [String: Any] = ["kind": kind, "sample": sample, "ticket": loadTicket,
+            "callbackUptime": callbackUptime, "snapshotUptime": now,
+            "applicationState": UIApplication.shared.applicationState.rawValue,
+            "systemOutputVolume": Double(session.outputVolume), "category": session.category.rawValue,
+            "mode": session.mode.rawValue,
+            "outputTypes": AudioRouteProbe.outputTypes(session.currentRoute.outputs.map { $0.portType.rawValue }),
+            "preparationSuspended": playerPreparationSuspended, "offlinePlayback": systemMediaSuspendedForOffline,
+            "categoryHandoffPending": backgroundCategoryRequest != nil]
+        if let previousRoute { values["previousOutputTypes"] = AudioRouteProbe.outputTypes(previousRoute.outputs.map { $0.portType.rawValue }) }
+        if let routeReason { values["routeReason"] = routeReason }
+        if let interruptionType { values["interruptionType"] = interruptionType }
+        if let shouldResume { values["shouldResume"] = shouldResume }
+        if let interruptionReason { values["interruptionReason"] = interruptionReason }
+        var entry = AudioRouteProbe.sanitized(values)
+        entry["event"] = "audio-route-probe"
+        if let playerRow, let page = PlayerDiagnosticEvent.sanitized(playerRow) { entry["page"] = page }
+        StartupDiagnostics.videoMark(entry)
+    }
+
+    private func recordAudioRoutePlayerRows(_ rows: [[String: Any]]) {
+        guard StartupDiagnostics.audioRouteProbeEnabled, audioRouteProbe != nil,
+              let row = rows.suffix(32).reversed().compactMap({ PlayerDiagnosticEvent.sanitized($0) })
+                .first(where: { $0["hasVideo"] as? Bool == true && $0["playerMatches"] as? Bool == true }) else { return }
+        recordAudioRouteSnapshot(kind: "player-state", callbackUptime: ProcessInfo.processInfo.systemUptime, playerRow: row)
+    }
+
+    private func observeAudioRouteInterruption(_ notification: Notification) {
+        if StartupDiagnostics.audioRouteProbeEnabled {
+            let callbackUptime = ProcessInfo.processInfo.systemUptime
+            let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let kind = raw == AVAudioSession.InterruptionType.began.rawValue ? "began" :
+                raw == AVAudioSession.InterruptionType.ended.rawValue ? "ended" : "unknown"
+            let shouldResume = (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
+                .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) }
+            // The old suspension flag is unsupported. Keep this existing
+            // cross-version observer passive; without a supported deactivation
+            // context, the reason is unknown rather than inferred from legacy keys.
+            let observe: () -> Void = { [weak self] in
+                self?.recordAudioRouteSnapshot(kind: "interruption", callbackUptime: callbackUptime,
+                                               interruptionType: kind, shouldResume: shouldResume, interruptionReason: "unknown")
+            }
+            if Thread.isMainThread { observe() } else { DispatchQueue.main.async(execute: observe) }
+        }
+    }
+
+    @objc private func audioRouteDiagnosticInterruption(_ notification: Notification) {
+        observeAudioRouteInterruption(notification)
+    }
+
+    @objc private func audioRouteDiagnosticRouteChange(_ notification: Notification) {
+        observeAudioRouteChange(notification)
+    }
+
+    @objc private func backgroundAudioInterruption(_ notification: Notification) {
+        observeAudioRouteInterruption(notification)
+        guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        if type == .began { backgroundCategoryHandoff?.cancel() }
+        let update = { [weak self] in
+            guard let self else { return }
+            self.backgroundAudioInterrupted = type == .began
+            if type == .began { self.watchBackgroundCategoryTransition("interrupt") }
+        }
+        if Thread.isMainThread { update() } else { DispatchQueue.main.async(execute: update) }
+    }
+
+    private func observeAudioRouteChange(_ notification: Notification) {
+        if StartupDiagnostics.audioRouteProbeEnabled {
+            let callbackUptime = ProcessInfo.processInfo.systemUptime
+            let reason = AudioRouteProbe.routeReason(notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
+            let previous = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+            let observe: () -> Void = { [weak self] in
+                self?.recordAudioRouteSnapshot(kind: "route-change", callbackUptime: callbackUptime,
+                                               previousRoute: previous, routeReason: reason)
+            }
+            if Thread.isMainThread { observe() } else { DispatchQueue.main.async(execute: observe) }
+        }
+    }
+
+    @objc private func backgroundAudioRouteChanged(_ notification: Notification) {
+        observeAudioRouteChange(notification)
+        guard let raw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
+        backgroundCategoryHandoff?.cancel()
+        let update = { [weak self] in
+            guard let self else { return }
+            self.watchBackgroundCategoryTransition("interrupt")
+        }
+        if Thread.isMainThread { update() } else { DispatchQueue.main.async(execute: update) }
     }
 
     // MARK: Messages
@@ -3539,12 +4212,25 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         updateChrome()
     }
 
+    private func pendingPhysicalFullscreenExitSource(videoID: String) -> CGSize? {
+        guard let pending = pendingPhysicalFullscreenExit, let player,
+              activeRotationCoordinator != nil, mode == .expanded,
+              pending.videoID == videoID, pending.ticket == loadTicket,
+              pending.rotationGeneration == nativeRotationGeneration,
+              pending.player == ObjectIdentifier(player), customFullscreenID == videoID,
+              YouTubeWebView.videoID(player.url) == videoID,
+              let target = nativeRotationTarget, target.height > target.width,
+              ProcessInfo.processInfo.systemUptime <= pending.expiresAt else { return nil }
+        return pending.sourceViewport
+    }
+
     private func fullscreenPlayerViewport(default viewport: CGSize) -> CGSize {
+        if let id = customFullscreenID, let source = pendingPhysicalFullscreenExitSource(videoID: id) { return source }
         guard let exit = customFullscreenExit, exit.ticket == loadTicket,
               mode == .expanded, customFullscreenID == exit.videoID,
               YouTubeWebView.videoID(player?.url) == exit.videoID,
               let source = exit.sourceViewport else { return viewport }
-        return exit.motionReady ? exit.motionViewport ?? viewport : source
+        return exit.motionReady && !exit.preRotationMotion ? exit.motionViewport ?? viewport : source
     }
 
     private func applyFullscreenSurface(_ t: CGFloat) -> Bool {
@@ -3569,6 +4255,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
 
     func beginNativeRotation(to size: CGSize, coordinator: UIViewControllerTransitionCoordinator) {
         guard mode == .expanded, size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
+        let sourceViewport = player?.bounds.size
+        pendingPhysicalFullscreenExit = nil
         nativeRotationGeneration += 1
         let generation = nativeRotationGeneration
         let ticket = loadTicket
@@ -3594,9 +4282,42 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             card.bounds = CGRect(origin: .zero, size: sourceBounds.size)
             card.center = sourceCenter
         }
+        if exitToken == nil, customFullscreenEnter == nil, size.height > size.width,
+           UIApplication.shared.applicationState == .active,
+           let id = customFullscreenID, id == videoID, let player, let source = sourceViewport,
+           source.width.isFinite, source.height.isFinite, source.width > source.height, source.height > 8,
+           abs(source.width-bounds.width) <= 2, abs(source.height-bounds.height) <= 2,
+           let data = try? JSONEncoder().encode(id), let literal = String(data: data, encoding: .utf8) {
+            // Rotation can beat its asynchronous page exit request. Lease only
+            // this current source viewport before the first destination layout.
+            // The page retains its existing ad/contact/zoom/overlay admission.
+            pendingPhysicalFullscreenExit = PendingPhysicalFullscreenExit(videoID: id, ticket: ticket,
+                rotationGeneration: generation, player: ObjectIdentifier(player), sourceViewport: source,
+                expiresAt: ProcessInfo.processInfo.systemUptime + min(2, max(0.8, remaining + 0.5)))
+            player.evaluateJavaScript("window.__langformFullscreen && window.__langformFullscreen.exitForRotation(\(literal))")
+        }
         if exitToken != nil {
-            customFullscreenExit?.cancellingMotion = false
-            requestFullscreenExitMotion(viewport: size, deadline: nativeRotationDeadlineMilliseconds!)
+            if let exit = customFullscreenExit, exit.preRotationMotion {
+                let matchingTarget = exit.motionViewport.map {
+                    abs($0.width-size.width) <= 2 && abs($0.height-size.height) <= 2
+                } == true
+                customFullscreenExit?.preRotationMotion = false
+                if exit.ticket == loadTicket, exit.videoID == videoID, exit.motionReady,
+                   exit.portraitRequested, !exit.cancellingMotion, matchingTarget {
+                    // CSS has already reached its bound inline pose. Only the
+                    // actual matching native transition releases WK bounds.
+                    customFullscreenExit?.motionGeneration = generation
+                } else {
+                    // A physical/opposite transition won the race. Cancel its
+                    // old pose before returning to the existing natural path.
+                    customFullscreenExit?.motionReady = false
+                    customFullscreenExit?.cancellingMotion = false
+                    cancelFullscreenExitMotion()
+                }
+            } else {
+                customFullscreenExit?.cancellingMotion = false
+                requestFullscreenExitMotion(viewport: size, deadline: nativeRotationDeadlineMilliseconds!, curve: nativeRotationCSSCurve)
+            }
         }
         // This runs with the source bounds. A later layout prepares WebKit only
         // after it has the actual destination viewport, while rotation is held.
@@ -3609,6 +4330,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             self.card.center = CGPoint(x: size.width / 2, y: size.height / 2)
         }) { [weak self] context in
             guard let self, self.nativeRotationGeneration == generation else { return }
+            self.pendingPhysicalFullscreenExit = nil
             self.activeRotationCoordinator = nil
             self.fullscreenCardRotationGeneration = nil
             self.nativeRotationTarget = nil
@@ -3617,7 +4339,12 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             self.customFullscreenEnter?.waitingForRotation = false
             self.customFullscreenExit?.waitingForRotation = false
             guard self.loadTicket == ticket, YouTubeWebView.videoID(self.player?.url) == videoID else { return }
-            if context.isCancelled, let exitToken, self.customFullscreenExit?.token == exitToken {
+            let finishingExitToken = self.customFullscreenExit.flatMap { exit -> String? in
+                guard exit.ticket == ticket, exit.videoID == videoID,
+                      exitToken.map({ exit.token == $0 }) ?? (exit.motionGeneration == generation) else { return nil }
+                return exit.token
+            }
+            if context.isCancelled, finishingExitToken != nil {
                 self.customFullscreenExit?.allowsCurrentOrientation = true
                 self.cancelFullscreenExitMotion()
             }
@@ -3625,18 +4352,20 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             if let entryToken, self.customFullscreenEnter?.token == entryToken {
                 self.confirmCustomFullscreenEnter(afterRotation: true)
             }
-            if let exitToken, self.customFullscreenExit?.token == exitToken {
+            if !context.isCancelled, let finishingExitToken, self.customFullscreenExit?.token == finishingExitToken {
                 self.confirmCustomFullscreenExit(afterRotation: true)
             }
-            if self.customFullscreenExit?.sourceViewport != nil, self.customFullscreenExit?.motionViewport == nil,
+            if !context.isCancelled, self.customFullscreenExit?.sourceViewport != nil, self.customFullscreenExit?.motionViewport == nil,
                self.window?.windowScene?.interfaceOrientation.isPortrait == true, self.bounds.height >= self.bounds.width {
                 self.requestFullscreenExitMotion(viewport: self.bounds.size, deadline: Date().timeIntervalSince1970 * 1000)
             }
+            self.finishPhysicalRotationIntent()
         }
     }
 
     private func cancelNativeRotation() {
         nativeRotationGeneration += 1
+        pendingPhysicalFullscreenExit = nil
         activeRotationCoordinator = nil
         fullscreenCardRotationGeneration = nil
         nativeRotationTarget = nil
@@ -3649,6 +4378,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         customFullscreenExit?.sourceViewport = nil
         customFullscreenExit?.motionViewport = nil
         customFullscreenExit?.motionGeneration = nil
+        customFullscreenExit?.preRotationMotion = false
         setNeedsLayout()
     }
 
@@ -3700,7 +4430,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
 
     private func resetCustomFullscreen() {
         cancelNativeRotation()
-        let hadExitRequest = customFullscreenExit != nil
+        let hadExitRequest = customFullscreenExit?.portraitRequested == true
+        if customFullscreenID != nil { rotationIntentPolicy.fullscreenExitRequested() }
         customFullscreenExit = nil
         customFullscreenEnter = nil
         guard customFullscreenID != nil else { return }
@@ -3713,7 +4444,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         }
     }
 
-    private func requestFullscreenExitMotion(viewport: CGSize, deadline: Double) {
+    private func requestFullscreenExitMotion(viewport: CGSize, deadline: Double, curve: String? = nil) {
         guard var exit = customFullscreenExit, exit.ticket == loadTicket,
               mode == .expanded, customFullscreenID == exit.videoID,
               YouTubeWebView.videoID(player?.url) == exit.videoID, let player,
@@ -3723,9 +4454,20 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         if exit.motionViewport == viewport && exit.motionGeneration == nativeRotationGeneration { return }
         exit.motionViewport = viewport
         exit.motionGeneration = nativeRotationGeneration
+        let startsMotionDiagnostics = StartupDiagnostics.enabled && !exit.diagnosticMotionStarted
+        if startsMotionDiagnostics { exit.diagnosticMotionStarted = true }
         customFullscreenExit = exit
+        if startsMotionDiagnostics {
+            // A delayed UIKit rotation can outlive the request-time probe.
+            // One fresh bounded window per owner captures the actual handoff.
+            fullscreenGeometryTrace = (exit.videoID, exit.token, exit.ticket, ProcessInfo.processInfo.systemUptime, 0)
+            fullscreenGeometryDirection = "exit"
+            startFullscreenPresentation(videoID: exit.videoID, token: exit.token, direction: "exit")
+        }
         let generation = nativeRotationGeneration
-        guard let data = try? JSONSerialization.data(withJSONObject: [exit.videoID, exit.token, viewport.width, viewport.height, deadline, exit.ticket]),
+        var requestArguments: [Any] = [exit.videoID, exit.token, viewport.width, viewport.height, deadline, exit.ticket]
+        if let curve { requestArguments.append(curve) }
+        guard let data = try? JSONSerialization.data(withJSONObject: requestArguments),
               let arguments = String(data: data, encoding: .utf8) else { releaseFullscreenExitViewport(); return }
         StartupDiagnostics.videoMark(["event": "fullscreen-exit-motion-request", "nativeUnixMilliseconds": Date().timeIntervalSince1970 * 1000,
             "sourceWidth": source.width, "sourceHeight": source.height, "targetWidth": viewport.width, "targetHeight": viewport.height])
@@ -3744,6 +4486,13 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             guard let self, self.loadTicket == exit.ticket, self.nativeRotationGeneration == generation,
                   self.customFullscreenExit?.token == exit.token, self.customFullscreenExit?.motionViewport == viewport,
                   self.customFullscreenExit?.motionReady == false, self.customFullscreenExit?.cancellingMotion == false else { return }
+            if StartupDiagnostics.enabled {
+                var row: [String: Any] = ["event": "fullscreen-exit-motion-result",
+                    "nativeUnixMilliseconds": Date().timeIntervalSince1970 * 1000,
+                    "accepted": (result as? Bool) == true, "scriptError": error != nil]
+                if let error = error as NSError? { row["scriptErrorCode"] = error.code }
+                StartupDiagnostics.videoMark(row)
+            }
             // False/error means no staged motion was accepted. The existing
             // natural-layout handoff is then free to use the current viewport.
             if error != nil || (result as? Bool) != true { self.releaseFullscreenExitViewport() }
@@ -3760,6 +4509,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         customFullscreenExit?.motionViewport = nil
         customFullscreenExit?.motionGeneration = nil
         customFullscreenExit?.cancellingMotion = false
+        customFullscreenExit?.preRotationMotion = false
+        requestFullscreenExitPortrait()
         setNeedsLayout()
         layoutIfNeeded()
         confirmCustomFullscreenExit()
@@ -3813,9 +4564,41 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         fullscreenExitMotionTimeout = nil
         StartupDiagnostics.videoMark(["event": "fullscreen-exit-motion-ready", "nativeUnixMilliseconds": Date().timeIntervalSince1970 * 1000,
             "sourceWidth": source.width, "sourceHeight": source.height, "targetWidth": target.width, "targetHeight": target.height])
+        if exit.preRotationMotion {
+            requestFullscreenExitPortrait()
+            return
+        }
         setNeedsLayout()
         layoutIfNeeded()
         confirmCustomFullscreenExit()
+    }
+
+    private func resumeFullscreenExitAfterInactivity() {
+        guard UIApplication.shared.applicationState == .active,
+              let exit = customFullscreenExit, exit.sourceViewport == nil,
+              !exit.preRotationMotion, !exit.portraitRequested else { return }
+        requestFullscreenExitPortrait()
+    }
+
+    private func requestFullscreenExitPortrait() {
+        guard var exit = customFullscreenExit, exit.ticket == loadTicket,
+              mode == .expanded, customFullscreenID == exit.videoID,
+              YouTubeWebView.videoID(player?.url) == exit.videoID,
+              !exit.portraitRequested else { return }
+        exit.portraitRequested = true
+        customFullscreenExit = exit
+        onFullscreen?(false)
+        requestPlayerOrientation(.portrait, onRejected: { [weak self] in
+            guard let self, self.loadTicket == exit.ticket,
+                  self.customFullscreenExit?.token == exit.token,
+                  self.customFullscreenExit?.ticket == exit.ticket,
+                  self.customFullscreenID == exit.videoID,
+                  YouTubeWebView.videoID(self.player?.url) == exit.videoID,
+                  self.mode == .expanded else { return }
+            self.customFullscreenExit?.allowsCurrentOrientation = true
+            self.releaseFullscreenExitViewport()
+            self.confirmCustomFullscreenExit()
+        })
     }
 
     private func beginCustomFullscreenExit(_ body: [String: Any]) {
@@ -3825,24 +4608,36 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
               let href = body["href"] as? String, YouTubeWebView.videoID(URL(string: href)) == id,
               YouTubeWebView.videoID(player?.url) == id, mode == .expanded else { return }
         guard customFullscreenExit == nil else { return }
+        rotationIntentPolicy.fullscreenExitRequested()
         customFullscreenEnter = nil
+        let physicalSource = pendingPhysicalFullscreenExitSource(videoID: id)
+        pendingPhysicalFullscreenExit = nil
         customFullscreenExit = CustomFullscreenExit(videoID: id, token: token, ticket: loadTicket,
-            opensSearchInFeed: body["action"] as? String == "search", sourceViewport: player?.bounds.size)
+            opensSearchInFeed: body["action"] as? String == "search", sourceViewport: physicalSource ?? player?.bounds.size)
         if StartupDiagnostics.enabled {
             fullscreenGeometryTrace = (id, token, loadTicket, ProcessInfo.processInfo.systemUptime, 0)
             fullscreenGeometryDirection = "exit"
             startFullscreenPresentation(videoID: id, token: token, direction: "exit")
         }
-        // Restore status-bar/safe-area allocation while the live picture is
-        // still held by fullscreen CSS. Keep native ownership until JS commits.
-        onFullscreen?(false)
-        requestPlayerOrientation(.portrait, onRejected: { [weak self] in
-            guard let self, self.customFullscreenExit?.token == token,
-                  self.customFullscreenExit?.ticket == self.loadTicket else { return }
-            self.customFullscreenExit?.allowsCurrentOrientation = true
-            self.releaseFullscreenExitViewport()
-            self.confirmCustomFullscreenExit()
-        })
+        if physicalSource != nil, activeRotationCoordinator != nil,
+           let target = nativeRotationTarget, let deadline = nativeRotationDeadlineMilliseconds {
+            customFullscreenExit?.waitingForRotation = true
+            requestFullscreenExitMotion(viewport: target, deadline: deadline, curve: nativeRotationCSSCurve)
+            return
+        }
+        if activeRotationCoordinator == nil,
+           window?.windowScene?.interfaceOrientation.isPortrait == false,
+           let source = customFullscreenExit?.sourceViewport,
+           source.width.isFinite, source.height.isFinite, source.width > source.height,
+           source.height > 8, abs(source.width-bounds.width) <= 2, abs(source.height-bounds.height) <= 2 {
+            // JS validates this proposed viewport against its bound, stable
+            // inline cache before accepting any live picture interpolation.
+            customFullscreenExit?.preRotationMotion = true
+            requestFullscreenExitMotion(viewport: CGSize(width:source.height,height:source.width),
+                deadline: Date().timeIntervalSince1970 * 1000 + 200)
+            return
+        }
+        requestFullscreenExitPortrait()
         setNeedsLayout()
         if activeRotationCoordinator == nil, window?.windowScene?.interfaceOrientation.isPortrait == true,
            bounds.height >= bounds.width {
@@ -3855,7 +4650,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         guard var exit = customFullscreenExit, exit.ticket == loadTicket,
               customFullscreenID == exit.videoID, mode == .expanded,
               YouTubeWebView.videoID(player?.url) == exit.videoID, let player else { return }
-        if exit.sourceViewport != nil && !exit.motionReady { return }
+        if exit.preRotationMotion || exit.sourceViewport != nil && !exit.motionReady { return }
         if !afterRotation, activeRotationCoordinator != nil {
             let viewport = player.bounds.size
             // UIKit exposes its destination bounds before the rotation ends.
@@ -3945,9 +4740,12 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             "displayTimestamp": link.timestamp, "displayTargetTimestamp": link.targetTimestamp,
             "nativeEnterPending": customFullscreenEnter != nil,
             "nativeExitPending": customFullscreenExit != nil,
-            "nativeFullscreen": playerFullscreen
+            "nativeFullscreen": playerFullscreen,
+            "nativeTraceMotionWindow": trace.direction == "exit" && customFullscreenExit?.diagnosticMotionStarted == true
         ]
-        row["nativeExitViewportHeld"] = customFullscreenExit?.sourceViewport != nil && customFullscreenExit?.motionReady == false
+        row["nativeExitViewportHeld"] = customFullscreenExit?.sourceViewport != nil &&
+            (customFullscreenExit?.motionReady == false || customFullscreenExit?.preRotationMotion == true)
+        row["nativeExitPreRotation"] = customFullscreenExit?.preRotationMotion == true
         row["nativeExitMotionRequested"] = customFullscreenExit?.motionViewport != nil
         row["nativeExitMotionReady"] = customFullscreenExit?.motionReady == true
         if let target = nativeRotationTarget {
@@ -3957,7 +4755,19 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         func number(_ key: String, _ value: CGFloat) {
             if value.isFinite { row[key] = Double(value) }
         }
-        func captureLayer(_ layer: CALayer, _ prefix: String) {
+        func captureColor(_ color: UIColor?, _ prefix: String, _ traits: UITraitCollection) {
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            guard let color = color?.resolvedColor(with: traits),
+                  color.getRed(&red, green: &green, blue: &blue, alpha: &alpha),
+                  [red, green, blue, alpha].allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
+                row[prefix + "Available"] = false
+                return
+            }
+            row[prefix + "Available"] = true
+            number(prefix + "Red", red); number(prefix + "Green", green)
+            number(prefix + "Blue", blue); number(prefix + "Alpha", alpha)
+        }
+        func captureLayer(_ layer: CALayer, _ prefix: String, _ traits: UITraitCollection) {
             number(prefix + "BoundsX", layer.bounds.minX); number(prefix + "BoundsY", layer.bounds.minY)
             number(prefix + "BoundsWidth", layer.bounds.width); number(prefix + "BoundsHeight", layer.bounds.height)
             number(prefix + "PositionX", layer.position.x); number(prefix + "PositionY", layer.position.y)
@@ -3965,15 +4775,26 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             number(prefix + "TransformA", transform.a); number(prefix + "TransformB", transform.b)
             number(prefix + "TransformC", transform.c); number(prefix + "TransformD", transform.d)
             number(prefix + "TransformTX", transform.tx); number(prefix + "TransformTY", transform.ty)
+            captureColor(layer.backgroundColor.map { UIColor(cgColor: $0) }, prefix + "Background", traits)
+            number(prefix + "Opacity", CGFloat(layer.opacity))
+            row[prefix + "Hidden"] = layer.isHidden
+            row[prefix + "Opaque"] = layer.isOpaque
         }
         func captureView(_ view: UIView, _ prefix: String) {
-            captureLayer(view.layer, prefix + "Model")
+            captureLayer(view.layer, prefix + "Model", view.traitCollection)
             let presentation = view.layer.presentation()
             row[prefix + "HasPresentation"] = presentation != nil
-            if let presentation { captureLayer(presentation, prefix + "Presentation") }
+            if let presentation { captureLayer(presentation, prefix + "Presentation", view.traitCollection) }
             number(prefix + "SafeTop", view.safeAreaInsets.top)
+            captureColor(view.backgroundColor, prefix + "Background", view.traitCollection)
+            number(prefix + "Alpha", view.alpha)
+            row[prefix + "Hidden"] = view.isHidden
+            row[prefix + "Opaque"] = view.isOpaque
         }
         captureView(self, "stage"); captureView(card, "card"); captureView(player, "player")
+        captureView(player.scrollView, "playerScroll")
+        captureColor(player.underPageBackgroundColor, "playerUnderPageBackground", player.traitCollection)
+        if let feed { captureView(feed, "feed") }
         captureView(window, "rootWindow")
         if let rootView = window.rootViewController?.viewIfLoaded { captureView(rootView, "rootView") }
         let coordinator = activeRotationCoordinator
@@ -4027,17 +4848,110 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                     "pictureX", "pictureY", "pictureWidth", "pictureHeight", "videoX", "videoY", "videoWidth", "videoHeight",
                     "rootX", "rootY", "rootWidth", "rootHeight", "intrinsicWidth", "intrinsicHeight", "currentTime", "headerY",
                     "naturalVideoWidth", "naturalVideoHeight", "naturalContainerWidth", "naturalContainerHeight",
-                    "videoInlineWidth", "videoInlineHeight", "containerInlineWidth", "containerInlineHeight"] {
+                    "videoInlineWidth", "videoInlineHeight", "containerInlineWidth", "containerInlineHeight",
+                    "exitBeforeResetWidth", "exitBeforeResetHeight", "exitAfterResetWidth", "exitAfterResetHeight",
+                    "exitMotionReceivedEpochMilliseconds", "exitMotionSetupEpochMilliseconds", "exitMotionDurationMilliseconds",
+                    "exitMotionFromWidth", "exitMotionFromHeight", "exitMotionPinnedWidth", "exitMotionPinnedHeight",
+                    "exitAnimationMilliseconds", "exitAnimationProgress"] {
             if let value = row[key] as? NSNumber, value.doubleValue.isFinite { result[key] = value.doubleValue }
+        }
+        for key in ["exitRequestEpochMilliseconds", "exitAnimationCreatedEpochMilliseconds", "exitHandoffToInlineCalls"] {
+            if let value = row[key] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite {
+                result[key] = value.doubleValue
+            }
         }
         if let reason = row["exitMotionRejectedReason"] as? NSNumber,
            reason.doubleValue.isFinite, reason.doubleValue.rounded() == reason.doubleValue,
            reason.doubleValue >= 0, reason.doubleValue <= 10 { result["exitMotionRejectedReason"] = reason.doubleValue }
+        for (keys, maximum) in [
+            (["exitHTMLPaint", "exitBodyPaint", "exitHitPaint", "exitAncestorPaint"], 3.0),
+            (["exitHitDepth", "exitAncestorDepth"], 12.0),
+            (["exitHitRole", "exitAncestorRole"], 5.0)
+        ] {
+            for key in keys {
+                if let value = row[key] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(),
+                   value.doubleValue.isFinite, value.doubleValue.rounded() == value.doubleValue,
+                   value.doubleValue >= 0, value.doubleValue <= maximum { result[key] = value.doubleValue }
+            }
+        }
         for key in ["paused", "hidden", "held", "rootFixed", "exitContextHidden", "exitUsingCachedDestination", "exitMotionBeforeResize",
-                    "inlineSizeOwned", "inlineSizeSuspended", "playerSetSizeAvailable"] {
+                    "inlineSizeOwned", "inlineSizeSuspended", "playerSetSizeAvailable",
+                    "exitWatchContextVisible", "exitBackdropLeased", "exitRevealsActive", "traceMotionWindow"] {
             if let value = row[key] as? Bool { result[key] = value }
         }
         return result
+    }
+
+    private var physicalPlayerOrientation: PlayerRotationIntentPolicy.Orientation {
+        switch UIDevice.current.orientation {
+        case .portrait: return .portrait
+        case .landscapeLeft, .landscapeRight: return .landscape
+        // Portrait upside down is not supported by this iPhone app.
+        default: return .unknown
+        }
+    }
+
+    private var physicalRotationContext: PlayerRotationIntentPolicy.Context {
+        let id = YouTubeWebView.videoID(player?.url)
+        let owner = id.map { PlayerRotationIntentPolicy.Owner(videoID: $0, ticket: loadTicket) }
+        let geometry = videoSeekGeometry
+        let mediaOwned = ownsWatchPlayer && startupStatus.hasPresentedPicture
+            && geometry?.videoID == id && geometry?.ticket == loadTicket
+        func active(_ gesture: UIGestureRecognizer?) -> Bool {
+            gesture?.state == .began || gesture?.state == .changed
+        }
+        return PlayerRotationIntentPolicy.Context(owner: owner, expanded: mode == .expanded,
+            fullscreen: customFullscreenID != nil,
+            foreground: UIApplication.shared.applicationState == .active
+                && window?.windowScene?.activationState == .foregroundActive && !systemMediaSuspendedForOffline,
+            mediaOwned: mediaOwned,
+            gestureActive: dragging || edgeBackTracking || active(drag) || active(edgeBack)
+                || active(player?.scrollView.panGestureRecognizer),
+            overlayOpen: playerOverlayOpen || keyboardVisible,
+            fullscreenTransition: customFullscreenEnter != nil || customFullscreenExit != nil || cardMoving || feedOpening != nil,
+            nativeRotating: activeRotationCoordinator != nil,
+            geometryCurrent: geometry?.viewport == viewportGeneration && !awaitingViewportGeometry && hasVideoRect)
+    }
+
+    @objc private func physicalDeviceOrientationChanged() {
+        let context = physicalRotationContext
+        if let request = rotationIntentPolicy.observe(physicalPlayerOrientation, context: context,
+                                                     now: ProcessInfo.processInfo.systemUptime) {
+            performPhysicalRotation(request)
+        }
+    }
+
+    @objc private func resetPhysicalRotationBaseline() {
+        rotationIntentPolicy.reset(orientation: physicalPlayerOrientation)
+    }
+
+    @objc private func playerSceneBecameInactive(_ notification: Notification) {
+        guard let scene = notification.object as? UIScene, scene === window?.windowScene else { return }
+        revokeFullscreenEntryAdmission()
+        rotationIntentPolicy.reset(orientation: physicalPlayerOrientation)
+    }
+
+    @objc private func playerSceneBecameActive(_ notification: Notification) {
+        guard let scene = notification.object as? UIScene, scene === window?.windowScene else { return }
+        rotationIntentPolicy.reset(orientation: physicalPlayerOrientation)
+    }
+
+    private func finishPhysicalRotationIntent() {
+        if let request = rotationIntentPolicy.takePending(context: physicalRotationContext,
+                                                         now: ProcessInfo.processInfo.systemUptime) {
+            performPhysicalRotation(request)
+        }
+    }
+
+    private func performPhysicalRotation(_ request: PlayerRotationIntentPolicy.Request) {
+        guard rotationIntentPolicy.isCurrent(request, context: physicalRotationContext), let player,
+              let data = try? JSONEncoder().encode(request.owner.videoID),
+              let literal = String(data: data, encoding: .utf8) else { return }
+        // The page checks the live main-video owner, ads and contacts again at
+        // execution. This uses the same fullscreen transaction as its button.
+        let action = request.action == .enter ? "enter" : "exitForRotation"
+        StartupDiagnostics.mark("physical-rotation-\(action)-request")
+        player.evaluateJavaScript("window.__langformFullscreen && window.__langformFullscreen.\(action)(\(literal))")
     }
 
     private func requestPlayerOrientation(_ orientations: UIInterfaceOrientationMask, onRejected: (() -> Void)? = nil) {
@@ -4095,6 +5009,49 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                 guard feedState(for: view)?.active == true else { return }
             }
             requestDownloads()
+        case "langformBackgroundAudio":
+            guard message.frameInfo.isMainFrame, let player, message.webView === player,
+                  message.frameInfo.securityOrigin.protocol == "https",
+                  ["m.youtube.com", "www.youtube.com", "youtube.com"].contains(message.frameInfo.securityOrigin.host),
+                  let current = backgroundCategoryRequest, let body = message.body as? [String: Any],
+                  ["cancel", "pause-intent", "continued", "already-playing", "continuation-rejected", "continuation-failed", "diagnostic"].contains(body["kind"] as? String ?? ""), body["videoID"] as? String == current.id,
+                  body["ticket"] as? Int == current.ticket, body["request"] as? Int == current.number,
+                  let token = body["token"] as? Int, token > 0, current.token == nil || current.token == token else { return }
+            if body["kind"] as? String == "diagnostic" {
+                guard StartupDiagnostics.enabled, backgroundPlaybackProbe != nil else { return }
+                let phases = ["captured", "cancel", "revoke", "waiting", "rejected", "already-playing", "continued", "visibility", "media-event", "background", "category"]
+                let reasons = ["none", "document-inactive", "route", "root-missing", "video-missing", "root-replaced", "video-replaced", "disconnected", "ended", "media-error", "not-ready", "source-empty", "source-changed", "attribute-changed", "native-drag", "metadata-exception", "metadata-missing", "metadata-id", "metadata-ad", "ad-class", "protected-field-replaced", "explicit-intent", "stale-lease", "category-only", "not-background", "category-not-ready", "native-active", "real-visible", "privilege-revoked", "consumed", "media-state"]
+                let triggers = ["none", "capture", "capture-replaced", "hidden-getter", "visibility-getter", "mutation", "visibility", "background", "category", "native-cancel", "native-interrupt", "foreground", "explicit-action", "continuation-check", "pause", "play", "pauseVideo", "playVideo", "playing", "ended", "emptied", "loadstart", "error", "volumechange", "ratechange", "loadedmetadata", "yt-navigate-start", "yt-navigate-finish", "state-navigateend", "popstate", "pagehide"]
+                let fields = ["none", "document.hidden", "document.visibilityState", "video.pause", "video.play", "root.pauseVideo", "root.playVideo"]
+                guard let phase = body["phase"] as? String, phases.contains(phase),
+                      let reason = body["reason"] as? String, reasons.contains(reason),
+                      let trigger = body["trigger"] as? String, triggers.contains(trigger),
+                      let field = body["field"] as? String, fields.contains(field),
+                      let row = body["row"] as? Int, (1...32).contains(row) else { return }
+                if backgroundLeaseDiagnosticTicket != current.ticket { backgroundLeaseDiagnosticTicket = current.ticket; backgroundLeaseDiagnosticCount = 0 }
+                guard backgroundLeaseDiagnosticCount < 32 else { return }
+                backgroundLeaseDiagnosticCount += 1
+                var entry: [String: Any] = ["event": "background-lease-probe", "phase": phase, "reason": reason, "trigger": trigger, "field": field,
+                                            "ticket": current.ticket, "request": current.number, "token": token, "row": row,
+                                            "completionApplicationState": UIApplication.shared.applicationState.rawValue]
+                for key in ["nativeInactive", "mayContinue", "consumed", "background", "categoryReady"] {
+                    if let value = body[key] as? Bool { entry[key] = value }
+                }
+                for key in ["milliseconds"] {
+                    if let value = body[key] as? NSNumber, value.doubleValue.isFinite, value.doubleValue >= 0, value.doubleValue <= 100_000_000 { entry[key] = value }
+                }
+                StartupDiagnostics.videoMark(entry)
+                return
+            }
+            if body["kind"] as? String == "cancel" {
+                watchBackgroundCategoryTransition("cancel")
+            } else if body["kind"] as? String == "pause-intent" {
+                backgroundContinuationRevoked = true
+                backgroundCategoryHandoff?.cancel()
+            } else if ["continued", "already-playing", "continuation-rejected", "continuation-failed"].contains(body["kind"] as? String ?? "") {
+                StartupDiagnostics.videoMark(["event": "background-visibility-probe", "kind": body["kind"] as! String,
+                                              "ticket": current.ticket, "request": current.number, "token": token])
+            }
         case "langformSystemMedia":
             guard let player, message.webView === player, mode != .closed, !systemMediaSuspendedForOffline,
                   message.frameInfo.securityOrigin.protocol == "https",
@@ -4102,6 +5059,26 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                   let id = mode == .loading ? loadingVideoID : YouTubeWebView.videoID(player.url),
                   let body = message.body as? [String: Any] else { return }
             systemMedia.receive(body, expectedID: id)
+        case "langformNativeSearch":
+            StartupDiagnostics.mark("native-search-bridge-received")
+            guard message.frameInfo.isMainFrame, let webView = message.webView, webView === feed,
+                  message.frameInfo.securityOrigin.protocol == "https",
+                  ["m.youtube.com", "www.youtube.com", "youtube.com"].contains(message.frameInfo.securityOrigin.host),
+                  let body = message.body as? [String: Any] else { return }
+            if body["action"] as? String == "probe" {
+                guard StartupDiagnostics.enabled, ProcessInfo.processInfo.environment["LANGFORM_NATIVE_SEARCH_PROBE"] == "1" else { return }
+                var row: [String:Any] = ["event":"native-search-probe"]
+                for key in ["initialized","links","active","prevented"] { if let value = body[key] as? Bool { row[key] = value } }
+                if let kind = body["kind"] as? String, ["ready","pointerdown","touchstart","pointerup","touchend","click","error"].contains(kind) { row["kind"] = kind }
+                if let type = body["errorType"] as? String, ["TypeError","ReferenceError","SyntaxError","RangeError","unknown"].contains(type) { row["errorType"] = type }
+                if let line = body["errorLine"] as? Double, line.isFinite, line >= 0, line < 100_000 { row["errorLine"] = line }
+                if let value = body["structure"] as? String, value.count <= 1600,
+                   value.range(of:"^[a-zA-Z0-9_ .:>äöüß-]*$",options:.regularExpression) != nil { row["structure"] = value }
+                StartupDiagnostics.videoMark(row)
+                return
+            }
+            nativeSearchChanged(body, from: webView)
+            StartupDiagnostics.mark(nativeSearchOverlay == nil ? "native-search-not-presented" : "native-search-presented")
         case "langformFeedSearch":
             guard message.frameInfo.isMainFrame,
                   let webView = message.webView, feedState(for: webView) != nil,
@@ -4110,7 +5087,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                   let body = message.body as? [String: Any] else { return }
             feedSearchChanged(body, from: webView)
         case "langformFeedReady":
-            guard let webView = message.webView, let state = feedState(for: webView),
+            guard message.frameInfo.isMainFrame, let webView = message.webView, let state = feedState(for: webView),
                   message.frameInfo.securityOrigin.protocol == "https",
                   ["m.youtube.com", "www.youtube.com", "youtube.com"].contains(message.frameInfo.securityOrigin.host),
                   let body = message.body as? [String: Any],
@@ -4120,13 +5097,17 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             if webView === feed { activatePendingFeedSearch() }
             // Check before scheduling JS as well as after it: an old document
             // can compute a result before commit but deliver it after commit.
-            guard state.refresh?.acceptsContentReady(navigation: navigation) == true else { return }
             // A previous document can have the same reload URL. Verify its
             // document identity in the current page before releasing a cover.
-            webView.evaluateJavaScript("window.__langformFeedDocumentToken || ''") { [weak state] result, _ in
-                guard let state, (result as? String) == token,
+            webView.evaluateJavaScript("window.__langformFeedDocumentToken || ''") { [weak self, weak state] result, _ in
+                guard let self, let state, state.navigation === navigation, (result as? String) == token,
                       href == state.webView.url?.absoluteString else { return }
+                state.contentReady = true
+                if state.webView === self.feedTabs[.you]?.webView {
+                    StartupDiagnostics.mark("you-preload-content-ready", once: true)
+                }
                 state.refresh?.contentReady(navigation: navigation)
+                self.scheduleFeedPrewarm()
             }
         case "langformFullscreen":
             guard message.webView === player,
@@ -4188,6 +5169,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                   let rows = message.body as? [[String: Any]] else { return }
             StartupDiagnostics.playerEvents(rows)
             StartupDiagnostics.captionEvents(rows)
+            recordAudioRoutePlayerRows(rows)
             if StartupDiagnostics.playerEventsEnabled,
                rows.contains(where: { ["pointerdown", "pointerup", "touchstart", "touchend", "click", "after-input"].contains($0["event"] as? String ?? "") }) {
                 StartupDiagnostics.videoMark([
@@ -4206,9 +5188,11 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                   ["feed-shell-visible", "feed-content-visible"].contains(event) else { return }
             if webView === feed {
                 StartupDiagnostics.mark(event, once: true, documentMilliseconds: body["documentMilliseconds"] as? Double)
-            } else if webView === feedTabs[.subscriptions]?.webView, event == "feed-content-visible" {
+            } else if event == "feed-content-visible",
+                      webView === feedTabs[.subscriptions]?.webView || webView === feedTabs[.you]?.webView {
                 // Laid-out rows behind the active feed, not visible user content.
-                StartupDiagnostics.mark("subscriptions-preload-content-ready", documentMilliseconds: body["documentMilliseconds"] as? Double)
+                StartupDiagnostics.mark(webView === feedTabs[.you]?.webView ? "you-preload-content-ready" : "subscriptions-preload-content-ready",
+                                        documentMilliseconds: body["documentMilliseconds"] as? Double)
             }
         case "langformOverlayState":
             guard let webView = message.webView,
@@ -4383,6 +5367,12 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
 
     // MARK: Navigation
 
+    func webView(_ webView: WKWebView,
+                 contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
+                 completionHandler: @escaping (UIContextMenuConfiguration?) -> Void) {
+        completionHandler(nil)
+    }
+
     func webView(
         _ webView: WKWebView,
         createWebViewWith configuration: WKWebViewConfiguration,
@@ -4423,6 +5413,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             decisionHandler(.cancel)
             return
         }
+        if feedState(for: webView) != nil, navigationAction.targetFrame?.isMainFrame == true,
+           YouTubeWebView.isAccountTransition(url) { evictCachedFeedsForAccountChange() }
         if feedState(for: webView) != nil,
            navigationAction.targetFrame?.isMainFrame == true,
            navigationAction.navigationType != .backForward,
@@ -4470,7 +5462,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             state.needsReload = false
             if let tab = prewarmingTab, feedTabs[tab]?.webView === webView {
                 prewarmingTab = nil
-                StartupDiagnostics.mark("subscriptions-preload-finished")
+                StartupDiagnostics.mark(tab == .you ? "you-preload-finished" : "subscriptions-preload-finished")
             }
             if let root = state.rootNavigation, let navigation, root === navigation {
                 state.rootNavigation = nil
@@ -4515,9 +5507,14 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         guard let state = feedState(for: webView), let root = state.rootNavigation,
               let navigation, root === navigation else { return }
         state.rootNavigation = nil
+        if let tab = prewarmingTab, feedTabs[tab] === state {
+            prewarmingTab = nil
+            scheduleFeedPrewarm()
+        }
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        (webView as? LangformWebView)?.synchronizeMotionPreferences()
         if webView === player || feedState(for: webView) != nil { synchronizeStageInsets(webView, forceDocument: true) }
         if webView === feed { StartupDiagnostics.mark("feed-commit", once: true) }
         if webView === player { sendNetworkPolicyToCurrentDocument() }
@@ -4561,6 +5558,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             feedSearchDocumentChanged(webView)
             state.refresh?.navigationStarted(navigation)
             state.navigation = navigation
+            state.contentReady = false
             state.overlayOpen = false
             webView.allowsBackForwardNavigationGestures = true
             if let root = state.rootNavigation, let navigation, root !== navigation {

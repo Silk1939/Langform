@@ -90,3 +90,137 @@ test('inline author visibility change revokes input immediately and touch policy
 test('existing native-drag-end rearms inline policy before the first immediate resumed picture swipe',t=>{const s=setup(t);let dragging=false;s.win.__langformIsNativeDragging=()=>dragging;dragging=true;s.win.__langformPlaybackSwipe.cancel('abcdefghijk');assert.equal(s.root.hasAttribute('data-langform-playback-swipe-surface'),false);s.swipe();assert.deepEqual(s.sets,[]);dragging=false;s.win.dispatchEvent(new s.win.Event('langform-native-drag-end'));assert.equal(s.root.hasAttribute('data-langform-playback-swipe-surface'),true);s.swipe();assert.deepEqual(s.sets,[45]);});
 for(const touch of [false,true])test(`shipping Zoom→Swipe→Hold order recovers after pinch/reset with a fresh primary identifier; touch=${touch}`,t=>{const s=setup(t,{fullscreen:true,hold:true,touch});const ui=s.ui();if(touch){s.touch('touchstart',[[1,350,400]],ui);s.touch('touchstart',[[1,350,400],[2,450,400]],ui);s.touch('touchmove',[[1,300,400],[2,500,400]],ui);s.touch('touchend',[[2,500,400]],ui,[[1,300,400]]);s.touch('touchend',[],ui,[[2,500,400]]);}else{s.pointer('pointerdown',1,350,400,ui);s.pointer('pointerdown',2,450,400,ui);s.pointer('pointermove',1,300,400,ui);s.pointer('pointermove',2,500,400,ui);s.pointer('pointerup',1,300,400,ui);s.pointer('pointerup',2,500,400,ui);}assert.equal(s.win.__langformPlaybackZoom.getState().scale,2);assert.deepEqual(s.sets,[]);ui.querySelector('.lf-playback-zoom-reset').click();assert.equal(s.win.__langformPlaybackZoom.getState().scale,1);if(touch){s.touch('touchstart',[[3,350,400]],ui);s.touch('touchmove',[[3,430,400]],ui);s.touch('touchend',[],ui,[[3,430,400]]);}else{s.pointer('pointerdown',3,350,400,ui,{isPrimary:true});s.pointer('pointermove',3,430,400,ui,{isPrimary:true});s.pointer('pointerup',3,430,400,ui,{isPrimary:true});}assert.deepEqual(s.sets,[45]);assert.equal(s.feedback().textContent,'15 s vor');assert.equal(s.video.playbackRate,1);assert.deepEqual(s.calls,[]);});
 test('shipping pinch cancel/zoom reset followed by rapid new primary contacts never retains phantom contacts',t=>{const s=setup(t,{fullscreen:true});const ui=s.ui();s.pointer('pointerdown',1,350,400,ui);s.pointer('pointerdown',2,450,400,ui);s.pointer('pointermove',1,300,400,ui);s.pointer('pointermove',2,500,400,ui);s.pointer('pointercancel',1,300,400,ui);s.pointer('pointerup',2,500,400,ui);ui.querySelector('.lf-playback-zoom-reset').click();for(const id of [3,8,12,21]){s.pointer('pointerdown',id,350,400,ui,{isPrimary:true});s.pointer('pointermove',id,430,400,ui,{isPrimary:true});s.pointer('pointerup',id,430,400,ui,{isPrimary:true});}assert.deepEqual(s.sets,[45,60,75,90]);});
+
+for(const cls of ['ytp-chrome-top','ytp-chrome-bottom'])test(`empty ${cls} picture regions admit swipe while nested controls keep their input`,t=>{
+  const s=setup(t);s.surface.className=cls;s.swipe(100,180,120);s.swipe(350,200,326);
+  assert.deepEqual(s.sets,[45,30]);
+  for(const target of [s.doc.getElementById('play'),s.surface.querySelector('input'),s.surface.querySelector('a')]){
+    s.swipe(100,180,210,target);assert.equal(s.click(150,210,target).defaultPrevented,false);
+  }
+  assert.deepEqual(s.sets,[45,30]);
+});
+test('empty own fullscreen control-bar padding admits picture swipe; buttons and timeline stay protected',t=>{
+  const s=setup(t,{fullscreen:true});const ui=s.ui(),padding=ui.querySelector('.lf-fs-controls');
+  s.swipe(200,320,40,padding);s.swipe(450,330,830,padding);assert.deepEqual(s.sets,[45,30]);
+  for(const target of [ui.querySelector('[data-action=play]'),ui.querySelector('input')])s.swipe(200,320,40,target);
+  assert.deepEqual(s.sets,[45,30]);assert.deepEqual(s.calls,[]);
+});
+for(const cls of ['ytp-progress-bar-container','ytp-progress-bar','ytp-scrubber-container'])test(`actual ${cls} timeline remains excluded from picture swipe`,t=>{
+  const s=setup(t),timeline=s.doc.createElement('div');timeline.className=cls;s.surface.appendChild(timeline);
+  s.swipe(100,180,210,timeline);assert.deepEqual(s.sets,[]);assert.equal(s.click(150,210,timeline).defaultPrevented,false);
+});
+for(const touch of [false,true])test(`ended video can seek back with fresh input without starting playback; touch=${touch}`,t=>{
+  const s=setup(t,{paused:true,touch});s.setTime(120);s.video.ended=true;s.video.dispatchEvent(new s.win.Event('ended',{bubbles:true}));
+  if(touch){s.touch('touchstart',[[4,250,210]]);s.touch('touchmove',[[4,150,210]]);s.touch('touchend',[],s.surface,[[4,150,210]]);}else s.swipe(250,150);
+  assert.deepEqual(s.sets,[105]);assert.equal(s.video.paused,true);assert.deepEqual(s.calls,[]);
+  if(touch){s.touch('touchstart',[[5,150,210]]);s.touch('touchend',[],s.surface,[[5,150,210]]);}else{s.pointer('pointerdown',2,150,210,s.surface,{isPrimary:true});s.pointer('pointerup',2,150,210);}
+  assert.equal(s.click(150,210).defaultPrevented,false);
+});
+
+for(const touch of [false,true])test(`whole 4:3 free root includes both sidebars and preserves pause; touch=${touch}`,t=>{
+  const s=setup(t,{paused:true,touch});s.video.getBoundingClientRect=()=>rect(50,110,301,226);
+  for(const [from,to] of [[10,90],[390,310]]){
+    if(touch){s.touch('touchstart',[[9,from,210]]);s.touch('touchmove',[[9,to,210]]);s.touch('touchend',[],s.surface,[[9,to,210]]);}else s.swipe(from,to);
+  }
+  assert.deepEqual(s.sets,[45,30]);assert.equal(s.video.paused,true);assert.deepEqual(s.calls,[]);
+  const area=s.win.__langformPlaybackSwipe.getSeekRect(s.video,'abcdefghijk');assert.deepEqual(JSON.parse(JSON.stringify(area)),{x:0,y:110,width:402,height:226,videoID:'abcdefghijk'});
+  s.swipe(450,370);s.swipe(10,90,95);assert.deepEqual(s.sets,[45,30]);
+  s.swipe(10,90,210,s.doc.getElementById('play'));assert.deepEqual(s.sets,[45,30]);
+});
+for(const touch of [false,true])test(`actual offscreen ended media seeks back through visible root without Play; touch=${touch}`,t=>{
+  const s=setup(t,{paused:true,touch});s.setTime(120);s.video.ended=true;s.video.getBoundingClientRect=()=>rect(0,-568,402,226);
+  if(touch){s.touch('touchstart',[[7,250,210]]);s.touch('touchmove',[[7,150,210]]);s.touch('touchend',[],s.surface,[[7,150,210]]);}else s.swipe(250,150);
+  assert.deepEqual(s.sets,[105]);assert.equal(s.video.paused,true);assert.deepEqual(s.calls,[]);
+});
+for(const condition of ['wrong-video','wrong-id','ad','hidden-root','disjoint-playing','empty-root','zoom'])test(`root Seek export retains exact current context guards: ${condition}`,t=>{
+  const s=setup(t);let video=s.video,id='abcdefghijk';
+  if(condition==='wrong-video')video=s.doc.createElement('video');if(condition==='wrong-id')id='lmnopqrstuv';if(condition==='ad')s.ad(true);
+  if(condition==='hidden-root')s.root.style.visibility='hidden';if(condition==='disjoint-playing')s.video.getBoundingClientRect=()=>rect(0,-568,402,226);if(condition==='empty-root')s.root.getBoundingClientRect=()=>rect(0,110,0,0);
+  if(condition==='zoom')s.win.__langformPlaybackZoom.getState=()=>({scale:2,gesturing:false});
+  assert.equal(s.win.__langformPlaybackSwipe.getSeekRect(video,id),null);
+});
+
+function endedSeekContact(s,touch,gap=true,ended=true){
+  let time=ended?120:115,pose=ended?rect(0,-568,402,226):rect(50,110,301,226);
+  s.video.ended=ended;s.video.paused=true;
+  s.video.getBoundingClientRect=()=>pose;
+  Object.defineProperty(s.video,'currentTime',{configurable:true,get:()=>time,set:value=>{s.sets.push(value);time=value;s.video.ended=false;pose=gap?rect(0,-568,402,226):rect(50,110,301,226);}});
+  let leaked=0;s.surface.className='ytwPlayerEndscreenPlayerEndscreen';
+  s.surface.addEventListener('click',event=>{if(event.target.closest('button,a,input,[role=button],[role=slider]'))return;leaked++;s.video.paused=false;});
+  if(touch){s.touch('touchstart',[[7,250,210]]);s.touch('touchmove',[[7,150,210]]);s.touch('touchend',[],s.surface,[[7,150,210]]);}else s.swipe(250,150);
+  assert.deepEqual(s.sets,[ended?105:100]);assert.equal(s.video.paused,true);
+  return{leaked:()=>leaked,reflow:()=>{pose=rect(50,110,301,226);}};
+}
+for(const touch of [false,true])test(`ended seek trailing click retains pause across temporary offscreen media; touch=${touch}`,t=>{
+ const s=setup(t,{paused:true,touch}),probe=endedSeekContact(s,touch);
+ assert.equal(s.click(150,210).defaultPrevented,true);
+ assert.equal(probe.leaked(),0);assert.equal(s.video.paused,true);assert.equal(s.video.currentTime,105);
+});
+for(const touch of [false,true])test(`ended seek synthetic tap then click cannot restart the same media; touch=${touch}`,t=>{
+ const s=setup(t,{paused:true,touch}),probe=endedSeekContact(s,touch,false);
+ const tap=new s.win.MouseEvent('tap',{bubbles:true,cancelable:true,clientX:150,clientY:210});s.surface.dispatchEvent(tap);
+ assert.equal(tap.defaultPrevented,true);assert.equal(s.click(150,210).defaultPrevented,true);
+ assert.equal(probe.leaked(),0);assert.equal(s.video.paused,true);
+});
+for(const condition of ['fresh-touch','source','route','player-id','ad','root','container','root-pose','hidden-root','real-control','outside-root','expired','normal-pause-disjoint'])test(`ended seek trailing exception retains ${condition} boundary`,t=>{
+ const s=setup(t,{paused:true}),probe=endedSeekContact(s,false,true,condition!=='normal-pause-disjoint');
+ if(condition==='fresh-touch'){s.pointer('pointerdown',2,150,210,s.surface,{isPrimary:true});s.pointer('pointerup',2,150,210);}
+ if(condition==='source')s.video.src='https://example.test/new-source';
+ if(condition==='route')s.win.history.replaceState({},'','/watch?v=lmnopqrstuv');
+ if(condition==='player-id')s.id('lmnopqrstuv');if(condition==='ad')s.ad(true);
+ if(condition==='root')s.root.id='former-player';
+ if(condition==='container'){const replacement=s.doc.createElement('div');replacement.className='html5-video-container';s.root.appendChild(replacement);replacement.appendChild(s.video);}
+ if(condition==='root-pose')s.pose(rect(0,130,402,226));if(condition==='hidden-root')s.root.style.visibility='hidden';if(condition==='expired')s.tick(801);
+ const target=condition==='real-control'?s.doc.getElementById('play'):condition==='outside-root'?s.doc.getElementById('outside'):s.surface;
+ assert.equal(s.click(150,210,target).defaultPrevented,false);
+});
+
+function seekedResumeEngine(s,{ended=true,paused=true,noop=false,switchSource=false,deferred=false}={}){
+  let time=ended?120:110,modelEnded=ended,api=0,fallback=0;
+  s.video.ended=ended;s.video.paused=paused;s.video.getBoundingClientRect=()=>rect(50,110,301,226);
+  Object.defineProperty(s.video,'currentTime',{configurable:true,get:()=>time,set:value=>{s.sets.push(value);time=value;s.video.ended=false;}});
+  s.root.pauseVideo=()=>{api++;if(switchSource){s.video.src='https://example.test/replacement';return;}if(!modelEnded && !noop)s.video.paused=true;};
+  s.video.pause=()=>{fallback++;s.video.paused=true;};
+  // Like the live trace: seeked is seen paused, then YouTube's target handler
+  // resumes the same source. Its ENDED model cannot be pre-paused by pauseVideo.
+  s.video.addEventListener('seeked',()=>{if(modelEnded){modelEnded=false;if(!deferred){s.video.paused=false;s.video.dispatchEvent(new s.win.Event('play',{bubbles:true}));}}});
+  s.swipe(250,150);
+  assert.equal(api,0,'no speculative pre-seek pause while the player model is still ENDED');
+  return{seeked:()=>s.video.dispatchEvent(new s.win.Event('seeked',{bubbles:true})),play:()=>{s.video.paused=false;s.video.dispatchEvent(new s.win.Event('play',{bubbles:true}));},api:()=>api,fallback:()=>fallback};
+}
+for(const noop of [false,true])test(`owned ended-paused seek corrects one actual seeked autoresume, API noop=${noop}`,async t=>{
+ const s=setup(t,{paused:true}),engine=seekedResumeEngine(s,{noop});engine.seeked();
+ assert.equal(s.video.paused,false,'fixture reproduces YouTube resume after seeked');
+ await Promise.resolve();await Promise.resolve();
+ assert.equal(engine.api(),1);assert.equal(engine.fallback(),noop?1:0);assert.equal(s.video.paused,true);assert.equal(s.video.currentTime,105);
+ engine.play();await Promise.resolve();assert.equal(engine.api(),1,'consumed transaction never becomes a continuous pause guard');assert.equal(s.video.paused,false);
+});
+for(const paused of [false,true])test(`ordinary seek never issues pause intent, paused=${paused}`,async t=>{
+ const s=setup(t,{paused}),engine=seekedResumeEngine(s,{ended:false,paused});engine.seeked();await Promise.resolve();
+ assert.equal(engine.api(),0);assert.equal(engine.fallback(),0);assert.equal(s.video.paused,paused);
+});
+for(const condition of ['fresh-touch','native-play','control','key','source','id','ad','root-pose','lifecycle','expired'])test(`queued ended seek pause intent is revoked by ${condition}`,async t=>{
+ const s=setup(t,{paused:true}),engine=seekedResumeEngine(s);engine.seeked();
+ if(condition==='fresh-touch')s.pointer('pointerdown',2,150,210,s.surface,{isPrimary:true});
+ if(condition==='native-play')s.win.__langformPlaybackSwipe.cancelEndedSeekGuard('abcdefghijk');
+ if(condition==='control')s.click(150,210,s.doc.getElementById('play'));
+ if(condition==='key')s.win.dispatchEvent(new s.win.KeyboardEvent('keydown',{key:' '}));
+ if(condition==='source')s.video.src='https://example.test/replacement';if(condition==='id')s.id('lmnopqrstuv');if(condition==='ad')s.ad(true);
+ if(condition==='root-pose')s.pose(rect(0,130,402,226));if(condition==='lifecycle')s.win.dispatchEvent(new s.win.Event('blur'));if(condition==='expired')s.tick(1501);
+ await Promise.resolve();await Promise.resolve();assert.equal(engine.api(),0);assert.equal(engine.fallback(),0);assert.equal(s.video.paused,false);
+});
+test('API pause source replacement cannot authorize a fallback pause on the new source',async t=>{
+ const s=setup(t,{paused:true}),engine=seekedResumeEngine(s,{switchSource:true});engine.seeked();await Promise.resolve();
+ assert.equal(engine.api(),1);assert.equal(engine.fallback(),0);assert.equal(s.video.paused,false);
+});
+test('delayed same-source resume after the seeked microtask consumes its pause intent once',async t=>{
+ const s=setup(t,{paused:true}),engine=seekedResumeEngine(s,{deferred:true});engine.seeked();await Promise.resolve();
+ assert.equal(s.video.paused,true);assert.equal(engine.api(),0);
+ engine.play();await Promise.resolve();assert.equal(engine.api(),1);assert.equal(s.video.paused,true);
+ engine.play();await Promise.resolve();assert.equal(engine.api(),1);assert.equal(s.video.paused,false);
+});
+test('ended seek transaction timeout only releases intent and never pauses playback',async t=>{
+ const s=setup(t,{paused:true}),engine=seekedResumeEngine(s,{deferred:true});engine.seeked();await Promise.resolve();
+ const timeout=[...s.timers.values()].find(timer=>timer.delay===1500);assert.ok(timeout);timeout.fn();
+ assert.equal(engine.api(),0);engine.play();await Promise.resolve();assert.equal(engine.api(),0);assert.equal(s.video.paused,false);
+});

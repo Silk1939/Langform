@@ -22,25 +22,27 @@ test('Shipping staged exit holds WK source until exact ACK, keeps Card ownership
   const compiler = spawnSync('/usr/bin/xcrun', ['--find', 'swift'], { encoding: 'utf8' });
   if (compiler.status !== 0) return t.skip('Swift toolchain unavailable');
   const source = fs.readFileSync(path.join(__dirname, '../ios/Langform/Langform/YouTubeWebView.swift'), 'utf8');
-  const methods = ['fullscreenPlayerViewport', 'applyFullscreenSurface', 'beginNativeRotation', 'cancelNativeRotation',
+  const methods = ['pendingPhysicalFullscreenExitSource', 'fullscreenPlayerViewport', 'applyFullscreenSurface', 'beginNativeRotation', 'cancelNativeRotation',
     'requestFullscreenExitMotion', 'releaseFullscreenExitViewport', 'cancelFullscreenExitMotion', 'fullscreenExitMotionReady',
-    'beginCustomFullscreenExit', 'confirmCustomFullscreenExit', 'confirmCustomFullscreenEnter', 'requestPlayerOrientation', 'resetCustomFullscreen']
+    'beginCustomFullscreenExit', 'confirmCustomFullscreenExit', 'confirmCustomFullscreenEnter', 'requestPlayerOrientation', 'resetCustomFullscreen', 'requestFullscreenExitPortrait', 'resumeFullscreenExitAfterInactivity']
     .map(name => block(source, 'func ' + name + '(')).join('\n');
-  const structs = ['CustomFullscreenEnter', 'CustomFullscreenExit'].map(name =>
+  const structs = ['CustomFullscreenEnter', 'CustomFullscreenExit', 'PendingPhysicalFullscreenExit'].map(name =>
     block(source, 'private struct ' + name).replace('private struct', 'struct')).join('\n');
   const layout = block(block(source, 'override func layoutSubviews()'), 'if let player {');
   const policy = fs.readFileSync(path.join(__dirname, '../ios/Langform/Langform/PlayerViewportPolicy.swift'), 'utf8');
+  const rotationPolicy = fs.readFileSync(path.join(__dirname, '../ios/Langform/Langform/PlayerRotationIntentPolicy.swift'), 'utf8');
   const swift = `
 import Foundation
 import CoreGraphics
 import CoreFoundation
 enum PlayerGesturePolicy { enum Position { case mini,expanded } }
 ${policy}
+${rotationPolicy}
 var clock=0.0
 class DispatchWorkItem { let action:()->Void; var cancelled=false; init(block:@escaping()->Void){action=block};func cancel(){cancelled=true} }
 struct Deadline {var when:Double;static func now()->Deadline{Deadline(when:clock)};static func +(a:Deadline,b:Double)->Deadline{Deadline(when:a.when+b)} }
 class DispatchQueue {static let main=DispatchQueue();var work=[(Double,DispatchWorkItem)]();func asyncAfter(deadline:Deadline,execute:DispatchWorkItem){work.append((deadline.when,execute))};func run(at time:Double){clock=time;let ready=work.filter{$0.0<=clock};work=work.filter{$0.0>clock};for (_,item) in ready where !item.cancelled {item.action()}} }
-enum StartupDiagnostics {static let enabled=false;static var rows=[[String:Any]]();static func videoMark(_ row:[String:Any]){rows.append(row)} }
+enum StartupDiagnostics {static var enabled=false;static var rows=[[String:Any]]();static func videoMark(_ row:[String:Any]){rows.append(row)} }
 class Layer {var bounds=CGRect(x:0,y:0,width:874,height:402),position=CGPoint(x:437,y:201),cornerRadius:CGFloat=0,borderWidth:CGFloat=0;var shown:Layer?;func presentation()->Layer?{shown} }
 class UIView {enum AnimationCurve{case easeInOut,easeIn,easeOut,linear};static func performWithoutAnimation(_ block:()->Void){block()} }
 class Surface {var bounds=CGRect(x:0,y:0,width:874,height:402),center=CGPoint(x:437,y:201),transform=CGAffineTransform.identity,alpha:CGFloat=1,layer=Layer() }
@@ -49,6 +51,7 @@ class WKWebView:Surface {
  var motionResult:Any?=true,motionError:Error?,deferMotion=false,deferCancel=false
  func evaluateJavaScript(_ source:String,completionHandler:((Any?,Error?)->Void)?=nil){scripts.append(source);guard let completionHandler else{return};let cancel=source.contains("cancelExitMotion");if cancel ? deferCancel : deferMotion {pending.append((source,completionHandler))}else{completionHandler(cancel ? true:motionResult,motionError)}}
 }
+class UIApplication { enum State { case active, inactive }; static let shared=UIApplication(); var applicationState=State.active }
 enum UIInterfaceOrientationMask{case portrait,landscape}
 enum Orientation{case portrait,landscape;var isPortrait:Bool{self == .portrait}}
 struct Geometry{let mask:UIInterfaceOrientationMask;static func iOS(interfaceOrientations:UIInterfaceOrientationMask)->Geometry{Geometry(mask:interfaceOrientations)}}
@@ -67,12 +70,15 @@ class Stage {
  var player:WKWebView?=WKWebView(),card=Surface(),closeButton=Surface(),miniPlaybackButton=Surface(),collapseButton=Surface(),window:Window?=Window()
  var bounds=CGRect(x:0,y:0,width:874,height:402),playerLayoutSize=CGSize(width:874,height:402),loadTicket=1,customFullscreenID:String?="abcdefghijk"
  ${structs}
- var customFullscreenEnter:CustomFullscreenEnter?,customFullscreenExit:CustomFullscreenExit?
+ var customFullscreenEnter:CustomFullscreenEnter?,customFullscreenExit:CustomFullscreenExit?,pendingPhysicalFullscreenExit:PendingPhysicalFullscreenExit?
  var activeRotationCoordinator:UIViewControllerTransitionCoordinator?,nativeRotationGeneration=0,fullscreenCardRotationGeneration:Int?,nativeRotationTarget:CGSize?,nativeRotationDeadlineMilliseconds:Double?,nativeRotationCSSCurve:String?,fullscreenExitMotionTimeout:DispatchWorkItem?
+ var rotationIntentPolicy = PlayerRotationIntentPolicy()
+ func finishPhysicalRotationIntent() {}
  var fullscreenGeometryTrace:(videoID:String,token:String,ticket:Int,beganAt:TimeInterval,rows:Int)?,fullscreenGeometryDirection="exit",onFullscreen:((Bool)->Void)?
  var layouts=0,resets=0,playerInsetsChanged=false
  var fullscreenSnapLastAt = -Double.infinity
- func startFullscreenPresentation(videoID:String,token:String,direction:String){}
+ var presentationStarts=0
+ func startFullscreenPresentation(videoID:String,token:String,direction:String){presentationStarts += 1}
  func resetPlayerForViewportChange(){resets += 1};func updateChrome(){};func measureVideo(after:Double,_ done:()->Void){done()};func updatePlaybackControls(){}
  func setNeedsLayout(){layouts += 1};func layoutIfNeeded(){${layout}}
  func apply(_ value:CGFloat){_ = applyFullscreenSurface(value)}
@@ -83,10 +89,12 @@ let sourceSize=CGSize(width:874,height:402),target=CGSize(width:402,height:874)
 func request(_ token:String="exit")->[String:Any]{["kind":"exit-request","videoID":"abcdefghijk","token":token,"href":"https://m.youtube.com/watch?v=abcdefghijk"]}
 func ack(_ token:String="exit",ticket:Int=1)->[String:Any]{["kind":"exit-motion-ready","videoID":"abcdefghijk","token":token,"href":"https://m.youtube.com/watch?v=abcdefghijk","requestTicket":ticket,"width":402,"height":874]}
 func begin(_ stage:Stage)->UIViewControllerTransitionCoordinator {
+ // Preserve the existing coordinator-first path; pre-rotation has its own shipping fixture.
+ let rotation=UIViewControllerTransitionCoordinator();stage.activeRotationCoordinator=rotation
  stage.onFullscreen={_ in stage.bounds=CGRect(origin:.zero,size:target);stage.layoutIfNeeded()}
  stage.beginCustomFullscreenExit(request())
  expect(stage.player!.bounds.size==sourceSize,"source WK bounds survive status-bar/destination Stage relayout before controller rotation")
- let rotation=UIViewControllerTransitionCoordinator();stage.beginNativeRotation(to:target,coordinator:rotation)
+ stage.beginNativeRotation(to:target,coordinator:rotation)
  stage.window!.windowScene!.interfaceOrientation = .portrait;stage.layoutIfNeeded();return rotation
 }
 let stage=Stage()
@@ -95,7 +103,7 @@ expect(stage.customFullscreenExit!.motionViewport==target && stage.player!.bound
 let script=stage.player!.scripts.first{$0.contains("prepareExitMotion")}!
 let args=script.components(separatedBy:"null, ")[1].dropLast(1)
 let arguments=try! JSONSerialization.jsonObject(with:Data(args.utf8)) as! [Any]
-expect(arguments.count==6 && arguments[5] as? Int==1 && (arguments[4] as! Double)>Date().timeIntervalSince1970*1000,"request supplies actual coordinator deadline and native request ticket")
+expect(arguments.count==7 && arguments[6] as? String=="cubic-bezier(.42,0,.58,1)" && arguments[5] as? Int==1 && (arguments[4] as! Double)>Date().timeIntervalSince1970*1000,"request supplies actual coordinator deadline, native request ticket and system curve")
 expect(stage.card.bounds.size==target && stage.fullscreenCardRotationGeneration != nil,"Card destination belongs to the coordinator")
 stage.bounds=CGRect(x:0,y:0,width:650,height:650);stage.apply(0)
 expect(stage.card.bounds.size==target,"apply0 cannot clobber the active coordinator clip with an intermediate Stage model")
@@ -151,6 +159,27 @@ aborted.layoutIfNeeded()
 expect(aborted.player!.bounds.size==target,"next scheduled native layout restores destination WK bounds after inline abort")
 aborted.fullscreenExitMotionReady(ack());abortedRotation.finish()
 expect(aborted.customFullscreenExit==nil && aborted.player!.bounds.size==target,"late ACK/completion cannot reintroduce abandoned source viewport")
+
+StartupDiagnostics.enabled=true
+let paint=Stage();paint.activeRotationCoordinator=UIViewControllerTransitionCoordinator();paint.beginCustomFullscreenExit(request("paint"))
+expect(paint.presentationStarts==1 && paint.fullscreenGeometryTrace?.rows==0,"one diagnostic request window starts for the authenticated exit")
+paint.fullscreenGeometryTrace?.beganAt=ProcessInfo.processInfo.systemUptime-4
+paint.fullscreenGeometryTrace?.rows=239
+paint.player!.url=URL(string:"https://m.youtube.com/watch?v=lmnopqrstuv")
+paint.requestFullscreenExitMotion(viewport:target,deadline:Date().timeIntervalSince1970*1000+350)
+expect(paint.presentationStarts==1 && paint.customFullscreenExit?.diagnosticMotionStarted==false,"foreign source cannot restart diagnostic windows")
+paint.player!.url=URL(string:"https://m.youtube.com/watch?v=abcdefghijk")
+paint.requestFullscreenExitMotion(viewport:target,deadline:Date().timeIntervalSince1970*1000+350)
+expect(paint.presentationStarts==2 && paint.customFullscreenExit?.diagnosticMotionStarted==true,"actual staged rotation starts exactly one motion diagnostic window")
+expect(paint.fullscreenGeometryTrace?.rows==0 && ProcessInfo.processInfo.systemUptime-paint.fullscreenGeometryTrace!.beganAt<1,"late geometry batches receive a fresh bounded receive window")
+expect(paint.fullscreenGeometryTrace?.token=="paint" && paint.fullscreenGeometryTrace?.ticket==paint.loadTicket && paint.fullscreenGeometryTrace?.videoID=="abcdefghijk","restarted receiver retains original request identity")
+let diagnosticBegan=paint.fullscreenGeometryTrace!.beganAt
+paint.fullscreenGeometryTrace?.rows=200;paint.nativeRotationGeneration += 1
+paint.requestFullscreenExitMotion(viewport:CGSize(width:403,height:875),deadline:Date().timeIntervalSince1970*1000+350)
+expect(paint.presentationStarts==2 && paint.fullscreenGeometryTrace?.rows==200 && paint.fullscreenGeometryTrace?.beganAt==diagnosticBegan,"repeated viewport or rotation requests cannot create unbounded diagnostic windows")
+StartupDiagnostics.enabled=false
+let noPaint=Stage();noPaint.beginCustomFullscreenExit(request("normal"));noPaint.requestFullscreenExitMotion(viewport:target,deadline:Date().timeIntervalSince1970*1000+350)
+expect(noPaint.presentationStarts==0 && noPaint.fullscreenGeometryTrace==nil && noPaint.customFullscreenExit?.diagnosticMotionStarted==false,"normal launches do not allocate either diagnostic window")
 print("NATIVE_STAGED_FULLSCREEN_OK")
 `;
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'langform-staged-fullscreen-'));

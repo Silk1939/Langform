@@ -29,7 +29,7 @@ function page(t,script,options={}) {
   win.eval(script);
   const surface=doc.getElementById('surface');
   function advance(ms){const until=now+ms;for(;;){const next=[...timers].filter(([,v])=>v.at<=until).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;now=next[1].at;timers.delete(next[0]);next[1].fn();}now=until;}
-  function pointer(type,target=surface,x=80,y=110,extra={}){const event=new win.MouseEvent(type,{bubbles:true,cancelable:true,clientX:x,clientY:y,...extra});Object.defineProperties(event,{pointerId:{value:extra.pointerId??1},isPrimary:{value:extra.isPrimary??true}});target.dispatchEvent(event);return event;}
+  function pointer(type,target=surface,x=80,y=110,extra={}){const event=new win.MouseEvent(type,{bubbles:true,cancelable:true,clientX:x,clientY:y,buttons:type==='pointerdown'||type==='pointermove'?1:0,...extra});Object.defineProperties(event,{pointerId:{value:extra.pointerId??1},isPrimary:{value:extra.isPrimary??true},pointerType:{value:extra.pointerType??'touch'}});target.dispatchEvent(event);return event;}
   function touch(type,target=surface,x=80,y=110,count=1){const event=new win.Event(type,{bubbles:true,cancelable:true});Object.defineProperty(event,'touches',{value:type==='touchend'||type==='touchcancel'?[]:Array.from({length:count},(_,identifier)=>({identifier,clientX:x,clientY:y}))});target.dispatchEvent(event);return event;}
   function receive(items,status='ok',request=posts.filter(x=>x.kind==='fetch').at(-1)){return win.__langformSponsorBlockReceive({requestID:request.requestID,videoID:request.videoID,status,segments:items});}
   return{win,doc,root,video,state,posts,seeks,rates,timers,surface,advance,pointer,touch,receive,emit:name=>video.dispatchEvent(new win.Event(name,{bubbles:true})),status:()=>JSON.parse(JSON.stringify(win.__langformSponsorBlock.getStatus()))};
@@ -146,8 +146,15 @@ test('404 ist kein Fehler; Timeout beendet den Request; Retry lädt neu, Cache v
   p.win.__langformSponsorBlock.retry();p.advance(10001);assert.equal(p.status().status,'unavailable');assert.equal(p.timers.size,0);
   p.win.__langformSponsorBlock.retry();p.receive([segment()]);assert.equal(p.status().status,'ready');
 });
-test('Gedrückthalten links und rechts setzt 2× nach 350 ms und stellt das vorhandene Tempo beim Loslassen wieder her',t=>{
-  for(const x of [80,320]){const p=page(t,hold,{pointer:true});p.pointer('pointerdown',p.surface,x);p.advance(349);assert.deepEqual(p.rates,[]);p.advance(1);assert.equal(p.state.rate,2);assert.equal(p.win.__langformPlaybackHold.isActive(),true);assert.ok(p.doc.getElementById('langform-playback-hold'));p.pointer('pointerup',p.surface,x);assert.deepEqual(p.rates,[2,1.25]);assert.equal(p.doc.getElementById('langform-playback-hold'),null);const click=p.pointer('click',p.surface,x);assert.equal(click.defaultPrevented,true);}
+test('Gedrückthalten links und rechts setzt2× nach350ms und kehrt beim echten Loslassen zu1× zurück',t=>{
+  for(const x of [80,320]){const p=page(t,hold,{pointer:true});p.pointer('pointerdown',p.surface,x);p.advance(349);assert.deepEqual(p.rates,[]);p.advance(1);assert.equal(p.state.rate,2);assert.equal(p.win.__langformPlaybackHold.isActive(),true);assert.ok(p.doc.getElementById('langform-playback-hold'));p.pointer('pointerup',p.surface,x);assert.deepEqual(p.rates,[2,1]);assert.equal(p.doc.getElementById('langform-playback-hold'),null);const click=p.pointer('click',p.surface,x);assert.equal(click.defaultPrevented,true);}
+});
+test('Nutzerwunsch: echter Release nach langem Hold kehrt zu1× zurück; ein Abbruch bewahrt vorherige Tempoabsicht',t=>{
+  for(const end of ['pointerup','pointercancel']){
+    const p=page(t,hold,{pointer:true});p.state.rate=1.5;p.pointer('pointerdown');p.advance(350);
+    for(let i=0;i<12;i++){p.advance(250);p.pointer('pointermove',p.surface,80+(i%2),110);assert.equal(p.state.rate,2,'durchgehender Fingerkontakt bleibt2×');assert.equal(p.win.__langformPlaybackHold.isActive(),true);}
+    p.pointer(end);assert.equal(p.state.rate,end==='pointerup'?1:1.5,end);assert.equal(p.win.__langformPlaybackHold.isActive(),false);
+  }
 });
 test('Holdseiten und sichtbare 2×-Anzeige verwenden bei vergrößertem Video den aktuellen Medienviewport',t=>{
   for(const x of [80,320]){
@@ -161,7 +168,7 @@ test('Holdseiten und sichtbare 2×-Anzeige verwenden bei vergrößertem Video de
     const badge=p.doc.getElementById('langform-playback-hold');assert.ok(badge);
     assert.equal(badge.style.left,'200px');assert.equal(badge.style.top,'12px');
     assert.ok(received.every(video=>video===p.video));
-    p.pointer('pointerup',p.surface,x);assert.equal(p.state.rate,1.25);
+    p.pointer('pointerup',p.surface,x);assert.equal(p.state.rate,1);
     assert.equal(p.doc.getElementById('langform-playback-hold'),null);
   }
 });
@@ -174,15 +181,65 @@ test('ungültiger oder bereits freigegebener Zoomowner fällt für Holdzulassung
     const p=page(t,hold,{pointer:true});p.win.__langformPlaybackZoom=hook;
     p.pointer('pointerdown');p.advance(350);assert.equal(p.state.rate,2);
     assert.equal(p.doc.getElementById('langform-playback-hold').style.top,'12px');
-    p.pointer('pointerup');assert.equal(p.state.rate,1.25);
-    p.state.ad=true;p.pointer('pointerdown');p.advance(350);assert.equal(p.state.rate,1.25,'Geometrie hebt Adguard nicht auf');
+    p.pointer('pointerup');assert.equal(p.state.rate,1);
+    p.state.ad=true;p.pointer('pointerdown');p.advance(350);assert.equal(p.state.rate,1,'Geometrie hebt Adguard nicht auf');
   }
 });
 test('Kurze Taps, Mitte, Controls, Scrubber und obere Zeile behalten ihre Aktionen',t=>{
   const p=page(t,hold,{pointer:true});p.pointer('pointerdown');p.advance(180);p.pointer('pointerup');assert.equal(p.pointer('click').defaultPrevented,false);
   for(const [target,x,y] of [[p.surface,200,110],[p.doc.getElementById('control'),80,110],[p.surface,80,220],[p.surface,80,20]]){p.pointer('pointerdown',target,x,y);p.advance(500);p.pointer('pointerup',target,x,y);assert.deepEqual(p.rates,[]);}
 });
-test('Nur der aktive Hold sperrt Kontextmenü und Auswahl im aktuellen Root, mweb-Sibling und eigenen Vollbild',t=>{
+test('Bereits der zugelassene Kontakt schützt vor nativer Auswahl, bevor die 350-ms-Tempoaktion beginnt',t=>{
+  for(const pointer of [true,false])for(const mode of ['root','sibling','fullscreen']){
+    const p=page(t,hold,{pointer});let target=p.surface,owner=p.root;
+    if(mode==='sibling'){
+      owner=p.doc.createElement('ytm-player');p.root.replaceWith(owner);owner.appendChild(p.root);
+      target=p.doc.createElement('div');owner.appendChild(target);
+    }
+    if(mode==='fullscreen'){owner=p.doc.createElement('div');owner.id='langform-fullscreen-ui';p.doc.body.appendChild(owner);target=owner;}
+    const nearby=p.doc.createElement('span');nearby.innerHTML='<svg><text>10</text></svg>';owner.appendChild(nearby);
+    const outside=p.doc.createElement('p');outside.textContent='Copy me';p.doc.body.appendChild(outside);
+    const down=pointer?p.pointer('pointerdown',target):p.touch('touchstart',target);
+    assert.equal(down.defaultPrevented,false,'kurze Taps behalten ihren Kontakt');
+    for(const delay of [0,349]){
+      p.advance(delay);
+      assert.equal(p.state.rate,1.25,`${pointer}:${mode}:vor Frist kein 2×`);
+      assert.equal(p.win.__langformPlaybackHold.isActive(),false);
+      assert.equal(owner.hasAttribute('data-langform-playback-held'),true,`${pointer}:${mode}:ab Kontaktbeginn`);
+      assert.ok(p.doc.getElementById('langform-playback-hold-selection-style'));
+      for(const event of ['selectstart','contextmenu']){
+        assert.equal(p.pointer(event,nearby.querySelector('text')).defaultPrevented,true);
+        assert.equal(p.pointer(event,outside).defaultPrevented,false);
+      }
+    }
+    p.advance(1);assert.equal(p.state.rate,2);
+    if(pointer)p.pointer('pointerup',target);else p.touch('touchend',target);
+    assert.equal(p.state.rate,1);assert.equal(owner.hasAttribute('data-langform-playback-held'),false);
+    assert.equal(p.doc.getElementById('langform-playback-hold-selection-style'),null);
+  }
+});
+test('Auswahlschutz eines noch wartenden Holds endet auch ohne Tempoänderung bei jedem Abbruch',async t=>{
+  for(const mode of ['short','move','cancel','blur','pause','source','root','multitouch','native']){
+    const p=page(t,hold,{pointer:true});p.pointer('pointerdown');p.advance(100);
+    assert.equal(p.root.hasAttribute('data-langform-playback-held'),true,mode);
+    if(mode==='short')p.pointer('pointerup');
+    if(mode==='move')p.pointer('pointermove',p.surface,95);
+    if(mode==='cancel')p.pointer('pointercancel');
+    if(mode==='blur')p.win.dispatchEvent(new p.win.Event('blur'));
+    if(mode==='pause'){p.state.paused=true;p.emit('pause');}
+    if(mode==='source'){p.state.currentSrc='next-source.mp4';p.emit('loadstart');}
+    if(mode==='root'){p.root.remove();await Promise.resolve();}
+    if(mode==='multitouch')p.pointer('pointerdown',p.surface,80,110,{pointerId:2,isPrimary:false});
+    if(mode==='native')p.win.__langformPlaybackHold.cancel();
+    p.advance(500);
+    assert.deepEqual(p.rates,[],mode);assert.equal(p.win.__langformPlaybackHold.isActive(),false,mode);
+    assert.equal(p.root.hasAttribute('data-langform-playback-held'),false,mode);
+    assert.equal(p.doc.querySelector('[data-langform-playback-held]'),null,mode);
+    assert.equal(p.doc.getElementById('langform-playback-hold-selection-style'),null,mode);
+    if(mode==='short')assert.equal(p.pointer('click').defaultPrevented,false);
+  }
+});
+test('Der aktive Hold sperrt Kontextmenü und Auswahl im aktuellen Root, mweb-Sibling und eigenen Vollbild',t=>{
   for(const mode of ['root','sibling','fullscreen']){
     const p=page(t,hold,{pointer:true});let target=p.surface,owner=p.root;
     if(mode==='sibling'){
@@ -199,12 +256,12 @@ test('Nur der aktive Hold sperrt Kontextmenü und Auswahl im aktuellen Root, mwe
     }
     assert.equal(owner.hasAttribute('data-langform-playback-held'),true,mode);
     const style=p.doc.getElementById('langform-playback-hold-selection-style');assert.ok(style,mode);assert.match(style.textContent,/-webkit-touch-callout:\s*none/);
-    p.pointer('pointerup',target);assert.equal(p.state.rate,1.25,mode);assert.equal(owner.hasAttribute('data-langform-playback-held'),false,mode);
+    p.pointer('pointerup',target);assert.equal(p.state.rate,1,mode);assert.equal(owner.hasAttribute('data-langform-playback-held'),false,mode);
     for(const event of ['contextmenu','selectstart'])assert.equal(p.pointer(event,textControl).defaultPrevented,false,`${mode}:released:${event}`);
   }
 });
 test('Normales Copy ohne Hold, kurzer Tap, Control-Start und fremde Fläche bleiben erhalten; veralteter Owner sperrt nichts',t=>{
-  for(const mode of ['idle','pending','short','control','outside','stale']){
+  for(const mode of ['idle','short','control','outside','stale']){
     const p=page(t,hold,{pointer:true}),outside=p.doc.createElement('p');outside.textContent='Copy me';p.doc.body.appendChild(outside);
     if(mode!=='idle')p.pointer('pointerdown',mode==='control'?p.doc.getElementById('control'):p.surface);
     if(mode==='short'){p.advance(100);p.pointer('pointerup');}
@@ -255,9 +312,9 @@ test('Bereits geänderte URL/Playerdaten restaurieren das weiterhin gehaltene al
   assert.deepEqual(p.rates,[2,1.25]);p.state.currentSrc='new-video.mp4';p.emit('loadstart');assert.equal(p.state.rate,1.25);
 });
 test('Touch-Fallback und Fullscreen-Hintergrund halten 2×, echte Fullscreencontrols sind ausgenommen',t=>{
-  const p=page(t,hold);p.touch('touchstart');p.advance(350);p.touch('touchend');assert.deepEqual(p.rates,[2,1.25]);
+  const p=page(t,hold);p.touch('touchstart');p.advance(350);p.touch('touchend');assert.deepEqual(p.rates,[2,1]);
   const fs=p.doc.createElement('div');fs.id='langform-fullscreen-ui';p.doc.body.appendChild(fs);
-  p.touch('touchstart',fs,320);p.advance(350);p.touch('touchcancel',fs,320);assert.deepEqual(p.rates,[2,1.25,2,1.25]);
+  p.touch('touchstart',fs,320);p.advance(350);p.touch('touchcancel',fs,320);assert.deepEqual(p.rates,[2,1,2,1]);
 });
 test('Shipping-Fullscreen zeigt den 2×-Hinweis auf beiden Seiten; eigene Controls und kurze Taps bleiben erhalten',t=>{
   const p=page(t,hold,{pointer:true});p.win.scrollTo=()=>{};p.win.__langformStageInsets={nativeMini:false};
@@ -271,12 +328,12 @@ test('Shipping-Fullscreen zeigt den 2×-Hinweis auf beiden Seiten; eigene Contro
     const badge=p.doc.getElementById('langform-playback-hold');assert.equal(badge.parentElement,ui);assert.equal(p.win.getComputedStyle(badge).visibility,'visible');assert.notEqual(p.win.getComputedStyle(badge).opacity,'0');
     const backGlyph=ui.querySelector('[data-action=back] svg');assert.ok(backGlyph);
     for(const target of [ui,backGlyph])for(const event of ['contextmenu','selectstart'])assert.equal(p.pointer(event,target,x).defaultPrevented,true);
-    p.pointer('pointerup',ui,x);assert.equal(p.state.rate,1.25);assert.equal(p.pointer('click',ui,x).defaultPrevented,true);
+    p.pointer('pointerup',ui,x);assert.equal(p.state.rate,1);assert.equal(p.pointer('click',ui,x).defaultPrevented,true);
   }
   const forward=ui.querySelector('[data-action=forward]');p.pointer('pointerdown',forward);p.advance(500);p.pointer('pointerup',forward);forward.click();
-  assert.deepEqual(p.rates,[2,1.25,2,1.25]);assert.equal(p.state.currentTime,22);
+  assert.deepEqual(p.rates,[2,1,2,1]);assert.equal(p.state.currentTime,22);
   p.pointer('pointerdown',ui);p.advance(100);p.pointer('pointerup',ui);p.pointer('click',ui);assert.equal(ui.hasAttribute('data-hidden'),true);
-  assert.deepEqual(p.rates,[2,1.25,2,1.25]);p.win.__langformFullscreen.exit();
+  assert.deepEqual(p.rates,[2,1,2,1]);p.win.__langformFullscreen.exit();
 });
 test('Originales mweb Custom-Control-Sibling gehört zur aktuellen Videofläche, seine Buttons bleiben bedienbar',t=>{
   const p=page(t,hold,{pointer:true});
@@ -284,8 +341,8 @@ test('Originales mweb Custom-Control-Sibling gehört zur aktuellen Videofläche,
   const overlay=p.doc.createElement('ytm-custom-control');overlay.id='player-control-overlay';
   const background=p.doc.createElement('div');background.className='player-controls-background';overlay.appendChild(background);
   const button=p.doc.createElement('button');button.textContent='Play';overlay.appendChild(button);owner.appendChild(overlay);
-  p.pointer('pointerdown',background);p.advance(350);assert.equal(p.state.rate,2);p.pointer('pointerup',background);assert.equal(p.state.rate,1.25);
-  p.pointer('pointerdown',button);p.advance(500);p.pointer('pointerup',button);assert.deepEqual(p.rates,[2,1.25]);
+  p.pointer('pointerdown',background);p.advance(350);assert.equal(p.state.rate,2);p.pointer('pointerup',background);assert.equal(p.state.rate,1);
+  p.pointer('pointerdown',button);p.advance(500);p.pointer('pointerup',button);assert.deepEqual(p.rates,[2,1]);
 });
 test('Ads, native Mini, fremdes Player-Medium, Pause und native Drag nehmen keinen Hold an',t=>{
   for(const mode of ['ad','mini','identity','pause','drag']){const p=page(t,hold,{pointer:true});if(mode==='ad')p.state.ad=true;if(mode==='mini')p.win.__langformStageInsets={nativeMini:true};if(mode==='identity')p.state.id='lmnopqrstuv';if(mode==='pause')p.state.paused=true;if(mode==='drag')p.win.__langformIsNativeDragging=()=>true;p.pointer('pointerdown');p.advance(1000);assert.deepEqual(p.rates,[],mode);}
@@ -319,5 +376,37 @@ test('Opt-in Holdprobe unterscheidet Admission, Kandidat und konkrete Abbruchurs
 });
 test('Fehlernder optionaler Holdprobe-Callback beeinträchtigt 2× und Rollback nicht',t=>{
   const p=page(t,hold,{pointer:true});p.win.__langformPlaybackHoldTrace=()=>{throw new Error('probe failure');};
-  p.pointer('pointerdown');p.advance(350);assert.equal(p.state.rate,2);p.pointer('pointerup');assert.deepEqual(p.rates,[2,1.25]);
+  p.pointer('pointerdown');p.advance(350);assert.equal(p.state.rate,2);p.pointer('pointerup');assert.deepEqual(p.rates,[2,1]);
+});
+
+for(const pointerType of ['touch','pen']){
+  test(`350-ms-Kandidat überlebt mehrere standardkonforme button=-1-Moves des selben ${pointerType}-Kontakts`,t=>{
+    const p=page(t,hold,{pointer:true}), trace=[];p.win.__langformPlaybackHoldTrace=value=>trace.push(value);
+    p.pointer('pointerdown',p.surface,80,110,{pointerType,button:0,buttons:1});
+    for(let i=0;i<5;i++){p.advance(60);p.pointer('pointermove',p.surface,80+i%2,110,{pointerType,button:-1,buttons:1});assert.deepEqual(p.rates,[]);}
+    p.advance(50);assert.equal(p.state.rate,2);assert.equal(p.win.__langformPlaybackHold.isActive(),true);
+    p.pointer('pointerup',p.surface,80,110,{pointerType,button:0,buttons:0});
+    assert.deepEqual(p.rates,[2,1]);assert.equal(trace.filter(value=>value.phase==='cancelled').length,0);
+  });
+  test(`aktiver 2×-Hold bleibt über button=-1-Moves aktiv und kehrt nur einmal beim ${pointerType}-Release zu1× zurück`,t=>{
+    const p=page(t,hold,{pointer:true});p.pointer('pointerdown',p.surface,80,110,{pointerType,buttons:1});p.advance(350);
+    for(let i=0;i<10;i++){p.advance(40);const move=p.pointer('pointermove',p.surface,80+i%2,110,{pointerType,button:-1,buttons:1});assert.equal(p.state.rate,2);assert.equal(move.defaultPrevented,true);}
+    p.pointer('pointerup',p.surface,80,110,{pointerType,button:0,buttons:0});p.pointer('pointerup',p.surface,80,110,{pointerType,button:0,buttons:0});p.advance(500);
+    assert.deepEqual(p.rates,[2,1]);assert.equal(p.win.__langformPlaybackHold.isActive(),false);
+  });
+}
+for(const phase of ['pending','held']){
+  test(`${phase}: button=-1 ist keine Ausnahme für Hover, Nebenbuttons, fremde Pointer oder zu großen Weg`,t=>{
+    for(const [name,extra,x] of [['hover',{buttons:0},80],['right-button',{buttons:2},80],['barrel-chord',{buttons:3},80],['eraser',{buttons:32},80],['non-primary',{isPrimary:false},80],['foreign-id',{pointerId:2},80],['changed-type',{pointerType:'mouse'},80],['movement',{},91]]){
+      const p=page(t,hold,{pointer:true});p.pointer('pointerdown');if(phase==='held')p.advance(350);
+      p.pointer('pointermove',p.surface,x,110,{button:-1,buttons:1,...extra});p.advance(500);
+      assert.equal(p.win.__langformPlaybackHold.isActive(),false,name);assert.deepEqual(p.rates,phase==='held'?[2,1.25]:[],name);
+      assert.equal(p.doc.getElementById('langform-playback-hold-selection-style'),null,name);
+    }
+  });
+}
+test('button=-1-Start, rechte Starttaste und nichtprimärer Kontakt werden weiterhin abgewiesen',t=>{
+  for(const extra of [{button:-1,buttons:1},{button:2,buttons:2},{button:0,buttons:1,isPrimary:false}]){
+    const p=page(t,hold,{pointer:true});p.pointer('pointerdown',p.surface,80,110,extra);p.advance(500);assert.deepEqual(p.rates,[]);assert.equal(p.win.__langformPlaybackHold.isActive(),false);
+  }
 });

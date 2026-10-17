@@ -31,12 +31,25 @@ const skeleton = `<div class="engagement-panel-section-list-background draggable
     </div></div><div class="engagement-panel-content-wrapper"><div class="spinner"></div></div>
   </div></div>`;
 
+function dragEvent(env, target, name, x, y, options = {}) {
+  // Ordinary fixture contacts are deliberate slow pulls. CPU scheduling is
+  // not gesture time; explicit Fling/readback tests retain their own clocks.
+  const { elapsedMs = name === 'pointermove' ? 200 : /up|cancel$/.test(name) ? 50 : 0, ...eventOptions } = options;
+  env.advance(elapsedMs);
+  const event = new env.win.Event(name, { bubbles: true, cancelable: true });
+  Object.assign(event, { pointerId: options.id || 31, pointerType: 'touch', isPrimary: true, button: 0, clientX: x, clientY: y, ...eventOptions });
+  target.dispatchEvent(event);
+  return event;
+}
+
 function setup(t, options = {}) {
   const dom = new JSDOM('<div id="movie_player"><video></video></div><button id="open">Kommentare</button><panel-container></panel-container>', {
     url: options.url || "https://m.youtube.com/watch?v=abcdefghijk", runScripts: "outside-only",
   });
   t.after(() => dom.window.close());
   const win = dom.window, doc = win.document;
+  let fixtureTime = 1000;
+  Object.defineProperty(win.performance, 'now', { configurable: true, value: () => fixtureTime });
   const errors = [];
   win.addEventListener("error", event => { errors.push(event.message); event.preventDefault(); });
   t.after(() => assert.deepEqual(errors, [], "kein abgefangener Fehler in Original- oder Dekorationshandlern"));
@@ -85,6 +98,7 @@ function setup(t, options = {}) {
   win.eval(links);
   win.eval(motion);
   return { win, doc, animations, messages, timers, subscriptions, preference,
+    advance(milliseconds) { assert.ok(Number.isFinite(milliseconds) && milliseconds >= 0); fixtureTime += milliseconds; },
     reads: () => ({ styleReads, geometryReads, queries }),
     pose(node, value) { poses.set(node, value); },
     rect(node, value) { geometry.set(node, value); },
@@ -153,6 +167,15 @@ test("erstes Öffnen animiert die echte YouTube-Shell sofort und Hydration setzt
   let closes = 0; panel.querySelector("button").addEventListener("click", () => { closes++; panel.remove(); });
   panel.querySelector("button").click(); env.animations.at(-1).finish(); await env.flush();
   assert.equal(closes, 1);
+});
+
+test('aktueller öffentlicher NF-Push animiert die Lazy-Shell vor Hydration und erhält die gemeinsame Timeline', async t => {
+  const env=setup(t);
+  env.win.dispatchEvent(new env.win.CustomEvent('engagement-panel-push',{detail:{identifier:'engagement-panel-comments-section',NF:{engagementPanelSectionListRenderer:{panelIdentifier:'engagement-panel-comments-section'}}}}));
+  const panel=env.mount(skeleton);await env.flush();assert.equal(env.animations.length,1,'NF-Intent muss vor dem ersten Shellframe bekannt sein');
+  const entrance=env.animations[0];assert.equal(entrance.frames[0].translate,'0px 626px');entrance.currentTime=150;
+  panel.innerHTML=comments;await env.flush();assert.equal(env.animations.length,2);assert.equal(env.animations[1].currentTime,150);
+  env.animations[1].finish();assert.equal(panel.querySelector('.engagement-panel-container').style.translate,'');
 });
 
 test("Hydration übernimmt den endlichen Timeline-Ursprung samt Tempo statt eines veralteten Sampling-Ticks", async t => {
@@ -262,15 +285,15 @@ test("Berührung während des ersten Skeleton-Eintritts bleibt unmittelbar und H
 });
 
 test("ein tatsächlich verstecktes Skeleton erhält bei erneutem Öffnen einen neuen Eintritt", async t => {
-  const env = setup(t), panel = env.push(skeleton); await env.flush();
+  const env = setup(t);let now=1000;Object.defineProperty(env.win.performance,"now",{configurable:true,value:()=>now});const panel = env.push(skeleton); await env.flush();
   const oldFinish = env.animations[0].onfinish;
-  panel.hidden = true; await env.flush(); panel.hidden = false; await env.flush(); oldFinish();
+  now=1500;panel.hidden = true; await env.flush(); panel.hidden = false; await env.flush(); oldFinish();
   assert.equal(env.animations.length, 2);
   assert.equal(env.animations[0].cancelled, true);
   assert.equal(env.animations[1].cancelled, false);
-  panel.innerHTML = comments; await env.flush();
+  now=1580;panel.innerHTML = comments; await env.flush();
   assert.equal(env.animations.length, 3, "Hydration überträgt nur den laufenden neuen Eintritt");
-  assert.equal(env.animations[2].currentTime, env.animations[1].currentTime);
+  assert.equal(env.animations[2].currentTime,80,"nur80ms seit dem neuen Eintritt, nicht die alte500ms-Pause");
 });
 
 test("Reduce Motion und fehlende WAAPI gelten bereits für die kalte Kommentar-Shell", async t => {
@@ -679,7 +702,7 @@ test("Bewegung begrenzt den Autofokus-Scrollwrapper vor dem ersten Frame und gib
     assert.equal(panel.hasAttribute(marker), false);
     assert.equal(content.hasAttribute(marker), false, "die eigentliche Kommentarliste bleibt scrollbar");
     const clipRule = Array.from(env.doc.styleSheets).flatMap(sheet => Array.from(sheet.cssRules))
-      .find(rule => rule.selectorText === "ytm-engagement-panel .engagement-panel-section-list-background.at-top[" + marker + "]");
+      .find(rule => rule.selectorText === "ytm-engagement-panel .engagement-panel-section-list-background.at-top[" + marker + "]:not([data-langform-comments-interactive])");
     assert.ok(clipRule, "nur der eigene bewegte Wrapper erhält die temporäre Regel");
     assert.equal(clipRule.style.getPropertyValue("overflow"), "clip");
     assert.equal(clipRule.style.getPropertyPriority("overflow"), "important");
@@ -748,7 +771,7 @@ test("Reduce Motion und fehlende Animationsunterstützung verändern den Scrollw
 test("YouTubes native Aufwärtsgeste verlässt den at-top-Clip ohne ihren Scrollweg zu blockieren", async t => {
   const env = setup(t), panel = env.mount(); await env.flush();
   const wrapper = panel.querySelector(".engagement-panel-section-list-background");
-  const selector = "ytm-engagement-panel .engagement-panel-section-list-background.at-top[data-langform-comments-moving]";
+  const selector = "ytm-engagement-panel .engagement-panel-section-list-background.at-top[data-langform-comments-moving]:not([data-langform-comments-interactive])";
   assert.equal(wrapper.matches(selector), true);
   wrapper.classList.remove("at-top");
   assert.equal(wrapper.matches(selector), false, "native Dragposition außerhalb at-top hat keine Clip-Regel");
@@ -807,4 +830,385 @@ test("ungültige Schließgeometrie lässt den Originalklick einmal unverändert 
     assert.equal(panel.querySelector("[data-langform-comments-moving]"), null);
     assert.equal([...env.timers.values()].filter(timer => timer.delay === 500).length, 0);
   }
+});
+
+test('Kommentarheader zeigt einen eigenen nicht fokussierbaren Ziehbalken', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush();
+  const handle = panel.querySelector('[data-langform-comments-handle]');
+  assert.ok(handle); assert.equal(handle.getAttribute('aria-hidden'), 'true');
+  assert.equal(handle.hasAttribute('tabindex'), false);
+  assert.equal(handle.closest('.engagement-panel-section-list-header-wrapper') !== null, true);
+  assert.equal(panel.querySelectorAll('[data-langform-comments-handle]').length, 1);
+});
+
+test('Headerdrag folgt dem Finger und federt mit physikalischen Keyframes von der erreichten Pose zurück', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title'), surface = panel.querySelector('.engagement-panel-container');
+  const originalTransform = surface.style.transform;
+  dragEvent(env, header, 'pointerdown', 130, 300);
+  const move = dragEvent(env, header, 'pointermove', 132, 354);
+  assert.equal(move.defaultPrevented, true); assert.equal(surface.style.translate, '0px 54px');
+  dragEvent(env, header, 'pointerup', 132, 354);
+  const settle = env.animations.at(-1);
+  assert.ok(settle.frames.length > 12, 'Spring wird aus Position und Geschwindigkeit berechnet');
+  assert.equal(settle.settings.easing, 'linear'); assert.equal(settle.frames[0].translate, '0px 54px');
+  assert.equal(settle.frames.at(-1).translate, '0px 0px');
+  settle.finish(); assert.equal(surface.style.translate, ''); assert.equal(surface.style.transform, originalTransform);
+});
+
+test('dieselbe kurze Fixturebewegung unterscheidet langsamen Zug, schnellen Flick und gehaltenes Loslassen über explizite Kontaktzeit', async t => {
+  for (const [moveMs, releaseMs, dismiss] of [[200, 50, false], [20, 1, true], [20, 150, false]]) {
+    const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+    const header = panel.querySelector('h2'); let closes = 0;
+    panel.querySelector('button').addEventListener('click', () => { closes++; panel.remove(); });
+    dragEvent(env, header, 'pointerdown', 130, 300);
+    dragEvent(env, header, 'pointermove', 130, 354, { elapsedMs: moveMs });
+    dragEvent(env, header, 'pointerup', 130, 354, { elapsedMs: releaseMs });
+    env.animations.at(-1).finish(); await env.flush();
+    assert.equal(closes, dismiss ? 1 : 0, `${moveMs}ms Zug, ${releaseMs}ms Hold`);
+    assert.equal(panel.isConnected, !dismiss);
+  }
+});
+
+test('langer Headerdrag schließt durch den originalen X genau einmal und hält den Overlay-Schutz bis zur Entfernung', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title');
+  let closes = 0; panel.querySelector('button').addEventListener('click', () => { closes++; panel.remove(); });
+  dragEvent(env, header, 'pointerdown', 130, 300); dragEvent(env, header, 'pointermove', 130, 570); dragEvent(env, header, 'pointerup', 130, 570);
+  assert.equal(closes, 0); assert.equal(env.win.__langformHasOpenOverlay(), true);
+  const finish = env.animations.at(-1).onfinish; env.animations.at(-1).finish(); finish(); await env.flush();
+  assert.equal(closes, 1); assert.equal(env.win.__langformHasOpenOverlay(), false);
+});
+
+test('Hochziehen erweitert dieselbe Kommentarfläche und zieht ihre Unterkante bis zum Viewportrand mit', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title'), surface = panel.querySelector('.engagement-panel-container');
+  dragEvent(env, header, 'pointerdown', 130, 320); dragEvent(env, header, 'pointermove', 130, 160); dragEvent(env, header, 'pointerup', 130, 160);
+  const spring = env.animations.at(-1); spring.finish();
+  assert.equal(surface.style.translate, '0px -208px'); assert.equal(surface.style.height, '832px');
+  assert.equal(panel.isConnected, true); assert.equal(env.doc.querySelectorAll('video').length, 1);
+});
+
+test('gescrollte Kommentare, horizontale Bewegung und Kommentar-Controls behalten ihre Originalereignisse', async t => {
+  for (const scenario of ['scrolled', 'horizontal', 'button', 'input']) {
+    const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+    let target = panel.querySelector('.engagement-panel-content-wrapper');
+    if (scenario === 'scrolled') target.scrollTop = 100;
+    if (scenario === 'button') target = panel.querySelector('#reply');
+    if (scenario === 'input') { const input = env.doc.createElement('textarea'); target.appendChild(input); target = input; }
+    let moves = 0; target.addEventListener('pointermove', () => moves++);
+    dragEvent(env, target, 'pointerdown', 100, 400);
+    const event = dragEvent(env, target, 'pointermove', scenario === 'horizontal' ? 180 : 100, scenario === 'horizontal' ? 402 : 580);
+    dragEvent(env, target, 'pointerup', 180, 580);
+    assert.equal(event.defaultPrevented, false, scenario); assert.equal(moves, 1, scenario); assert.equal(env.animations.length, 1, scenario);
+  }
+});
+
+test('Liste am oberen Rand kann abwärts schließen, aufwärts bleibt sie bei YouTubes echtem Listenscroll', async t => {
+  for (const downward of [false, true]) {
+    const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+    const body = panel.querySelector('.engagement-panel-content-wrapper');
+    dragEvent(env, body, 'pointerdown', 100, 400);
+    const move = dragEvent(env, body, 'pointermove', 100, downward ? 610 : 330);
+    assert.equal(move.defaultPrevented, downward);
+    dragEvent(env, body, 'pointerup', 100, downward ? 610 : 330);
+    assert.equal(env.animations.length, downward ? 2 : 1);
+  }
+});
+
+test('Multitouch, Abbruch, Navigation und Keyboardresize räumen eigene Dragstyles ohne Medien-/Fokusaktionen auf', async t => {
+  for (const ending of ['pointercancel', 'second-pointer', 'navigation', 'resize', 'hidden', 'removed']) {
+    const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+    const header = panel.querySelector('.engagement-panel-section-list-header-title'), surface = panel.querySelector('.engagement-panel-container'), style = surface.style.cssText;
+    let closes = 0; panel.querySelector('button').addEventListener('click', () => closes++);
+    const video = env.doc.querySelector('video'); video.play = video.pause = () => assert.fail('Drag darf das Medium nicht verändern');
+    dragEvent(env, header, 'pointerdown', 100, 300); dragEvent(env, header, 'pointermove', 100, 380);
+    if (ending === 'pointercancel') { dragEvent(env, header, 'pointercancel', 100, 380); env.animations.at(-1).finish(); }
+    else if (ending === 'second-pointer') { dragEvent(env, header, 'pointerdown', 180, 380, { id: 32, isPrimary: false }); env.animations.at(-1).finish(); }
+    else if (ending === 'navigation') env.win.dispatchEvent(new env.win.Event('yt-navigate-start'));
+    else if (ending === 'resize') env.win.visualViewport.dispatchEvent(new env.win.Event('resize'));
+    else if (ending === 'hidden') { panel.hidden = true; await env.flush(); }
+    else { panel.remove(); await env.flush(); }
+    assert.equal(surface.style.cssText, style, ending); assert.equal(closes, 0, ending);
+  }
+});
+
+test('Reduce Motion erhält Dragbedienung mit sofortigem Snap und ohne neue Animation', async t => {
+  const env = setup(t, { reduced: true }), panel = env.mount(); await env.flush();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title'), surface = panel.querySelector('.engagement-panel-container');
+  let now = 1000; Object.defineProperty(env.win.performance, 'now', { configurable: true, value: () => now });
+  dragEvent(env, header, 'pointerdown', 100, 300);
+  now += 500; dragEvent(env, header, 'pointermove', 100, 350); // 50 px / .5 s = 100 px/s, a deliberate slow drag.
+  now += 20; dragEvent(env, header, 'pointerup', 100, 350);
+  assert.equal(env.animations.length, 0); assert.equal(surface.style.translate, '');
+});
+
+test('Reduce Motion erhält auch einen bewusst schnellen Fling ohne Animation und führt den Originaldismiss einmal aus', async t => {
+  const env = setup(t, { reduced: true }), panel = env.mount(); await env.flush();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title');
+  let now = 1000, closes = 0; Object.defineProperty(env.win.performance, 'now', { configurable: true, value: () => now });
+  panel.querySelector('button').addEventListener('click', () => { closes++; panel.remove(); });
+  dragEvent(env, header, 'pointerdown', 100, 300);
+  now += 20; dragEvent(env, header, 'pointermove', 100, 350); // Same 50 px at 2500 px/s intentionally dismisses.
+  now += 1; dragEvent(env, header, 'pointerup', 100, 350); await env.flush();
+  assert.equal(env.animations.length, 0); assert.equal(closes, 1); assert.equal(panel.isConnected, false);
+});
+
+test('YouTubes fokussierter Schließenbutton sperrt Drag nicht; ein aktives Texteingabefeld erhält seine Tastatur', async t => {
+  for (const inputFocused of [false, true]) {
+    const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+    const header = panel.querySelector('.engagement-panel-section-list-header-title');
+    let input = panel.querySelector('button');
+    if (inputFocused) { input = env.doc.createElement('textarea'); panel.querySelector('.engagement-panel-content-wrapper').appendChild(input); }
+    input.focus(); dragEvent(env, header, 'pointerdown', 100, 300);
+    const move = dragEvent(env, header, 'pointermove', 100, 360);
+    assert.equal(move.defaultPrevented, !inputFocused);
+    assert.equal(env.doc.activeElement, input, 'kein blur/focus in der Dragsteuerung');
+  }
+});
+
+test('Griff während laufender Feder übernimmt die sichtbare Pose; ein alter Callback kann sie nicht zurücksetzen', async t => {
+  const env = setup(t);let now=1000;Object.defineProperty(env.win.performance,'now',{configurable:true,value:()=>now});
+  const panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title'), surface = panel.querySelector('.engagement-panel-container');
+  // Explicit slow pull: host scheduling must not turn this return spring into a dismiss flick.
+  dragEvent(env, header, 'pointerdown', 100, 300);now=1200;dragEvent(env, header, 'pointermove', 100, 360);now=1250;dragEvent(env, header, 'pointerup', 100, 360);
+  const spring = env.animations.at(-1), oldFinish = spring.onfinish;assert.equal(spring.frames.at(-1).translate,'0px 0px','specified slow pull returns to rest before regrab');env.pose(surface, '0px 28px');
+  now=1300;dragEvent(env, header, 'pointerdown', 100, 320);now=1350;dragEvent(env, header, 'pointermove', 100, 350);
+  assert.equal(spring.cancelled, true); assert.equal(surface.style.translate, '0px 58px');
+  oldFinish(); assert.equal(surface.style.translate, '0px 58px');
+});
+
+test('ein wirkungsloser originaler Dismiss zeigt nach dem Schutzzeitraum wieder das ursprüngliche Blatt', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title'), surface = panel.querySelector('.engagement-panel-container'), original = surface.style.cssText;
+  let closes = 0; panel.querySelector('button').addEventListener('click', () => closes++);
+  dragEvent(env, header, 'pointerdown', 100, 300); dragEvent(env, header, 'pointermove', 100, 580); dragEvent(env, header, 'pointerup', 100, 580);
+  env.animations.at(-1).finish(); assert.equal(closes, 1); env.expireCloseGuard();
+  assert.equal(surface.style.cssText, original); assert.equal(panel.isConnected, true); assert.equal(env.win.__langformHasOpenOverlay(), true);
+  assert.equal(panel.querySelector('[data-langform-comments-interactive]'), null);
+});
+
+test('iOS-Pointer und Touch desselben Fingers schließen nur einmal und Touchmove übernimmt die Scrollentscheidung', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title');
+  let closes = 0; panel.querySelector('button').addEventListener('click', () => { closes++; panel.remove(); });
+  function touch(type, y) { const event = new env.win.Event(type, { bubbles: true, cancelable: true }); const point = { identifier: 71, clientX: 100, clientY: y }; event.touches = type === 'touchend' ? [] : [point]; event.changedTouches = [point]; header.dispatchEvent(event); return event; }
+  dragEvent(env, header, 'pointerdown', 100, 300); touch('touchstart', 300);
+  dragEvent(env, header, 'pointermove', 100, 580); assert.equal(touch('touchmove', 580).defaultPrevented, true);
+  dragEvent(env, header, 'pointerup', 100, 580); assert.equal(env.animations.length, 1); touch('touchend', 580);
+  assert.equal(env.animations.length, 2); env.animations.at(-1).finish(); await env.flush(); assert.equal(closes, 1);
+});
+
+test('Tastatur-/AX-X bleibt unmittelbar nach einem Drag erreichbar; reine Nichtprimarypointer beginnen keine neue Geste', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title');
+  dragEvent(env, header, 'pointerdown', 100, 300, { isPrimary: false });
+  const ignored = dragEvent(env, header, 'pointermove', 100, 500, { isPrimary: false }); assert.equal(ignored.defaultPrevented, false);
+  dragEvent(env, header, 'pointerdown', 100, 300); dragEvent(env, header, 'pointermove', 100, 350); dragEvent(env, header, 'pointerup', 100, 350); env.animations.at(-1).finish();
+  let closes = 0; panel.querySelector('button').addEventListener('click', () => { closes++; panel.remove(); });
+  panel.querySelector('button').click(); env.animations.at(-1).finish(); await env.flush(); assert.equal(closes, 1);
+});
+
+test('echte native Hintergrundsichtbarkeit beendet Drag auch bei für Playback maskiertem document.hidden', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title'), surface = panel.querySelector('.engagement-panel-container'), original = surface.style.cssText;
+  Object.defineProperty(env.doc, 'hidden', { configurable: true, value: false });
+  env.win.__langformRealVisibility = { inactive() { return true; } };
+  dragEvent(env, header, 'pointerdown', 100, 300); dragEvent(env, header, 'pointermove', 100, 370);
+  env.doc.dispatchEvent(new env.win.Event('langform-real-visibilitychange'));
+  assert.equal(surface.style.cssText, original); assert.equal(panel.hasAttribute('data-langform-comments-dragging'), false);
+});
+
+test('aktueller mweb-Renderer hebt seinen zusätzlichen Clip nur während eigener Expansion auf und stellt ihn wieder her', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('.engagement-panel-section-list-header-title'), renderer = panel.querySelector('ytm-engagement-panel-section-list-renderer');
+  renderer.style.overflowY = 'auto';
+  dragEvent(env, header, 'pointerdown', 100, 320); dragEvent(env, header, 'pointermove', 100, 160); dragEvent(env, header, 'pointerup', 100, 160); env.animations.at(-1).finish();
+  assert.equal(renderer.hasAttribute('data-langform-comments-interactive'), true);
+  const rule = Array.from(env.doc.styleSheets).flatMap(sheet => Array.from(sheet.cssRules)).find(rule => rule.selectorText === 'ytm-engagement-panel ytm-engagement-panel-section-list-renderer[data-langform-comments-interactive]');
+  assert.equal(rule.style.getPropertyValue('overflow'), 'visible'); assert.equal(rule.style.getPropertyPriority('overflow'), 'important');
+  env.win.visualViewport.dispatchEvent(new env.win.Event('resize'));
+  assert.equal(renderer.hasAttribute('data-langform-comments-interactive'), false); assert.equal(renderer.style.overflowY, 'auto');
+});
+
+test('expandierter Kommentarhandle bleibt unter dem gemeldeten nativen Safe-Area-Top statt unter der Uhrzeit', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  env.win.__langformStageInsets = { top: 59 };
+  const header = panel.querySelector('.engagement-panel-section-list-header-title'), surface = panel.querySelector('.engagement-panel-container');
+  dragEvent(env, header, 'pointerdown', 100, 320); dragEvent(env, header, 'pointermove', 100, 120); dragEvent(env, header, 'pointerup', 100, 120); env.animations.at(-1).finish();
+  assert.equal(surface.style.translate, '0px -149px'); assert.equal(surface.style.height, '773px');
+});
+
+test('schnelle Aufwärtsfeder deckt die Bildschirmunterkante auch während ihres Überschwingens vollständig ab', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  env.win.__langformStageInsets = { top: 59 };
+  const header = panel.querySelector('h2'), surface = panel.querySelector('.engagement-panel-container');
+  let now = 1000; Object.defineProperty(env.win.performance, 'now', { configurable: true, value: () => now });
+  dragEvent(env, header, 'pointerdown', 100, 330);
+  now += 40; dragEvent(env, header, 'pointermove', 100, 250);
+  now += 16; dragEvent(env, header, 'pointermove', 100, 190);
+  dragEvent(env, header, 'pointerup', 100, 190);
+  const spring = env.animations.at(-1), height = parseFloat(surface.style.height);
+  const offsets = spring.frames.map(frame => parseFloat(frame.translate.split(' ')[1]));
+  assert.ok(Math.min(...offsets) < -149, 'Test enthält echtes physikalisches Überschwingen');
+  assert.ok(offsets.every(offset => 220 + offset + height >= 844 - .01), 'kein sichtbarer Spalt während irgendeines Springframes');
+  spring.finish(); assert.equal(surface.style.height, '773px');
+});
+
+test('Endkoordinate eines zusammengefassten Touch-Endes bestimmt Dismiss und letzte sichtbare Pose', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('h2');
+  let now = 1000, closes = 0; Object.defineProperty(env.win.performance, 'now', { configurable: true, value: () => now });
+  panel.querySelector('button').addEventListener('click', () => { closes++; panel.remove(); });
+  dragEvent(env, header, 'pointerdown', 100, 300);
+  now += 200; dragEvent(env, header, 'pointermove', 100, 320);
+  now += 120; dragEvent(env, header, 'pointerup', 100, 580);
+  const spring = env.animations.at(-1);
+  assert.equal(spring.frames[0].translate, '0px 280px', 'Release startet an der tatsächlichen Endpose');
+  spring.finish(); await env.flush(); assert.equal(closes, 1);
+});
+
+test('der letzte Releasepunkt kann einen begonnenen Dismiss durch eine Gegenbewegung abbrechen', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('h2');
+  let now = 1000, closes = 0; Object.defineProperty(env.win.performance, 'now', { configurable: true, value: () => now });
+  panel.querySelector('button').addEventListener('click', () => closes++);
+  dragEvent(env, header, 'pointerdown', 100, 300);
+  now += 300; dragEvent(env, header, 'pointermove', 100, 580);
+  now += 200; dragEvent(env, header, 'pointerup', 100, 310);
+  const spring = env.animations.at(-1);
+  assert.equal(spring.frames[0].translate, '0px 10px');
+  spring.finish(); assert.equal(closes, 0); assert.equal(panel.isConnected, true);
+});
+
+test('schneller Richtungswechsel beim Loslassen verwendet nicht die alte entgegengesetzte Geschwindigkeit', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('h2');
+  let now = 1000, closes = 0; Object.defineProperty(env.win.performance, 'now', { configurable: true, value: () => now });
+  panel.querySelector('button').addEventListener('click', () => closes++);
+  dragEvent(env, header, 'pointerdown', 100, 300);
+  now += 80; dragEvent(env, header, 'pointermove', 100, 420);
+  now += 4; dragEvent(env, header, 'pointerup', 100, 380);
+  const spring = env.animations.at(-1);
+  assert.notEqual(spring.frames.at(-1).translate, '0px 626px', 'Rückbewegung darf nicht mit der alten Abwärtsgeschwindigkeit schließen');
+  spring.finish(); assert.equal(closes, 0);
+});
+
+test('eigene Expansion bleibt während der Feder unclipped, während normale Entrances ihren Fokusscroll-Clip behalten', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush();
+  const header = panel.querySelector('h2'), background = panel.querySelector('.engagement-panel-section-list-background');
+  const matchingClips = () => Array.from(env.doc.styleSheets).flatMap(sheet => Array.from(sheet.cssRules))
+    .filter(rule => rule.style.getPropertyValue('overflow') === 'clip' && background.matches(rule.selectorText));
+  assert.equal(matchingClips().length, 1, 'Originalentrance schützt weiterhin vor Autofokus-Scroll');
+  env.animations[0].finish();
+  dragEvent(env, header, 'pointerdown', 100, 320); dragEvent(env, header, 'pointermove', 100, 160); dragEvent(env, header, 'pointerup', 100, 160);
+  assert.equal(background.hasAttribute('data-langform-comments-moving'), true);
+  assert.equal(background.hasAttribute('data-langform-comments-interactive'), true);
+  assert.equal(matchingClips().length, 0, 'Header oberhalb der alten Box bleibt während der Feder sichtbar und erreichbar');
+  env.animations.at(-1).finish(); env.win.dispatchEvent(new env.win.Event('resize'));
+  assert.equal(background.hasAttribute('data-langform-comments-interactive'), false);
+});
+
+test('ein früher dokumentweiter Headergriff verhindert konkurrierende Original-Window-/Document-Recognizer', async t => {
+  const env = setup(t); let originalStarts=0, ownsOriginal=false, surface;
+  // Site listeners are installed after document-start scripts but before the
+  // lazy comment sheet mounts. This is the real ordering the old node-level
+  // capture route failed to protect.
+  for (const root of [env.win,env.doc]) for (const name of ['pointerdown','touchstart']) root.addEventListener(name,()=>{originalStarts++;ownsOriginal=true;},true);
+  env.win.addEventListener('pointermove',()=>{if(ownsOriginal)surface.style.transform='translateY(336.333px)';},true);
+  const panel=env.mount();await env.flush();env.animations[0].finish();surface=panel.querySelector('.engagement-panel-container');
+  const header=panel.querySelector('h2');
+  let now=1000;Object.defineProperty(env.win.performance,'now',{configurable:true,value:()=>now});
+  dragEvent(env,header,'pointerdown',100,328);now+=500;dragEvent(env,header,'pointermove',100,363);now+=150;dragEvent(env,header,'pointerup',100,363);env.animations.at(-1).finish();
+  assert.equal(originalStarts,0,'Originalheader kann keinen parallelen Drag beginnen');
+  assert.equal(surface.style.transform,'translateY(0px)');assert.equal(surface.style.translate,'');
+});
+
+test('frühe Windowroute bewahrt Original-Controls und gescrollte Liste und entfernt abgelöste Panels', async t => {
+  const env=setup(t);let originalStarts=0;env.win.addEventListener('pointerdown',()=>originalStarts++,true);
+  const panel=env.mount();await env.flush();env.animations[0].finish();
+  dragEvent(env,panel.querySelector('#reply'),'pointerdown',100,400);dragEvent(env,panel.querySelector('#reply'),'pointerup',100,400);
+  const body=panel.querySelector('.engagement-panel-content-wrapper');body.scrollTop=100;
+  dragEvent(env,body,'pointerdown',100,400);dragEvent(env,body,'pointermove',100,450);dragEvent(env,body,'pointerup',100,450);
+  assert.equal(originalStarts,2);assert.equal(body.scrollTop,100);
+  panel.remove();await env.flush();env.doc.body.append(panel);
+  dragEvent(env,panel.querySelector('h2'),'pointerdown',100,300);
+  assert.equal(originalStarts,3,'entferntes/noch nicht rediscovered Panel bleibt beim Originalpfad');
+});
+
+test('iOS Headerkontakt schirmt kleine Moves und beide Pointer-/Touch-Streams bis zum jeweiligen Ende ab', async t => {
+  for (const ending of ['pointer-first','touch-first','cancel']) {
+    const env=setup(t), leaked=[];let surface;
+    for(const name of ['pointermove','touchmove','pointerup','touchend','pointercancel','touchcancel']) env.win.addEventListener(name,e=>{leaked.push(e.type);surface.style.transform='translateY(336.333px)';},true);
+    const panel=env.mount();await env.flush();env.animations[0].finish();surface=panel.querySelector('.engagement-panel-container');const header=panel.querySelector('h2');
+    function touch(type,y){const e=new env.win.Event(type,{bubbles:true,cancelable:true});const p={identifier:71,clientX:100,clientY:y};e.touches=/end|cancel/.test(type)?[]:[p];e.changedTouches=[p];header.dispatchEvent(e);}
+    let now=1000;Object.defineProperty(env.win.performance,'now',{configurable:true,value:()=>now});
+    dragEvent(env,header,'pointerdown',100,328);touch('touchstart',328);
+    now+=30;dragEvent(env,header,'pointermove',100,331);touch('touchmove',331);
+    now+=200;dragEvent(env,header,'pointermove',100,363);touch('touchmove',363);now+=150;
+    if(ending==='touch-first'){touch('touchend',363);dragEvent(env,header,'pointerup',100,363);}
+    else if(ending==='cancel'){dragEvent(env,header,'pointercancel',100,363);touch('touchcancel',363);}
+    else{dragEvent(env,header,'pointerup',100,363);touch('touchend',363);}
+    assert.deepEqual(leaked,[],ending+' darf den Originalmove nicht ohne eigenen Originalstart reaktivieren');
+    env.animations.at(-1).finish();assert.equal(surface.style.translate,'');assert.equal(surface.style.transform,'translateY(0px)');
+    dragEvent(env,env.doc.body,'pointermove',100,400);assert.equal(leaked.length,1,'abgeschlossener Kontakt sperrt keinen späteren Fremdkontakt');
+  }
+});
+
+test('Kontaktschutz beginnt im Listenbody erst nach Claim und gibt fremde IDs sowie Resize frei', async t => {
+  const env=setup(t), panel=env.mount();await env.flush();env.animations[0].finish();const body=panel.querySelector('.engagement-panel-content-wrapper'),header=panel.querySelector('h2');let forwarded=0;
+  env.win.addEventListener('pointermove',()=>forwarded++,true);
+  function touch(type,y){const e=new env.win.Event(type,{bubbles:true,cancelable:true});const p={identifier:71,clientX:100,clientY:y};e.touches=type==='touchend'?[]:[p];e.changedTouches=[p];body.dispatchEvent(e);}
+  dragEvent(env,body,'pointerdown',100,400);touch('touchstart',400);
+  dragEvent(env,body,'pointermove',100,403);touch('touchmove',403);assert.equal(forwarded,1,'native Liste behält unbeanspruchten Kontakt');
+  touch('touchmove',435);dragEvent(env,body,'pointermove',100,435);assert.equal(forwarded,1,'nach Bodyclaim sind auch Begleitpointer geschützt');
+  dragEvent(env,body,'pointerup',100,435);touch('touchend',435);env.animations.at(-1).finish();
+  dragEvent(env,header,'pointerdown',100,300);dragEvent(env,header,'pointermove',100,304,{id:99});assert.equal(forwarded,2,'fremde Kontakt-ID wird nicht blockiert');
+  env.win.dispatchEvent(new env.win.Event('resize'));dragEvent(env,header,'pointermove',100,305);assert.equal(forwarded,3,'Viewportwechsel räumt Kontaktbesitz auf');
+});
+
+test('originaler breiter Kommentarbutton erlaubt Bodydrag, sein kurzer Tap und echte innere Aktionen bleiben original', async t => {
+  for(const targetKind of ['details','text','reaction','link','input','reply']) {
+    const env=setup(t), panel=env.mount();await env.flush();env.animations[0].finish();
+    const body=panel.querySelector('.engagement-panel-content-wrapper'), comment=env.doc.createElement('ytm-comment-renderer');
+    comment.innerHTML='<button class="YtmCommentRendererContent"><span class="YtmCommentRendererText">Kommentartext</span><div class="YtmCommentRendererDetails"></div><a href="#channel">Kanal</a><input></button><button data-langform-comment-reaction="like">Like</button><button class="reply">Antworten</button>';body.append(comment);
+    const target=comment.querySelector({details:'.YtmCommentRendererDetails',text:'.YtmCommentRendererText',reaction:'[data-langform-comment-reaction]',link:'a',input:'input',reply:'.reply'}[targetKind]);
+    let clicks=0;target.addEventListener('click',()=>clicks++);
+    dragEvent(env,target,'pointerdown',100,400);dragEvent(env,target,'pointerup',100,400);target.click();assert.equal(clicks,1,'kurzer Originaltap '+targetKind);
+    let closes=0;panel.querySelector('.close-button button').addEventListener('click',()=>closes++);
+    dragEvent(env,target,'pointerdown',100,400);const move=dragEvent(env,target,'pointermove',100,680);dragEvent(env,target,'pointerup',100,680);
+    const owns=['details','text'].includes(targetKind);assert.equal(move.defaultPrevented,owns,targetKind);
+    if(owns){env.animations.at(-1).finish();assert.equal(closes,1);}
+    else assert.equal(closes,0);
+  }
+});
+
+test('WebKit detached shell with zero time and null start retains elapsed entrance and accepted2x clock',async t=>{
+  for(const accelerate of [false,true]) {
+    const env=setup(t);let now=1000;Object.defineProperty(env.win.performance,'now',{configurable:true,value:()=>now});
+    const panel=env.push(skeleton);await env.flush();const old=env.animations[0];old.startTime=null;
+    if(accelerate){now=1040;env.touch(panel.querySelector('.engagement-panel-content-wrapper'));}
+    now=1068;old.currentTime=0;panel.innerHTML=comments;await env.flush();
+    assert.equal(env.animations[1].currentTime,accelerate?96:68,'detaching must not restart the already visible shell');
+    assert.equal(env.animations[1].playbackRate,accelerate?2:1);
+  }
+});
+test('detached expired entrance clamps to finish and explicit paused zero retains its chosen playhead',async t=>{
+  for(const paused of [false,true]){
+    const env=setup(t);let now=1000;Object.defineProperty(env.win.performance,'now',{configurable:true,value:()=>now});const panel=env.push(skeleton);await env.flush();
+    const old=env.animations[0];old.startTime=null;old.currentTime=0;if(paused)old.playState='paused';now=1600;panel.innerHTML=comments;await env.flush();
+    assert.equal(env.animations[1].currentTime,paused?0:300);
+  }
+});
+
+test('accepted2x remains accepted across detach even while WebKit playbackRate readback still reports1',async t=>{
+  const env=setup(t);let now=1000;Object.defineProperty(env.win.performance,'now',{configurable:true,value:()=>now});const panel=env.push(skeleton);await env.flush();const old=env.animations[0];old.startTime=null;old.updatePlaybackRate=rate=>old.rates.push(rate);
+  now=1040;env.touch(panel.querySelector('.engagement-panel-content-wrapper'));assert.equal(old.playbackRate,1);now=1068;panel.innerHTML=comments;await env.flush();assert.equal(env.animations[1].currentTime,96);assert.equal(env.animations[1].playbackRate,2);
+});
+
+test('pending2x rebases a finite old1x timeline without doubling the time before acceleration',async t=>{
+  const env=setup(t);let now=1000;Object.defineProperty(env.win.performance,'now',{configurable:true,value:()=>now});const panel=env.push(skeleton);await env.flush();const old=env.animations[0];old.startTime=5000;old.updatePlaybackRate=rate=>old.rates.push(rate);
+  now=1040;old.currentTime=40;env.touch(panel.querySelector('.engagement-panel-content-wrapper'));now=1068;old.currentTime=68;panel.innerHTML=comments;await env.flush();const replacement=env.animations[1];assert.equal(replacement.currentTime,96);assert.equal(replacement.startTime,undefined);assert.equal(replacement.playbackRate,2);
+  replacement.playbackRate=1;replacement.updatePlaybackRate=rate=>replacement.rates.push(rate);const count=replacement.rates.length;env.touch(panel.querySelector('.engagement-panel-content-wrapper'));assert.equal(replacement.rates.length,count,'replacement remembers the already accepted pending2x request');
 });

@@ -49,7 +49,7 @@ class ProcessInfo { static let processInfo = ProcessInfo(); var isLowPowerModeEn
 class UIApplication { static let shared = UIApplication(); enum State { case active }; var applicationState = State.active }
 class UIPanGestureRecognizer { enum State { case began, ended, cancelled }; var state = State.began }
 enum FeedTab: Hashable {
-  case home, subscriptions
+  case home, subscriptions, you
   init?(url: URL?) {
     switch url?.path { case "", "/": self = .home; case "/feed/subscriptions": self = .subscriptions; default: return nil }
   }
@@ -105,7 +105,7 @@ class WKWebView {
 class FeedState {
   var active: Bool?, mediaSuspended: Bool?; var refresh: Cancellable?
   let webView: WKWebView, rootURL: URL
-  var overlayOpen = false, rootNavigation: WKNavigation?
+  var overlayOpen = false, contentReady = true, rootNavigation: WKNavigation?
   init(_ webView: WKWebView = WKWebView(), rootURL: URL = URL(string: "https://m.youtube.com/")!) {
     self.webView = webView; self.rootURL = rootURL; webView.url = rootURL
   }
@@ -113,11 +113,17 @@ class FeedState {
 struct PlayerStartupStatus {}
 class Diagnostics { enum Outcome { case cancelled }; func finish(_ outcome: Outcome) {} }
 class Stage {
+  // Entry-admission ownership is exercised by native-player-interaction.test.js.
+  // This fixture owns the adjacent lifecycle behavior, with no pending entry.
+  func revokeFullscreenEntryAdmission() {}
+    func recordBackgroundPlaybackTransition(_ phase: String) {}
+    func watchBackgroundCategoryTransition(_ phase: String) {}
   func cancelPendingMinimize() {}
   class SystemMedia { var clears = 0; func clear() { clears += 1 } }
   let systemMedia = SystemMedia()
   var feedOpening: Int?
   func reverseFeedOpening() {}
+  func clearWatchAudioIntent() {}
   func discardFeedOpening() {}
   enum Mode { case closed, loading, expanded, mini }
   static let blankURL = URL(string: "about:blank")!
@@ -147,6 +153,7 @@ class Stage {
     state = FeedState(feed)
     feedTabs[.home] = state
     feedTabs[.subscriptions] = FeedState(rootURL: URL(string: "https://m.youtube.com/feed/subscriptions")!)
+    feedTabs[.you] = FeedState(rootURL: URL(string: "https://m.youtube.com/feed/you")!)
   }
   ${declaration(source, "var cardMoving:")}
   func feedState(for web: WKWebView) -> FeedState? { web === feed ? state : nil }
@@ -165,7 +172,7 @@ class Stage {
   func cancelSPAWaits() {}
   func ensurePlayer() { if player == nil { player = WKWebView() } }
   func makeFeedTab(_ tab: FeedTab, origin: URL?) -> FeedState {
-    let state = FeedState(rootURL: URL(string: "https://m.youtube.com/feed/subscriptions")!)
+    let state = FeedState(rootURL: URL(string: "https://m.youtube.com" + (tab == .you ? "/feed/you" : "/feed/subscriptions"))!)
     feedTabs[tab] = state; return state
   }
   func evictFeedTab(_ tab: FeedTab) { feedTabs.removeValue(forKey: tab) }

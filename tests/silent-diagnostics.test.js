@@ -137,12 +137,17 @@ test("Native Injection ist nur bei expliziter Diagnose aktiv, vor anderen Skript
   const compiler = spawnSync("/usr/bin/xcrun", ["--find", "swift"], { encoding: "utf8" });
   if (compiler.status !== 0) return t.skip("Swift-Toolchain nicht verfügbar");
   const native = fs.readFileSync(path.join(app, "YouTubeWebView.swift"), "utf8");
-  const beginning = native.indexOf("if StartupDiagnostics.enabled {");
+  const beginning = native.indexOf("if StartupDiagnostics.enabled && !audibleVideoProbe && !audibleRouteProbe {");
+  assert.match(native, /let audibleVideoProbe = !isFeed && VideoLoadProbe\(\)\?\.requestsAudibleUserOpen == true/);
   assert.ok(beginning >= 0);
   let depth = 1, end = native.indexOf("{", beginning) + 1;
   while (depth && end < native.length) { if (native[end] === "{") depth++; if (native[end] === "}") depth--; end++; }
   assert.equal(depth, 0);
-  assert.ok(end < native.indexOf("let source = quietBootstrap + concatenatedScripts(scripts)"), "Diagnostic vor dem Website-Bundle");
+  const motion = native.indexOf('let motionBootstrapScript = WKUserScript(source: LangformMotion.bootstrapSource');
+  const motionInstalled = native.indexOf('addUserScript(motionBootstrapScript)');
+  const bundle = native.indexOf('let source = quietBootstrap + concatenatedScripts(scripts)');
+  assert.ok(motion >= 0 && end < motion && motion < motionInstalled && motionInstalled < bundle,
+    "Diagnostic vor separat aktualisierbaren Motionrollen; Rollen vor ihren Verbrauchern");
   const names = ["scriptNames", "playerEarlyScriptNames", "playerScriptNames", "feedOnlyScriptNames"];
   for (const property of names) assert.equal(JSON.parse(native.match(new RegExp("static let " + property + " = (\\[[^\\]]+\\])"))[1]).includes("SilentDiagnostics"), false);
   const swift = `import Foundation
@@ -157,7 +162,7 @@ struct WKUserScript {
 class Controller { var scripts: [WKUserScript] = []; func addUserScript(_ script: WKUserScript) { scripts.append(script) } }
 struct Configuration { let userContentController = Controller() }
 func readScripts(_ names: [String]) -> String { names.joined(separator: ",") }
-func inject(_ configuration: Configuration) { ${native.slice(beginning, end)} }
+func inject(_ configuration: Configuration, audibleVideoProbe: Bool = false, audibleRouteProbe: Bool = false) { ${native.slice(beginning, end)} }
 let normal = Configuration(); inject(normal)
 precondition(normal.userContentController.scripts.isEmpty, "normal launch has no silent injection")
 StartupDiagnostics.enabled = true
@@ -165,6 +170,8 @@ let diagnostic = Configuration(); inject(diagnostic)
 precondition(diagnostic.userContentController.scripts.count == 1)
 let script = diagnostic.userContentController.scripts[0]
 precondition(script.source == "SilentDiagnostics" && script.injectionTime == .atDocumentStart && !script.forMainFrameOnly && script.world == .page)
+let audibleDiagnostic = Configuration(); inject(audibleDiagnostic, audibleVideoProbe: true)
+precondition(audibleDiagnostic.userContentController.scripts.isEmpty, "the separately authorized main-player audio test must observe actual mute state")
 print("SILENT_INJECTION_OK")
 `;
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "langform-silent-injection-"));

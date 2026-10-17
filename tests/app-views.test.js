@@ -135,6 +135,7 @@ test("der Player meldet die Videofläche und ob es läuft, ohne das Video anzufa
     y: 0,
     width: 390,
     height: 219.375,
+    seekRect: null,
     viewportWidth: dom.window.innerWidth,
     viewportHeight: dom.window.innerHeight,
     playing: true,

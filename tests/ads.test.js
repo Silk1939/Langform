@@ -45,6 +45,37 @@ function watchPage(playerClass, inner) {
   };
 }
 
+for (const ready of [1, 2, 4]) test(`MSE/blob preroll at readyState ${ready} never seeks to its exact end or traps replay`, function (t) {
+  const page = watchPage('html5-video-player ad-showing'); t.after(() => page.win.close());
+  page.video.setAttribute('src','blob:https://m.youtube.com/ad-fixture');
+  Object.defineProperty(page.video,'readyState',{get:()=>ready});
+  page.video.play=()=>assert.fail('ad policy must not issue play');
+  page.win.ytInitialPlayerResponse={videoDetails:{videoId:'oldvideo123',lengthSeconds:'19'}};
+  page.win.__langformMainSrc='blob:https://m.youtube.com/old-main';
+  page.video.playbackRate=1.5;page.setDuration(6.041);
+  for(let replay=0;replay<4;replay++){
+    page.setTime(replay ? .4 : 0);assert.equal(ads.handle(page.win),'mute');assert.equal(page.video.muted,true);
+    assert.deepEqual(page.log.times,[],'the browser retains its MSE timeline until natural ad completion');
+  }
+  page.player.classList.remove('ad-showing');page.video.setAttribute('src','blob:https://m.youtube.com/next-main');page.setDuration(638.901);page.setTime(.7);
+  assert.equal(ads.handle(page.win),'restore');assert.equal(page.video.muted,false);assert.equal(page.video.currentTime,.7);assert.equal(page.video.playbackRate,1.5);assert.equal(page.log.pause,0);assert.deepEqual(page.log.seekTo,[]);
+});
+
+test('MSE ad still uses the original Skip button as soon as that actual control appears',function(t){
+  const page=watchPage('html5-video-player ad-showing');t.after(()=>page.win.close());page.video.setAttribute('src','blob:https://m.youtube.com/ad-fixture');page.setDuration(6.041);
+  assert.equal(ads.handle(page.win),'mute');let skips=0;const button=page.doc.createElement('button');button.className='ytp-skip-ad-button';button.addEventListener('click',()=>skips++);page.doc.querySelector('.video-ads').appendChild(button);
+  assert.equal(ads.handle(page.win),'skip');assert.equal(skips,1);assert.deepEqual(page.log.times,[]);assert.equal(page.log.pause,0);
+});
+
+test('blob currentSrc and object-backed ad media retain natural playback even with a direct source attribute',function(t){
+  for(const kind of ['currentSrc','srcObject']){
+    const page=watchPage('html5-video-player ad-showing');t.after(()=>page.win.close());page.video.setAttribute('src','https://example.test/direct-ad');page.setDuration(6.041);
+    if(kind==='currentSrc')Object.defineProperty(page.video,'currentSrc',{get:()=> 'blob:https://m.youtube.com/ad-fixture'});
+    else Object.defineProperty(page.video,'srcObject',{value:{}});
+    assert.equal(ads.handle(page.win),'mute',kind);assert.deepEqual(page.log.times,[],kind);
+  }
+});
+
 test("ein Player mit ad-showing ist Werbung, ein normaler Watch-Player nicht", function () {
   const ad = watchPage("html5-video-player ad-showing playing-mode");
   assert.equal(ads.isAdShowing(ad.player), true);
@@ -136,12 +167,12 @@ test("trägt das Medium noch das Hauptvideo, wird nur stummgeschaltet, nie gespr
   early.setTime(40);
   assert.equal(ads.handle(early.win), "mute");
   assert.deepEqual(early.log.times, []);
-  // Now the ad's own source is loaded: it runs to its end.
+  // Now the ad's own MSE source is loaded: it finishes naturally while muted.
   early.video.setAttribute("src", "blob:https://m.youtube.com/werbung");
   early.setDuration(12);
   early.setTime(0);
-  assert.equal(ads.handle(early.win), "jump");
-  assert.deepEqual(early.log.times, [12]);
+  assert.equal(ads.handle(early.win), "mute");
+  assert.deepEqual(early.log.times, []);
   early.player.classList.remove("ad-showing");
   assert.equal(ads.handle(early.win), "restore");
   assert.equal(early.video.muted, false);

@@ -11,9 +11,8 @@
   style.textContent = `
 #langform-watch-opening { position:fixed; inset:0; z-index:2147483646; pointer-events:none; overflow:hidden; color:var(--yt-spec-text-primary,#111); }
 #langform-watch-opening .lf-opening-wash { position:absolute; inset:0; opacity:0; }
-#langform-watch-opening .lf-opening-picture { position:absolute; left:0; top:0; transform-origin:0 0; overflow:hidden; will-change:transform; }
-#langform-watch-opening .lf-opening-picture img { display:block!important; width:100%!important; height:100%!important; object-fit:cover!important; max-width:none!important; border-radius:0!important; opacity:1!important; transform:none!important; }
-#langform-watch-opening .lf-opening-picture canvas { display:block; width:100%; height:100%; }
+#langform-watch-opening .lf-opening-picture { position:absolute; left:0; top:0; transform-origin:0 0; overflow:hidden; contain:layout paint; will-change:transform; }
+#langform-watch-opening .lf-opening-visual { position:absolute!important; left:0!important; top:0!important; display:block!important; object-fit:fill!important; max-width:none!important; max-height:none!important; border-radius:0!important; opacity:1!important; transform-origin:0 0!important; }
 #langform-watch-opening .lf-opening-details { position:absolute; left:0; right:0; padding:14px 12px; box-sizing:border-box; }
 #langform-watch-opening .lf-opening-block { opacity:0; }
 #langform-watch-opening .lf-opening-line { height:14px; margin:0 0 10px; border-radius:6px; background:currentColor; opacity:.10; }
@@ -38,55 +37,135 @@ html[data-lf-watch-content] { overflow-anchor:none; }
     var node = doc.createElement(tag); node.className = cls;
     if (parent) parent.appendChild(node); return node;
   }
-  // omega=24, damping=.94: rapid launch, almost no overshoot, settled ~.4 s.
-  // A reversal carries its actual velocity into the same oscillator.
-  function spring(t, initialVelocity) {
-    var omega = 24, damping = .94, damped = omega * Math.sqrt(1 - damping * damping);
-    var a = -1, b = (initialVelocity - damping * omega) / damped;
-    return 1 + Math.exp(-damping * omega * t) * (a * Math.cos(damped * t) + b * Math.sin(damped * t));
+  function motionRole() { return win.__langformMotion || {}; }
+  function spatialReduced() { var role=motionRole(); return !!(role.reduceSpatialMotion || reduced && reduced.matches); }
+  function fadeDuration() { var value=Number((motionRole().durations||{}).fade); return Number.isFinite(value)&&value>=0&&value<=1000?value:160; }
+  function fadeEasing() { return (motionRole().easings||{}).fade || 'ease-out'; }
+  function springRole() {
+    var role=(motionRole().springs||{}).hero || {},omega=Number(role.omega),damping=Number(role.damping);
+    return {omega:Number.isFinite(omega)&&omega>=12&&omega<=60?omega:24,damping:Number.isFinite(damping)&&damping>=.6&&damping<1?damping:.94};
   }
-  function transform(rect, base) {
-    return 'translate(' + rect.x + 'px,' + rect.y + 'px) scale(' + rect.width / base.width + ',' + rect.height / base.height + ')';
+  function oscillator(from,to,velocity,role) {
+    var alpha=role.omega*role.damping,beta=role.omega*Math.sqrt(1-role.damping*role.damping),a=from-to,b=(velocity+alpha*a)/beta;
+    return {sample:function(t){var c=Math.cos(beta*t),s=Math.sin(beta*t),e=Math.exp(-alpha*t);return {value:to+e*(a*c+b*s),velocity:e*((-alpha*a+beta*b)*c+(-alpha*b-beta*a)*s)};}};
   }
-  function pose(entry) {
-    // One presentation read at takeover, never a DOM measurement per frame.
-    var matrix = win.getComputedStyle(entry.picture).transform;
-    var match = matrix && matrix.match(/^matrix\(([^)]+)\)$/);
-    if (match) {
-      var n = match[1].split(',').map(Number);
-      if (n.length === 6 && n.every(Number.isFinite)) return { x:n[4], y:n[5], width:entry.base.width*n[0], height:entry.base.height*n[3] };
+  function matrix(node,css) {
+    var value=(css||win.getComputedStyle(node)).transform,match=value&&value.match(/^matrix\(([^)]+)\)$/),n=match&&match[1].split(',').map(Number);
+    if(n&&n.length===6&&n.every(Number.isFinite))return n;
+    return null;
+  }
+  function flightPose(entry,rect,source) {
+    var scale=source?entry.sourceScale:Math.max(rect.width/entry.bitmapWidth,rect.height/entry.bitmapHeight),position=entry.objectPosition;
+    var value={x:rect.x,y:rect.y,width:rect.width,height:rect.height,visualX:(rect.width-entry.bitmapWidth*scale)*position[0]+position[2],visualY:(rect.height-entry.bitmapHeight*scale)*position[1]+position[3],scale:scale};
+    entry.sourceRadii.forEach(function(radius,i){value['radius'+i]=source?radius:0;});return value;
+  }
+  function clipFrame(value) {
+    function corners(offset){return [0,1,2,3].map(function(i){return Math.max(0,value['radius'+(i+offset)])+'px';}).join(' ');}
+    return {transform:'translate('+value.x+'px,'+value.y+'px)',width:value.width+'px',height:value.height+'px',borderRadius:corners(0)+' / '+corners(4)};
+  }
+  function visualFrame(value) { return {transform:'translate('+value.visualX+'px,'+value.visualY+'px) scale('+value.scale+')'}; }
+  function writePose(entry,value) {
+    var frame=clipFrame(value);Object.keys(frame).forEach(function(key){entry.picture.style[key]=frame[key];});entry.visual.style.transform=visualFrame(value).transform;
+  }
+  function presentation(entry) {
+    // Only takeover/status reads presentation. No layout read runs per frame.
+    var rect=entry.picture.getBoundingClientRect(),css=win.getComputedStyle(entry.picture),outer=matrix(entry.picture,css),inner=matrix(entry.visual),value=Object.assign({},entry.lastPose||flightPose(entry,entry.base,true));
+    if(rect.width>0&&rect.height>0){value.x=rect.left;value.y=rect.top;value.width=rect.width;value.height=rect.height;}
+    else if(outer){value.x=outer[4];value.y=outer[5];value.width=parseFloat(css.width);value.height=parseFloat(css.height);}
+    if(inner){value.visualX=inner[4];value.visualY=inner[5];value.scale=inner[0];}
+    ['borderTopLeftRadius','borderTopRightRadius','borderBottomRightRadius','borderBottomLeftRadius'].forEach(function(key,i){var parts=String(css[key]||'').split(/\s+/),x=parseFloat(parts[0]),y=parseFloat(parts[1]||parts[0]);if(Number.isFinite(x))value['radius'+i]=x;if(Number.isFinite(y))value['radius'+(i+4)]=y;});
+    return value;
+  }
+  function pose(entry) { var value=presentation(entry);return {x:value.x,y:value.y,width:value.width,height:value.height}; }
+  function cancelFlight(entry) {
+    if(entry.animation)entry.animation.cancel();if(entry.visualAnimation)entry.visualAnimation.cancel();entry.animation=null;entry.visualAnimation=null;
+  }
+  function flightVelocity(entry) {
+    if(!entry.animation)return {};
+    var velocity={},at=entry.animation&&Number.isFinite(entry.animation.currentTime)?entry.animation.currentTime/1000:Math.max(0,(win.performance.now()-entry.motionStarted)/1000);
+    if(entry.models)Object.keys(entry.models).forEach(function(key){velocity[key]=entry.models[key].sample(at).velocity;});return velocity;
+  }
+  function motion(entry,from,to,initialVelocity,done) {
+    var clipFrames=[],visualFrames=[],role=springRole(),models={},duration=entry.reversing?.32:.4;
+    Object.keys(from).forEach(function(key){models[key]=oscillator(from[key],to[key],initialVelocity&&initialVelocity[key]||0,role);});
+    // Keep the existing 400ms landing and separate 320ms return budget.
+    // Neither duration follows an adaptive settlement estimate. The trajectory
+    // owns the middle frames; the final target and landed callback retain the
+    // established fixed-time contract. No new timeout or adaptive extension.
+    for(var i=0;i<=120;i++){
+      var at=duration*i/120,value={};Object.keys(models).forEach(function(key){value[key]=i===120?to[key]:models[key].sample(at).value;});
+      clipFrames.push(Object.assign({offset:i/120},clipFrame(value)));visualFrames.push(Object.assign({offset:i/120},visualFrame(value)));
     }
-    return entry.lastTarget || entry.base;
-  }
-  function motion(entry, from, to, duration, velocity, done) {
-    var keyframes = [];
-    for (var i = 0; i <= 60; i++) {
-      var p = i === 60 ? 1 : spring(duration * i / 60, velocity || 0);
-      keyframes.push({ offset:i/60, transform:transform({ x:from.x+(to.x-from.x)*p, y:from.y+(to.y-from.y)*p,
-        width:from.width+(to.width-from.width)*p, height:from.height+(to.height-from.height)*p }, entry.base) });
-    }
-    entry.from = from; entry.lastTarget = to; entry.motionStarted = win.performance.now(); entry.duration = duration;
-    entry.picture.style.transform = transform(from, entry.base);
-    entry.animation = entry.picture.animate(keyframes, { duration:duration*1000, fill:'forwards', easing:'linear' });
+    entry.models=models;entry.lastPose=from;entry.lastTarget=to;entry.motionStarted=win.performance.now();entry.duration=duration;
+    writePose(entry,from);
+    var timing={duration:duration*1000,fill:'forwards',easing:'linear'};
+    // The single isolated clip changes width/height. Its bitmap only ever
+    // receives a UNIFORM scale; no inverse-interpolation approximation or XY
+    // stretching can occur between keyframes. These are seek-safe animations.
+    entry.animation=entry.picture.animate(clipFrames,timing);entry.visualAnimation=entry.visual.animate(visualFrames,timing);
     var animation = entry.animation;
     animation.onfinish = function () {
       if (current !== entry || entry.animation !== animation) return;
-      entry.picture.style.transform = transform(to, entry.base); animation.cancel(); entry.animation = null; done();
+      writePose(entry,to);entry.lastPose=to;cancelFlight(entry);done();
     };
   }
   function fade(node, from, to, duration, delay) {
-    return node.animate([{ opacity:from, transform:'translateY('+(from === 0 ? 12 : 0)+'px)' },
-      { opacity:to, transform:'translateY(0)' }], { duration:duration, delay:delay||0, fill:'forwards', easing:'cubic-bezier(.16,1,.3,1)' });
+    return node.animate([{opacity:from},{opacity:to}], {duration:duration,delay:delay||0,fill:'forwards',easing:fadeEasing()});
   }
   function clean(entry, report) {
     if (!entry) return;
-    if (entry.animation) entry.animation.cancel();
+    cancelFlight(entry);
     entry.effects.forEach(function (a) { a.cancel(); });
     if (entry.image) entry.image.removeAttribute('data-lf-opening-origin');
     if (entry.root) entry.root.remove();
+    if(entry.barFrozen&&entry.bar){if(entry.barTransform[0])entry.bar.style.setProperty('transform',entry.barTransform[0],entry.barTransform[1]);else entry.bar.style.removeProperty('transform');}
     doc.documentElement.removeAttribute('data-lf-opening-transparent');
     if (current === entry) current = null;
     if (report) post(entry, report);
+  }
+  function objectPosition(value) {
+    var parts=String(value||'50% 50%').trim().split(/\s+/);if(parts.length===1)parts.push('50%');if(parts.length!==2)return null;
+    var fractions=[],pixels=[];
+    for(var i=0;i<2;i++){
+      var token=parts[i],keyword={left:'0%',top:'0%',center:'50%',right:'100%',bottom:'100%'};token=keyword[token]||token;
+      if(/^-?[\d.]+%$/.test(token)){fractions[i]=parseFloat(token)/100;pixels[i]=0;}
+      else if(/^-?[\d.]+(?:px)?$/.test(token)){fractions[i]=0;pixels[i]=parseFloat(token);}
+      else return null;
+    }
+    return [fractions[0],fractions[1],pixels[0],pixels[1]];
+  }
+  function sourceRadii(image,rect) {
+    var node=image,css=win.getComputedStyle(node),constraints=[css];
+    for(var i=0;i<4&&node.parentElement;i++){
+      var parent=node.parentElement,box=parent.getBoundingClientRect(),parentCSS=win.getComputedStyle(parent);
+      if(Math.abs(box.left-rect.left)>1||Math.abs(box.top-rect.top)>1||Math.abs(box.width-rect.width)>1||Math.abs(box.height-rect.height)>1)break;
+      if(/hidden|clip/.test(parentCSS.overflow+' '+parentCSS.overflowX+' '+parentCSS.overflowY))constraints.push(parentCSS);
+      node=parent;
+    }
+    var values=[0,0,0,0,0,0,0,0];
+    constraints.forEach(function(css){var shorthand=String(css.borderRadius||'0').split('/').map(function(axis){var v=axis.trim().split(/\s+/);if(v.length===1)v=[v[0],v[0],v[0],v[0]];else if(v.length===2)v=[v[0],v[1],v[0],v[1]];else if(v.length===3)v=[v[0],v[1],v[2],v[1]];return v;});
+      ['borderTopLeftRadius','borderTopRightRadius','borderBottomRightRadius','borderBottomLeftRadius'].forEach(function(key,i){var parts=css[key]?String(css[key]).split(/\s+/):null;[0,1].forEach(function(axis){var token=parts?(parts[axis]||parts[0]):(shorthand[axis]||shorthand[0])[i],number=parseFloat(token)||0;values[i+axis*4]=Math.max(values[i+axis*4],number*(/%$/.test(token)?(axis?rect.height:rect.width)/100:1));});});
+    });
+    return values;
+  }
+  function bitmap(entry,image,preview,rect) {
+    var css=win.getComputedStyle(image),position=objectPosition(css.objectPosition);if(!position)return null;
+    var visual=preview;
+    if(!visual){
+      visual=image.cloneNode(false);visual.removeAttribute('id');visual.removeAttribute('srcset');visual.removeAttribute('sizes');visual.removeAttribute('style');visual.removeAttribute('data-lf-opening-origin');visual.src=image.currentSrc;visual.alt='';
+    }
+    var width=preview?preview.width:image.naturalWidth,height=preview?preview.height:image.naturalHeight,fit=preview?'cover':css.objectFit||'fill',scale;
+    // An existing object-fit:fill can itself be anisotropic. Freeze exactly
+    // those already visible source pixels once; never introduce new stretch.
+    if(!preview&&fit==='fill'&&Math.abs(width/height-rect.width/rect.height)>.0001){
+      var canvas=doc.createElement('canvas'),ratio=Math.min(2,win.devicePixelRatio||1);canvas.width=Math.round(rect.width*ratio);canvas.height=Math.round(rect.height*ratio);
+      try{var context=canvas.getContext('2d');if(!context)return null;context.drawImage(image,0,0,canvas.width,canvas.height);}catch(_){return null;}
+      visual=canvas;width=canvas.width;height=canvas.height;fit='cover';position=[.5,.5,0,0];
+    }
+    var contain=Math.min(rect.width/width,rect.height/height);
+    scale=fit==='contain'?contain:fit==='none'?1:fit==='scale-down'?Math.min(1,contain):Math.max(rect.width/width,rect.height/height);
+    entry.bitmapWidth=width;entry.bitmapHeight=height;entry.sourceScale=scale;entry.objectPosition=position;entry.sourceRadii=sourceRadii(image,rect);
+    visual.className='lf-opening-visual';visual.style.width=width+'px';visual.style.height=height+'px';return visual;
   }
   function heldPreview(image, rect) {
     // A playing inline preview can cover the still img. Preserve the frame the
@@ -105,10 +184,9 @@ html[data-lf-watch-content] { overflow-anchor:none; }
       try{
         var context=canvas.getContext('2d');if(!context)continue;
         context.fillStyle='#000';context.fillRect(0,0,canvas.width,canvas.height);
-        var factor=shown.objectFit==='cover'?Math.max(canvas.width/video.videoWidth,canvas.height/video.videoHeight)
-          :Math.min(canvas.width/video.videoWidth,canvas.height/video.videoHeight);
-        var width=video.videoWidth*factor,height=video.videoHeight*factor;
-        context.drawImage(video,(canvas.width-width)/2,(canvas.height-height)/2,width,height);
+        var contain=Math.min(canvas.width/video.videoWidth,canvas.height/video.videoHeight),factor=shown.objectFit==='cover'?Math.max(canvas.width/video.videoWidth,canvas.height/video.videoHeight):shown.objectFit==='none'?scale:shown.objectFit==='scale-down'?Math.min(scale,contain):contain;
+        var width=shown.objectFit==='fill'?canvas.width:video.videoWidth*factor,height=shown.objectFit==='fill'?canvas.height:video.videoHeight*factor,position=objectPosition(shown.objectPosition)||[.5,.5,0,0];
+        context.drawImage(video,(canvas.width-width)*position[0]+position[2]*scale,(canvas.height-height)*position[1]+position[3]*scale,width,height);
         canvas.setAttribute('data-lf-held-preview','');return canvas;
       }catch(_){/* An unavailable preview keeps the validated still fallback. */}
     }
@@ -123,11 +201,13 @@ html[data-lf-watch-content] { overflow-anchor:none; }
     if (rect.width < 64 || rect.height < 36 || !image.animate) return null;
     // No fetch, decoding, snapshot, timeout, or native acknowledgement precedes
     // this point. The clone uses the same decoded currentSrc as the visible img.
+    var interrupted=current&&current.image===image&&current.id===url.searchParams.get('v')&&!current.reduced
+      ? {pose:presentation(current),velocity:flightVelocity(current)}:null;
     clean(current);
     mountStyle();
     var safe = win.__langformStageInsets || { top:0 };
     var entry = { id:url.searchParams.get('v'), token:'opening-'+(++serial)+'-'+Math.round(win.performance.now()*1000),
-      started:win.performance.now(), image:image, effects:[], reduced:!!(reduced && reduced.matches),
+      started:win.performance.now(), image:image, effects:[], reduced:spatialReduced(),
       watch:win.location.pathname === '/watch', base:{ x:rect.left, y:rect.top, width:rect.width, height:rect.height },
       target:{ x:0, y:(safe.top||0)+48, width:win.innerWidth, height:win.innerWidth*9/16 }, landed:false, reversing:false };
     current = entry;
@@ -150,29 +230,26 @@ html[data-lf-watch-content] { overflow-anchor:none; }
         var line = element('div','lf-opening-line',block); line.style.width = section === 'title' ? '84%' : '68%';
         if (section === 'title') { var second = element('div','lf-opening-line',block); second.style.width='58%'; }
       }
-      entry.effects.push(fade(block,0,1,entry.reduced ? 160 : 260,entry.reduced ? 0 : 60+entry.effects.length*45));
+      entry.effects.push(fade(block,0,1,fadeDuration(),entry.reduced ? 0 : 60+entry.effects.length*45));
     }
     entry.picture = element('div','lf-opening-picture',root);
-    entry.picture.style.width=rect.width+'px'; entry.picture.style.height=rect.height+'px';
     var preview=entry.watch?null:heldPreview(image,rect);entry.preview=!!preview;
-    if(preview)entry.picture.appendChild(preview);
-    else{
-      var copy = image.cloneNode(false); copy.removeAttribute('id'); copy.removeAttribute('srcset'); copy.removeAttribute('sizes'); copy.removeAttribute('style');
-      copy.removeAttribute('data-lf-opening-origin'); copy.src=image.currentSrc; copy.alt=''; entry.picture.appendChild(copy);
-    }
-    image.setAttribute('data-lf-opening-origin','');
+    entry.visual=bitmap(entry,image,preview,rect);if(!entry.visual){clean(entry);return null;}entry.picture.appendChild(entry.visual);
+    entry.picture.style.backgroundColor=win.getComputedStyle(image).backgroundColor;
+    if(!entry.reduced)image.setAttribute('data-lf-opening-origin','');
     var app = doc.querySelector('ytm-app, ytd-app'); entry.app = app;
     if (app) { entry.appFade=app.animate([{opacity:1},{opacity:0}],{duration:entry.reduced?160:260,fill:'forwards',easing:'ease-out'}); entry.effects.push(entry.appFade); }
     var bar = doc.querySelector('ytm-pivot-bar-renderer, ytm-pivot-bar');
     entry.bar = bar;
-    if (bar && !entry.reduced) entry.effects.push(bar.animate([{transform:'translateY(0)'},{transform:'translateY(90px)'}],{duration:300,fill:'forwards',easing:'cubic-bezier(.16,1,.3,1)'}));
+    if(bar)entry.barTransform=[bar.style.getPropertyValue('transform'),bar.style.getPropertyPriority('transform')];
+    if (bar && !entry.reduced) {entry.barAnimation=bar.animate([{transform:'translateY(0)'},{transform:'translateY(90px)'}],{duration:300,fill:'forwards',easing:'cubic-bezier(.16,1,.3,1)'});entry.effects.push(entry.barAnimation);}
     entry.effects.push(entry.wash.animate([{opacity:0},{opacity:1}],{duration:entry.reduced?160:260,fill:'forwards',easing:'ease-out'}));
     function landed() { if (current !== entry || entry.reversing) return; entry.landed=true; post(entry,'landed'); }
     if (entry.reduced) {
-      entry.picture.style.transform=transform(entry.target,entry.base);
-      var dissolve=entry.picture.animate([{opacity:0},{opacity:1}],{duration:160,fill:'forwards'});
+      entry.lastPose=flightPose(entry,entry.target,false);writePose(entry,entry.lastPose);
+      var dissolve=entry.picture.animate([{opacity:0},{opacity:1}],{duration:fadeDuration(),fill:'forwards',easing:fadeEasing()});
       entry.effects.push(dissolve); dissolve.onfinish=landed;
-    } else motion(entry,entry.base,entry.target,.4,0,landed);
+    } else motion(entry,interrupted?interrupted.pose:flightPose(entry,entry.base,true),flightPose(entry,entry.target,false),interrupted&&interrupted.velocity,landed);
     post(entry,'started');
     return entry.token;
   };
@@ -189,8 +266,8 @@ html[data-lf-watch-content] { overflow-anchor:none; }
     if (command === 'reverse') {
       if (entry.reversing) return true;
       entry.reversing=true;
-      var shown=pose(entry);
-      if (entry.animation) entry.animation.cancel();
+      var shown=presentation(entry),velocity=flightVelocity(entry);
+      cancelFlight(entry);
       // New effects override the running effects from their presentation
       // values. Keep the old effects until cleanup: cancelling them here
       // would snap the feed, wash and tab bar to their initial styles.
@@ -207,27 +284,39 @@ html[data-lf-watch-content] { overflow-anchor:none; }
         entry.effects.push(entry.bar.animate([{transform:barPose},{transform:'translateY(0)'}],{duration:240,fill:'forwards',easing:'cubic-bezier(.16,1,.3,1)'}));
       }
       if (entry.reduced) {
-        var dissolve=entry.picture.animate([{opacity:Number(win.getComputedStyle(entry.picture).opacity)},{opacity:0}],{duration:160,fill:'forwards'});
+        if(entry.image)entry.image.removeAttribute('data-lf-opening-origin');
+        var dissolve=entry.picture.animate([{opacity:Number(win.getComputedStyle(entry.picture).opacity)},{opacity:0}],{duration:fadeDuration(),fill:'forwards',easing:fadeEasing()});
         entry.effects.push(dissolve);dissolve.onfinish=function(){if(current===entry)clean(entry,'cancelled');};
         return true;
       }
-      var time=Math.max(0,(win.performance.now()-entry.motionStarted)/1000);
-      var velocity=(spring(time+.001,0)-spring(time,0))/.001;
-      var distance=entry.base.y-shown.y, total=entry.target.y-entry.base.y;
-      var relative=Math.abs(distance)>1 ? Math.max(-12,Math.min(12,velocity*total/distance)) : 0;
-      motion(entry,shown,entry.base,.32,relative,function(){clean(entry,'cancelled');});
+      motion(entry,shown,flightPose(entry,entry.base,true),velocity,function(){clean(entry,'cancelled');});
       return true;
     }
     if (command === 'discard' || command === 'finish') { clean(entry); return true; }
     if (command === 'status') return { token:entry.token, id:entry.id, landed:entry.landed, reversing:entry.reversing, rect:pose(entry), target:entry.target };
     return false;
   };
-  if (reduced && reduced.addEventListener) reduced.addEventListener('change',function(){
-    var entry=current; if (!entry || !reduced.matches) return;
+  function reduceRunningFlight(){
+    var entry=current; if (!entry || !spatialReduced() || entry.reduced) return;
+    entry.reduced=true;
+    if(entry.barAnimation&&entry.bar){var barPose=win.getComputedStyle(entry.bar).transform;entry.barAnimation.cancel();entry.bar.style.transform=barPose;entry.barFrozen=true;}
     if (entry.reversing) { clean(entry,'cancelled'); return; }
-    if (entry.animation) entry.animation.cancel(); entry.animation=null;
-    entry.picture.style.transform=transform(entry.target,entry.base); entry.landed=true; post(entry,'landed');
-  });
+    if(entry.landed)return;
+    var shown=presentation(entry);cancelFlight(entry);writePose(entry,shown);
+    var oldPicture=entry.picture,oldVisual=entry.visual,newVisual;
+    if(oldVisual.tagName==='CANVAS'){
+      newVisual=doc.createElement('canvas');newVisual.width=oldVisual.width;newVisual.height=oldVisual.height;
+      try{newVisual.getContext('2d').drawImage(oldVisual,0,0);}catch(_){clean(entry,'discarded');return;}
+      newVisual.className='lf-opening-visual';newVisual.style.width=entry.bitmapWidth+'px';newVisual.style.height=entry.bitmapHeight+'px';
+    }else newVisual=oldVisual.cloneNode(false);
+    entry.picture=element('div','lf-opening-picture',entry.root);entry.visual=newVisual;entry.picture.appendChild(newVisual);
+    entry.lastPose=flightPose(entry,entry.target,false);writePose(entry,entry.lastPose);
+    entry.effects.push(fade(oldPicture,Number(win.getComputedStyle(oldPicture).opacity),0,fadeDuration()));
+    var dissolve=fade(entry.picture,0,1,fadeDuration());entry.effects.push(dissolve);
+    dissolve.onfinish=function(){if(current!==entry||entry.reversing)return;oldPicture.remove();entry.landed=true;post(entry,'landed');};
+  }
+  if(reduced&&reduced.addEventListener)reduced.addEventListener('change',reduceRunningFlight);
+  win.addEventListener('langform-motion-change',reduceRunningFlight);
   win.addEventListener('pagehide',function(){clean(current,'discarded');});
   // Existing Watch renderers retain their dimensions; only transform/opacity
   // changes. Newly hydrated groups get one entrance, never a second reset.

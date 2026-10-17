@@ -660,8 +660,8 @@
   // YouTube's own chip opens its own sheet, which it often builds only on tap,
   // so the chip alone is enough to leave the time row to YouTube.
   // Scoped, it only looks around the time display and never walks the page.
-  function nativeChapterChrome(doc, scoped) {
-    var scope = scoped ? timeRowScope(doc) : null;
+  function nativeChapterChrome(doc, scoped, owner) {
+    var scope = owner || (scoped ? timeRowScope(doc) : null);
     if (scoped && !scope) return null;
     var chip = findNativeChip(doc, scope);
     if (!chip) return null;
@@ -670,6 +670,7 @@
     if (sheet && hiddenByUs(sheet)) unhide(sheet);
     if (!nativeChipShowsTitle(chip) || !visiblyShown(chip)) return null;
     var time = timePill(doc);
+    if (owner && (!time || !owner.contains(time))) return null;
     var timeBox = time && boxOf(time);
     if (timeBox && timeBox.width > 8 && timeBox.height > 4) {
       var chipBox = boxOf(chip);
@@ -749,6 +750,14 @@
       if (box.left < limit) limit = box.left;
       return false;
     }, scope);
+    // Our AirPlay picker is a body overlay, outside the reactive player row.
+    // Reserve its space too when it shares the chapter chip's time row.
+    var airplay = doc.getElementById(AIRPLAY_ID);
+    var airplayBox = airplay && boxOf(airplay);
+    if (airplayBox && airplayBox.width >= 4 && airplayBox.height >= 4 && airplayBox.left >= timeBox.right &&
+        Math.abs(airplayBox.top + airplayBox.height / 2 - middle) <= reach && visiblyShown(airplay)) {
+      limit = Math.min(limit, airplayBox.left);
+    }
     return limit;
   }
 
@@ -826,6 +835,9 @@
     var chip = doc.getElementById(CHIP_ID);
     if (chip) chip.setAttribute("aria-expanded", open ? "true" : "false");
     var view = doc.defaultView;
+    var appMotion = view && view.__langformMotion;
+    var reduced = view && view.matchMedia && view.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var fadeOnly = !!appMotion && (appMotion.reduceSpatialMotion || reduced);
     var previous = sheet.__langformSheetAnimation;
     var from = null;
     if (previous && view) {
@@ -833,6 +845,7 @@
       // the first keyframe. No layout property is animated.
       var visible = view.getComputedStyle(sheet);
       from = { transform: visible.transform || "translateY(0)" };
+      if (fadeOnly) from.opacity = visible.opacity || "1";
       previous.onfinish = null;
       previous.cancel();
       sheet.__langformSheetAnimation = null;
@@ -856,16 +869,18 @@
       // A selected row cannot seek twice while the closing sheet is visible.
       sheet.style.pointerEvents = "none";
     }
-    var reduced = view && view.matchMedia && view.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduced || typeof sheet.animate !== "function" || (!open && !wasVisible)) {
+    if (reduced && !fadeOnly || typeof sheet.animate !== "function" || (!open && !wasVisible)) {
       if (!open) finishClose();
       return;
     }
     var rest = { transform: "translateY(0)" };
     var edge = { transform: "translateY(100%)" };
-    var animation = sheet.animate([from || (open ? edge : rest), open ? rest : edge], {
-      duration: open ? 280 : 180,
-      easing: open ? "cubic-bezier(0.16,1,0.3,1)" : "cubic-bezier(0.7,0,0.84,0)",
+    var frames = fadeOnly
+      ? [from || { transform: rest.transform, opacity: open ? 0 : 1 }, { transform: from ? from.transform : rest.transform, opacity: open ? 1 : 0 }]
+      : [from || (open ? edge : rest), open ? rest : edge];
+    var animation = sheet.animate(frames, {
+      duration: appMotion ? (fadeOnly ? appMotion.durations.fade : open ? appMotion.durations.sheetEnter : appMotion.durations.sheetExit) : open ? 280 : 180,
+      easing: appMotion ? (fadeOnly ? appMotion.easings.fade : open ? appMotion.easings.enter : appMotion.easings.exit) : open ? "cubic-bezier(0.16,1,0.3,1)" : "cubic-bezier(0.7,0,0.84,0)",
       fill: "both",
     });
     sheet.__langformSheetAnimation = animation;
@@ -911,12 +926,14 @@
     win.addEventListener("pagehide", leave);
     if (win.visualViewport) win.visualViewport.addEventListener("resize", settle);
     if (preference && preference.addEventListener) preference.addEventListener("change", reduce);
+    if (win.__langformMotion) win.addEventListener("langform-motion-change", settle);
     sheet.__langformSheetDispose = function () {
       win.removeEventListener("resize", settle);
       win.removeEventListener("orientationchange", settle);
       win.removeEventListener("pagehide", leave);
       if (win.visualViewport) win.visualViewport.removeEventListener("resize", settle);
       if (preference && preference.removeEventListener) preference.removeEventListener("change", reduce);
+      win.removeEventListener("langform-motion-change", settle);
       sheet.__langformSheetDispose = null;
     };
   }
@@ -946,8 +963,8 @@
     style.textContent = "#" + SHEET_ID + " [" + ROW_ATTR + "]{background:transparent;touch-action:manipulation}" +
       "#" + SHEET_ID + " [" + ROW_ATTR + "][aria-current=true]{background:rgba(255,255,255,.12)}" +
       "#" + SHEET_ID + " [" + ROW_ATTR + "]:active{background:rgba(255,255,255,.2)}" +
-      "#" + CHIP_ID + " > span,#" + SHEET_ID + " header button{transition:transform 100ms ease-out}" +
-      "#" + CHIP_ID + ":active > span,#" + SHEET_ID + " header button:active{transform:scale(.97)}" +
+      "#" + CHIP_ID + " > span,#" + SHEET_ID + " header button{transition:transform var(--lf-duration-pressOut,100ms) ease-out}" +
+      "#" + CHIP_ID + ":active > span,#" + SHEET_ID + " header button:active{transition-duration:var(--lf-duration-pressIn,100ms);transform:scale(calc(1 - (1 - var(--lf-scale-icon,.97)) * (1 - var(--lf-reduce-spatial-motion,0))))}" +
       "@media(prefers-reduced-motion:reduce){#" + CHIP_ID + " > span,#" + SHEET_ID + " header button{transition:none}#" + CHIP_ID + ":active > span,#" + SHEET_ID + " header button:active{transform:none}}" +
       "#" + SHEET_ID + " button:focus-visible{outline:2px solid #3ea6ff;outline-offset:-3px}";
     (doc.head || doc.documentElement).appendChild(style);
@@ -1143,10 +1160,10 @@
         row.appendChild(blank);
       }
       var text = doc.createElement("span");
-      text.style.cssText = "display:flex;flex-direction:column;gap:4px;min-width:0;";
+      text.style.cssText = "display:flex;flex:1 1 auto;flex-direction:column;gap:4px;min-width:0;";
       var name = doc.createElement("span");
       name.textContent = chapters[i].title;
-      name.style.cssText = "font:600 15px/1.25 system-ui,sans-serif;";
+      name.style.cssText = "font:600 15px/1.25 system-ui,sans-serif;white-space:normal;overflow-wrap:anywhere;";
       var time = doc.createElement("span");
       time.textContent = formatClock(chapters[i].start);
       time.style.cssText = "color:#aaa;font:400 13px/1.2 system-ui,sans-serif;";
@@ -1281,7 +1298,7 @@
       var node = stack.pop();
       if (!node) continue;
       if (node.nodeType === 1) {
-        if (node.tagName === "VIDEO" || node.id === AIRPLAY_ID) continue;
+        if (node.tagName === "VIDEO" || node.id === AIRPLAY_ID || node.id === CHIP_ID || node.id === SHEET_ID) continue;
         var button = node.tagName === "BUTTON" || node.getAttribute("role") === "button";
         if (button && !isCastControl(node) && visiblyShown(node)) {
           if (/airplay/i.test(controlText(node))) out.airplay = out.airplay || node;
@@ -1359,7 +1376,7 @@
       var node = stack.pop();
       if (!node) continue;
       if (node.nodeType === 1) {
-        if (node.tagName === "VIDEO" || node.id === AIRPLAY_ID) continue;
+        if (node.tagName === "VIDEO" || node.id === AIRPLAY_ID || node.id === CHIP_ID || node.id === SHEET_ID) continue;
         if (node.tagName === "BUTTON" || node.getAttribute("role") === "button") {
           var other = boxOf(node);
           if (other && other.width > 4 && other.height > 4 && Math.abs(other.top + other.height / 2 - middle) < box.height / 2) {
@@ -1464,18 +1481,25 @@
     }
     var top = Math.round(line.middle - side / 2);
     var place = side + "|" + left + "|" + top;
-    if (button.getAttribute("data-langform-place") !== place) {
+    var changed = button.getAttribute("data-langform-place") !== place;
+    if (changed) {
       button.style.cssText =
         "position:fixed;left:" + left + "px;top:" + top + "px;width:" + side + "px;height:" + side +
         "px;display:flex;align-items:center;justify-content:center;margin:0;padding:0;border:0;" +
         "background:transparent;color:#fff;cursor:pointer;z-index:2147483000;";
       button.setAttribute("data-langform-place", place);
     } else {
-      if (button.style.visibility === "hidden") button.style.visibility = "";
+      if (button.style.visibility === "hidden") { button.style.visibility = ""; changed = true; }
       if (button.style.pointerEvents === "none") button.style.pointerEvents = "";
     }
     var host = doc.body || doc.documentElement;
-    if (button.parentNode !== host) host.appendChild(button);
+    if (button.parentNode !== host) { host.appendChild(button); changed = true; }
+    // Chrome can first reveal its AirPlay layer after the chapter was laid out.
+    // Reclaim the shared row immediately on that change, not on every follow tick.
+    if (changed) {
+      var chip = doc.getElementById(CHIP_ID);
+      if (chip) placeChip(doc, chip);
+    }
     return button;
   }
 
@@ -1680,6 +1704,8 @@
     var placementTimer = 0;
     var followTimer = 0;
     var followTicks = 0;
+    var followBinding = null;
+    var followSerial = 0;
     var generation = 0;
     var dragPlacementDeferred = false;
     var dragChaptersDeferred = false;
@@ -1764,6 +1790,8 @@
       if (placementTimer) win.clearTimeout(placementTimer);
       if (followTimer) win.clearInterval(followTimer);
       timer = scrollTimer = placementTimer = followTimer = followTicks = 0;
+      followBinding = null;
+      followSerial += 1;
       dragPlacementDeferred = dragChaptersDeferred = false;
       win.__langformChapterScrolling = false;
       stopChapterRetry(win);
@@ -1838,6 +1866,42 @@
         scheduleUnlessSettled();
       }, 180);
     }, { capture: true, passive: true });
+    // Mobile controls are a sibling of #movie_player. Bind only their active
+    // watch owner; a settled fallback still needs to yield when originals show.
+    function siblingControlsBinding(player, event, path) {
+      var doc = win.document;
+      if (!player || player !== doc.getElementById("movie_player")) return null;
+      var owner = player.closest("#player-container-id");
+      var overlay = owner && owner.querySelector("#player-control-overlay");
+      var chip = doc.getElementById(CHIP_ID);
+      var video = player.querySelector("video");
+      if (!owner || !overlay || !chip || !video || !owner.contains(chip) || player.contains(overlay) ||
+          !(overlay.contains(event.target) || path.indexOf(overlay) !== -1)) return null;
+      var binding = { player: player, owner: owner, overlay: overlay, chip: chip, video: video,
+        key: videoKey, source: video.currentSrc || video.src || "" };
+      return siblingControlsCurrent(binding) ? binding : null;
+    }
+    function siblingControlsCurrent(binding) {
+      var doc = win.document;
+      return pendingVideoKey === null && onWatchPath(win) && binding.key === videoKey &&
+        pageVideoKey(win, null) === binding.key && playerMatchesPage(win, win.ytInitialPlayerResponse) &&
+        doc.documentElement.__langformChapterVideoID === binding.key &&
+        doc.getElementById("movie_player") === binding.player && binding.player.isConnected &&
+        doc.getElementById("player-container-id") === binding.owner && binding.owner.contains(binding.player) &&
+        doc.getElementById("player-control-overlay") === binding.overlay && binding.owner.contains(binding.overlay) &&
+        binding.player.querySelector("video") === binding.video &&
+        (binding.video.currentSrc || binding.video.src || "") === binding.source &&
+        (binding.chip
+          ? doc.getElementById(CHIP_ID) === binding.chip && binding.owner.contains(binding.chip)
+          : binding.nativeChapter === true && !doc.getElementById(CHIP_ID) &&
+            win.__langformNativeVideo === binding.key && doc.documentElement.getAttribute("data-langform-chapter-ui") === "native");
+    }
+    function stopFollowingControls() {
+      if (followTimer) win.clearInterval(followTimer);
+      followTimer = followTicks = 0;
+      followBinding = null;
+      followSerial += 1;
+    }
     win.document.addEventListener("pointerdown", function (event) {
       if (pendingVideoKey !== null || !onWatchPath(win)) return;
       var sheet = win.document.getElementById(SHEET_ID);
@@ -1849,21 +1913,26 @@
       var player = playerRoot(win.document);
       var path = typeof event.composedPath === "function" ? event.composedPath() : [];
       if (player && (player.contains(event.target) || path.indexOf(player) !== -1)) followControls();
+      else {
+        var binding = siblingControlsBinding(player, event, path);
+        if (binding) followControls(binding);
+      }
       scheduleUnlessSettled();
     }, { capture: true, passive: true });
     // A tap shows YouTube's chrome and it fades out a few seconds later.
     // AirPlay follows it for that long, reading the row and writing only our button.
-    function followControls() {
+    function followControls(binding) {
       if (pendingVideoKey !== null) return;
+      if (followTimer && ((binding && !followBinding) || (followBinding && !siblingControlsCurrent(followBinding)))) stopFollowingControls();
       followTicks = 0;
       if (followTimer) return;
-      var ticket = generation;
+      followBinding = binding || null;
+      var ticket = generation, serial = ++followSerial;
       followTimer = win.setInterval(function () {
-        if (ticket !== generation) return;
+        if (ticket !== generation || serial !== followSerial) return;
         followTicks += 1;
-        if (followTicks > 16 || !onWatchPath(win)) {
-          win.clearInterval(followTimer);
-          followTimer = 0;
+        if (followTicks > 16 || !onWatchPath(win) || (binding && !siblingControlsCurrent(binding))) {
+          stopFollowingControls();
           return;
         }
         if (win.__langformChapterScrolling || chapterSheetOpen(win.document.getElementById(SHEET_ID)) ||
@@ -1872,9 +1941,13 @@
         try {
           ensureAirPlay(win);
           // A tap can bring up YouTube's own chapter chip next to ours.
-          if ((followTicks === 1 || followTicks === 4) && win.document.getElementById(CHIP_ID) && nativeChapterChrome(win.document, true)) {
+          if ((followTicks === 1 || followTicks === 4) && win.document.getElementById(CHIP_ID) && nativeChapterChrome(win.document, true, binding && binding.owner) && (!binding || siblingControlsCurrent(binding))) {
             win.__langformNativeVideo = pageVideoKey(win, win.ytInitialPlayerResponse);
             dropChipForNative(win.document);
+            // This exact takeover retires our chip, not the shared controls
+            // lease. AirPlay must still follow the original chrome's fade;
+            // all source/player/overlay guards and the 16-tick limit remain.
+            if (binding) { binding.chip = null; binding.nativeChapter = true; }
           }
         } catch (err) {
           /* the row can be rebuilt while we read it */

@@ -249,3 +249,12 @@ test("An aborted old decode cannot release a newly loading thumbnail whose curre
   assert.equal(s.posts.length, 0);
   assert.equal(s.frames.size, 0, "the replacement waits for its own load/error event");
 });
+
+test('FElibrary signed-out sign-in renderer is ready only after visible nonempty stable content', async t => {
+  const s=setup(t,'<ytm-sign-in-promo-with-background-renderer id="library"><h2>Du bist nicht angemeldet</h2><a href="https://accounts.google.com/ServiceLogin">Anmelden</a></ytm-sign-in-promo-with-background-renderer>',{url:'https://m.youtube.com/feed/library'});
+  await s.paint();assert.equal(s.posts.length,1);assert.equal(s.posts[0].href,'https://m.youtube.com/feed/library');
+  assert.ok(s.posts[0].documentToken,'same document identity accompanies personal readiness');
+  for(const markup of ['<ytm-sign-in-promo-with-background-renderer></ytm-sign-in-promo-with-background-renderer>','<ytm-sign-in-promo-with-background-renderer style="display:none">Du bist nicht angemeldet</ytm-sign-in-promo-with-background-renderer>','<div>Du bist nicht angemeldet</div>']) {
+    const blank=setup(t,markup,{url:'https://m.youtube.com/feed/library'});await blank.paint();assert.equal(blank.posts.length,0,'empty, hidden or arbitrary text cannot announce library readiness');
+  }
+});

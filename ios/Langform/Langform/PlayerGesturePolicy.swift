@@ -39,6 +39,20 @@ enum PlayerGesturePolicy {
         translation.y * sign > 0 && velocity.y * sign > 250 && abs(velocity.y) > abs(velocity.x) * 1.15
     }
 
+    /// Only the stationary portrait picture uses this additional direction.
+    /// Existing mini/spring gestures keep canBegin's independent semantics.
+    static func canEnterFullscreen(translation: CGPoint, velocity: CGPoint) -> Bool {
+        if translation.x == 0 && translation.y == 0 {
+            return velocity.y < -250 && abs(velocity.y) > abs(velocity.x) * 1.15
+        }
+        return translation.y < 0 && abs(translation.y) > abs(translation.x) * 1.15
+    }
+
+    static func finishesFullscreenEntry(ended: Bool, translation: CGPoint, velocity: CGPoint) -> Bool {
+        ended && translation.y < 0 && abs(translation.y) > abs(translation.x) * 1.15
+            && (translation.y <= -36 || velocity.y < -600 && abs(velocity.y) > abs(velocity.x) * 1.15)
+    }
+
     static func scrubberInset(position: Position, isTransitioning: Bool) -> CGFloat {
         // Only the expanded, stationary WebView exposes an interactive scrubber.
         position == .expanded && !isTransitioning ? 44 : 0

@@ -9,6 +9,10 @@
   if (!bridges || !(bridges.langformOpenWatch || bridges.langformPlayerRoute || bridges.langformOpenFeed)) return;
   win.__langformPlayablesBlocked = true;
   var doc = win.document, alive = true, redirecting = false;
+  function pageInactive() {
+    try { var visibility=win.__langformRealVisibility; if (visibility && typeof visibility.inactive==='function') return !!visibility.inactive(); } catch (_) {}
+    return !!doc.hidden;
+  }
   var container = 'mini-app-container-view-model';
   var gameFrame = 'iframe.ytMiniAppContainerViewModelIframe';
   var card = 'mini-game-card-view-model';
@@ -84,7 +88,7 @@
   ['yt-navigate-finish','state-navigateend','popstate','langform-feed-visibility'].forEach(function (name) {
     win.addEventListener(name, function () { if (alive) win.__langformDiscardPlayables(); });
   });
-  doc.addEventListener('visibilitychange', function () { if (alive && doc.hidden) win.__langformDiscardPlayables(); });
+  ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){doc.addEventListener(name, function () { if (alive && pageInactive()) win.__langformDiscardPlayables(); });});
   win.addEventListener('pagehide', function () { alive = false; observer.disconnect(); inspect(doc); });
   win.addEventListener('pageshow', wake);
   wake();
@@ -96,6 +100,10 @@
   if (host !== "m.youtube.com" && host !== "www.youtube.com" && host !== "youtube.com") return;
   win.__langformLinks = true;
   var doc = win.document;
+  function pageInactive() {
+    try { var visibility=win.__langformRealVisibility; if (visibility && typeof visibility.inactive==='function') return !!visibility.inactive(); } catch (_) {}
+    return !!doc.hidden;
+  }
 
   function handler(name) {
     var handlers = win.webkit && win.webkit.messageHandlers;
@@ -359,7 +367,61 @@
 
   // Search belongs to the retained feed, never to the Watch surface. Intercept
   // the current mobile search control before YouTube opens its search overlay.
-  var searchControl = '.topbar-button-search-button, .ytTopBarViewModelSearchButton, ytm-header button[aria-label="Search"], ytm-mobile-topbar-renderer button[aria-label="Search"], ytm-header button[aria-label="Suchen"], ytm-mobile-topbar-renderer button[aria-label="Suchen"]';
+  var searchControl = '.topbar-button-search-button, .ytTopBarViewModelSearchButton, .ytSearchboxComponentSearchButton, ytm-header button[aria-label="Search"], ytm-mobile-topbar-renderer button[aria-label="Search"], ytm-header button[aria-label="Suchen"], ytm-mobile-topbar-renderer button[aria-label="Suchen"], :is(ytm-header,ytm-header-bar,ytm-mobile-topbar-renderer,.ytTopBarViewModelHost) [aria-label="In YouTube suchen"], :is(ytm-header,ytm-header-bar,ytm-mobile-topbar-renderer,.ytTopBarViewModelHost) [aria-label="YouTube durchsuchen"], :is(ytm-header,ytm-header-bar,ytm-mobile-topbar-renderer,.ytTopBarViewModelHost) [aria-label="Bei YouTube suchen"], :is(ytm-header,ytm-header-bar,ytm-mobile-topbar-renderer,.ytTopBarViewModelHost) [aria-label="YouTube-Suche"], [aria-label="Bei YouTube suchen"], [title="Bei YouTube suchen"], [aria-label="In YouTube suchen"]';
+  var searchInput = 'yt-searchbox input[name="search_query"], yt-searchbox textarea[name="search_query"], ytm-searchbox input[name="search_query"]';
+  function nativeSearch(event, ticket, focusOnly) {
+    var bridge = handler('langformNativeSearch');
+    if (!bridge || !handler('langformOpenWatch') || win.__langformFeedActive === false) return false;
+    var body = {action:focusOnly?'focus':'open', href:win.location.href};
+    try {
+      var selected=typeof win.__langformSearchFilter==='function' ? win.__langformSearchFilter() : null;
+      if(['all','videos','channels','unwatched'].indexOf(selected)>=0)body.filter=selected;
+    } catch (_) {}
+    if (Number.isSafeInteger(ticket) && ticket >= 0) body.ticket = ticket;
+    try { bridge.postMessage(body); }
+    catch (_) { return false; }
+    if (event) { event.preventDefault(); event.stopImmediatePropagation(); }
+    return true;
+  }
+  var nativeSearchContact = null, nativeSearchTrailing = null;
+  function nativeSearchControl(target) { return target && target.closest && target.closest(searchControl + ',' + searchInput); }
+  function nativeSearchStart(event, point, kind) {
+    if (event.isPrimary === false) { nativeSearchContact = null; return; }
+    if (!handler('langformNativeSearch') || !handler('langformOpenWatch') || onWatchPage() || win.__langformFeedActive === false ||
+        !point || event.button > 0 || event.isPrimary === false) return;
+    var control = nativeSearchControl(event.target); if (!control) return;
+    nativeSearchTrailing = null;
+    if (nativeSearchContact && nativeSearchContact.kind !== kind) { event.stopPropagation(); return; }
+    nativeSearchContact = {control:control,kind:kind,id:kind==='touch'?point.identifier:event.pointerId,x:point.clientX,y:point.clientY,href:win.location.href};
+    // Shield YouTube's early tap recognizer while preserving WebKit scrolling
+    // and keyboard defaults. The accepted release, rather than press, opens UI.
+    event.stopPropagation();
+  }
+  function nativeSearchMove(event, point, kind) {
+    var contact = nativeSearchContact;
+    if (!contact || contact.kind !== kind || !point) return;
+    if (Math.abs(point.clientX-contact.x)>10 || Math.abs(point.clientY-contact.y)>10) {
+      nativeSearchTrailing = {control:contact.control,until:Date.now()+800}; nativeSearchContact = null;
+    }
+  }
+  function nativeSearchEnd(event, point, kind) {
+    var contact = nativeSearchContact;
+    if (!contact || contact.kind !== kind || !point) return;
+    nativeSearchContact = null;
+    if ((kind==='touch'?point.identifier:event.pointerId)!==contact.id || !contact.control.isConnected ||
+        contact.href!==win.location.href || Math.abs(point.clientX-contact.x)>10 || Math.abs(point.clientY-contact.y)>10) return;
+    if (nativeSearch(event)) nativeSearchTrailing = {control:contact.control,href:contact.href,opened:true,until:Date.now()+2500};
+  }
+  win.addEventListener('pointerdown',function(e){nativeSearchStart(e,e,'pointer');},true);
+  win.addEventListener('pointermove',function(e){nativeSearchMove(e,e,'pointer');},true);
+  win.addEventListener('pointerup',function(e){nativeSearchEnd(e,e,'pointer');},true);
+  win.addEventListener('pointercancel',function(){nativeSearchContact=null;},true);
+  win.addEventListener('touchstart',function(e){if(e.touches.length!==1){nativeSearchContact=null;return;}nativeSearchStart(e,e.touches[0],'touch');},{capture:true,passive:true});
+  win.addEventListener('touchmove',function(e){if(e.touches.length!==1){nativeSearchContact=null;return;}nativeSearchMove(e,e.touches[0],'touch');},{capture:true,passive:true});
+  win.addEventListener('touchend',function(e){nativeSearchEnd(e,e.changedTouches[0],'touch');},{capture:true,passive:false});
+  ['touchcancel','blur'].forEach(function(name){win.addEventListener(name,function(){nativeSearchContact=null;},true);});
+  ['pagehide','langform-feed-visibility'].forEach(function(name){win.addEventListener(name,function(){nativeSearchContact=null;nativeSearchTrailing=null;},true);});
+  win.addEventListener('keydown',function(){nativeSearchTrailing=null;},true);
   function playerRoute(event, kind, href) {
     var bridge = handler('langformPlayerRoute');
     if (!bridge || handler('langformOpenWatch')) return false;
@@ -404,7 +466,7 @@
     // Called only in the feed by the native coordinator. Preserve YouTube's
     // own search UI, focus, history and keyboard behavior.
     if (!Number.isSafeInteger(ticket) || ticket < 0 || !handler('langformFeedSearch') ||
-        !handler('langformOpenWatch') || win.__langformFeedActive === false || !searchTarget()) return false;
+        !handler('langformOpenWatch') || win.__langformFeedActive === false || (!handler('langformNativeSearch') && !searchTarget())) return false;
     win.__langformCancelSearch();
     var generation = searchGeneration;
     searchRequest = { ticket:ticket };
@@ -416,6 +478,7 @@
       var request = searchRequest;
       searchRequest = null;
       if (win.__langformFeedActive === false) { reportSearch(request, false); return; }
+      if (nativeSearch(null, request.ticket)) { reportSearch(request, true); return; }
       var target = searchTarget();
       if (!target) { reportSearch(request, false); return; }
       var opened = false;
@@ -624,7 +687,7 @@
   }
 
   function canMove() {
-    return touchMotionActive && win.__langformFeedActive !== false && !win.document.hidden &&
+    return touchMotionActive && win.__langformFeedActive !== false && !pageInactive() &&
       !(reducedMotion && reducedMotion.matches) && !onWatchPage() && !!handler("langformOpenWatch");
   }
 
@@ -716,9 +779,9 @@
   win.addEventListener("langform-feed-visibility", function () {
     if (win.__langformFeedActive === false) cancelTouchMotion();
   });
-  win.document.addEventListener("visibilitychange", function () {
-    if (win.document.hidden) cancelTouchMotion();
-  });
+  ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){doc.addEventListener(name, function () {
+    if (pageInactive()) cancelTouchMotion();
+  });});
   if (reducedMotion && typeof reducedMotion.addEventListener === "function") {
     reducedMotion.addEventListener("change", function () { if (reducedMotion.matches) cancelTouchMotion(); });
   }
@@ -727,10 +790,24 @@
     if (!event || event.defaultPrevented || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
       return;
     }
+    if (event.detail>0 && nativeSearchTrailing && Date.now()<nativeSearchTrailing.until && nativeSearchTrailing.control.contains(event.target)) {
+      var trailing=nativeSearchTrailing;nativeSearchTrailing=null;
+      // WebKit's late native click handoff can reclaim first-responder status
+      // after the pointer release already opened UIKit. Restore focus only;
+      // a closed overlay must never be reopened by this compatibility click.
+      if(trailing.opened && trailing.href===win.location.href && !onWatchPage())nativeSearch(event,undefined,true);
+      event.preventDefault(); event.stopImmediatePropagation(); return;
+    }
+    // Closing a settings sheet can retarget WebKit's compatibility click onto
+    // a recommendation below it. Settings is installed later; ask its contact
+    // guard before this earlier handler can hand the link to the native router.
+    if (typeof win.__langformConsumePlayerSettingsClick === "function" && win.__langformConsumePlayerSettingsClick(event)) return;
     // This script is installed before PlayerRect. Give its native-drag guard
     // first refusal before a trailing player click can navigate another page.
     if (typeof win.__langformHandlePlayerClick === "function" && win.__langformHandlePlayerClick(event)) return;
     var search = event.target && event.target.closest && event.target.closest(searchControl);
+    var nativeField = event.target && event.target.closest && event.target.closest(searchInput);
+    if ((search || nativeField) && !onWatchPage() && nativeSearch(event)) return;
     if (search && onWatchPage() && playerRoute(event, 'search', win.location.origin + '/')) return;
     var tabURL = feedTabURL(event);
     if (tabURL) {

@@ -42,6 +42,18 @@ for id in ["abcdefghij", "abcdefghijkl", "abcdefghij ", "abcdefghij/", "abcdefgh
 expect(VideoLoadProbe(environment: ["LANGFORM_DIAGNOSTICS": "1", "LANGFORM_VIDEO_PROBE": "[\\"A_bC-d01234\\"]"]) != nil,
        "uppercase, underscore, dash and digits remain valid")
 expect(VideoLoadProbe.timeoutSeconds == 30, "caller deadline never exceeds thirty seconds")
+let audioBase = ["LANGFORM_DIAGNOSTICS":"1", "LANGFORM_VIDEO_PROBE":validJSON, "LANGFORM_VIDEO_PROBE_PLAY":"1"]
+for flag in [nil, "0", "true", " 1", "1 "] as [String?] {
+    var env = audioBase; env["LANGFORM_VIDEO_PROBE_AUDIO"] = flag
+    expect(!VideoLoadProbe(environment:env)!.requestsAudibleUserOpen, "ordinary diagnostic playback remains silent")
+}
+var audioEnv = audioBase; audioEnv["LANGFORM_VIDEO_PROBE_AUDIO"] = "1"
+expect(VideoLoadProbe(environment:audioEnv)!.requestsAudibleUserOpen, "single valid exact AUDIO plus PLAY opts into ordinary audible user-open")
+audioEnv["LANGFORM_VIDEO_PROBE_PLAY"] = "0"
+expect(!VideoLoadProbe(environment:audioEnv)!.requestsAudibleUserOpen, "audio alone cannot enable an audible open")
+audioEnv["LANGFORM_VIDEO_PROBE_PLAY"] = "1"
+audioEnv["LANGFORM_VIDEO_PROBE"] = "[\\"abcdefghijk\\",\\"lmnopqrstuv\\"]"
+expect(!VideoLoadProbe(environment:audioEnv)!.requestsAudibleUserOpen, "multi-video diagnostic plans remain silent")
 for flag in [nil, "0", "true", " 1", "1 "] as [String?] {
     var env = ["LANGFORM_DIAGNOSTICS":"1", "LANGFORM_VIDEO_PROBE":validJSON]
     env["LANGFORM_VIDEO_PROBE_PLAY"] = flag

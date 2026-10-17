@@ -2,6 +2,10 @@
   'use strict';
   if (!win || !win.document || win.__langformPlaybackZoom) return;
   var doc=win.document,owner=null,contacts=new Map(),gesture=null,trailing=null,alive=true;
+  function pageInactive() {
+    try { var visibility=win.__langformRealVisibility; if (visibility && typeof visibility.inactive==='function') return !!visibility.inactive(); } catch (_) {}
+    return !!doc.hidden;
+  }
   var maximum=8,style=doc.createElement('style');
   style.id='langform-playback-zoom-style';
   style.textContent=`
@@ -13,15 +17,46 @@ html[data-langform-fullscreen] #movie_player[data-langform-fullscreen-player] vi
 `;
   (doc.head || doc.documentElement).appendChild(style);
   var rule=style.sheet && style.sheet.cssRules[style.sheet.cssRules.length-1];
+  // Explicit diagnostic builds only: reuse the already-read fullscreen context.
+  // No geometry/style reads, source text, node content, timers or media writes.
+  var diagnostics=win.__langformFullscreenDiagnostics===true,diagnosticRows=[],diagnosticSequence=0,diagnosticStart=diagnostics?Date.now():0,contextReason=0;
+  function diagnosticNumber(value) { return Number.isFinite(value)?Math.round(Math.max(-16384,Math.min(16384,value))*1000)/1000:null; }
+  function trace(event,current) {
+    if(!diagnostics)return;
+    var o=owner,v=current && current.video,r=current && current.rect;
+    var row={event:event,owner:!!o,context:!!current,contextRead:current!==undefined,contextReason:current===undefined?null:contextReason,contacts:Math.min(3,contacts.size),accepted:!!(gesture&&gesture.accepted),scale:o?diagnosticNumber(o.scale):null,
+      idSame:o&&current?o.id===current.id:null,rootSame:o&&current?o.root===current.root:null,videoSame:o&&current?o.video===v:null,
+      containerSame:o&&current?o.container===current.container:null,uiSame:o&&current?o.ui===current.ui:null,
+      sourceSame:o&&v?o.source===source(v):null,sourceAttributeSame:o&&v?o.sourceAttribute===v.getAttribute('src'):null,
+      intrinsicWidth:v?diagnosticNumber(v.videoWidth):null,intrinsicHeight:v?diagnosticNumber(v.videoHeight):null,
+      ownerIntrinsicWidth:o?diagnosticNumber(o.intrinsicWidth):null,ownerIntrinsicHeight:o?diagnosticNumber(o.intrinsicHeight):null,
+      ownerLiveIntrinsicWidth:o?diagnosticNumber(o.video.videoWidth):null,ownerLiveIntrinsicHeight:o?diagnosticNumber(o.video.videoHeight):null,
+      ownerVideoConnected:o?!!o.video.isConnected:null,ownerUIConnected:o?!!o.ui.isConnected:null,
+      rectX:r?diagnosticNumber(r.left):null,rectY:r?diagnosticNumber(r.top):null,rectW:r?diagnosticNumber(r.width):null,rectH:r?diagnosticNumber(r.height):null,
+      ownerX:o?diagnosticNumber(o.rect.left):null,ownerY:o?diagnosticNumber(o.rect.top):null,ownerW:o?diagnosticNumber(o.rect.width):null,ownerH:o?diagnosticNumber(o.rect.height):null,
+      blocked:current?!!current.blocked:null,videoConnected:v?!!v.isConnected:null,ready:v?diagnosticNumber(v.readyState):null,mediaError:v?!!v.error:null};
+    var signature=JSON.stringify(row);
+    if(diagnosticRows.length && diagnosticRows[diagnosticRows.length-1].signature===signature)return;
+    row.sequence=++diagnosticSequence;row.milliseconds=Math.max(0,Math.round(Date.now()-diagnosticStart));
+    diagnosticRows.push({signature:signature,row:row});if(diagnosticRows.length>16)diagnosticRows.shift();
+  }
   function source(video) { return video.currentSrc || video.src || ''; }
   function rectCopy(rect) { return {x:rect.left,y:rect.top,left:rect.left,top:rect.top,right:rect.left+rect.width,bottom:rect.top+rect.height,width:rect.width,height:rect.height}; }
   function context() {
     var fullscreen=win.__langformFullscreen,current;
-    try { current=fullscreen && fullscreen.getZoomContext && fullscreen.getZoomContext(); } catch (_) { return null; }
-    if (!alive || !current || !style.isConnected || !rule || !current.video.isConnected || current.video.error ||
-        current.video.readyState<1 || !(current.video.videoWidth>0) || !(current.video.videoHeight>0) ||
-        typeof win.__langformHasOpenOverlay==='function' && win.__langformHasOpenOverlay() ||
-        typeof win.__langformIsNativeDragging==='function' && win.__langformIsNativeDragging()) return null;
+    contextReason=0;
+    try { current=fullscreen && fullscreen.getZoomContext && fullscreen.getZoomContext(); } catch (_) { contextReason=2;return null; }
+    if(!alive)contextReason=3;
+    else if(pageInactive())contextReason=4;
+    else if(!current)contextReason=1;
+    else if(!style.isConnected || !rule)contextReason=5;
+    else if(!current.video.isConnected)contextReason=6;
+    else if(current.video.error)contextReason=7;
+    else if(current.video.readyState<1)contextReason=8;
+    else if(!(current.video.videoWidth>0) || !(current.video.videoHeight>0))contextReason=9;
+    else if(typeof win.__langformHasOpenOverlay==='function' && win.__langformHasOpenOverlay())contextReason=10;
+    else if(typeof win.__langformIsNativeDragging==='function' && win.__langformIsNativeDragging())contextReason=11;
+    if(contextReason){if(owner)trace('context-rejected',current);return null;}
     return current;
   }
   function same(current) {
@@ -34,14 +69,16 @@ html[data-langform-fullscreen] #movie_player[data-langform-fullscreen-player] vi
   function rememberAttribute(node,name) { var old=node.getAttribute(name);node.setAttribute(name,'');return [node,name,old]; }
   function restoreAttribute(entry) { if (entry[2]===null) entry[0].removeAttribute(entry[1]);else entry[0].setAttribute(entry[1],entry[2]); }
   function label(scale) { return (Math.round(scale*10)/10).toLocaleString('de-DE')+'×'; }
-  function endGesture() {
+  function endGesture(reason) {
+    if(gesture || contacts.size)trace(reason || 'gesture-end');
     if (!owner) { contacts.clear();gesture=null;return; }
     if (gesture && gesture.accepted) trailing={id:owner.id,ui:owner.ui,root:owner.root,video:owner.video,source:owner.source,until:Date.now()+800};
     contacts.clear();gesture=null;owner.ui.removeAttribute('data-langform-playback-zoom-gesture');
     if (owner.status) owner.status.remove();owner.status=null;
   }
-  function reset(expectedID) {
+  function reset(expectedID,reason,current) {
     if (!owner || expectedID && owner.id!==expectedID) return false;
+    trace(/^(observer|sync|move|reset-click|loadstart|loadedmetadata|emptied|error|webkitbeginfullscreen|yt-navigate-start|pagehide|resize|orientationchange|blur|visibilitychange|langform-real-visibilitychange|fullscreen-close|fullscreen-exit)$/.test(reason || '')?'reset-'+reason:'reset-external',current);
     endGesture();trailing=null;
     var previous=owner;owner=null;
     previous.observer.disconnect();previous.events.forEach(function(entry){entry[0].removeEventListener(entry[1],entry[2]);});
@@ -52,7 +89,7 @@ html[data-langform-fullscreen] #movie_player[data-langform-fullscreen-player] vi
   }
   function sync() {
     var current=context();
-    if (owner && !same(current)) reset();
+    if (owner && !same(current)) reset(null,'sync',current);
     if (owner || !current) return owner;
     if (current.blocked || current.video.readyState<2) return null;
     var rect=rectCopy(current.video.getBoundingClientRect());
@@ -68,14 +105,21 @@ html[data-langform-fullscreen] #movie_player[data-langform-fullscreen-player] vi
     owner.attributes.push(rememberAttribute(owner.ui,'data-langform-playback-zoom-surface'));
     owner.attributes.push(rememberAttribute(owner.video,'data-langform-playback-zoom-video'));
     var observed=owner;
-    owner.observer=new win.MutationObserver(function(){if(owner===observed && !same(context()))reset();});
+    owner.observer=new win.MutationObserver(function(){if(owner!==observed)return;var current=context();if(!same(current))reset(null,'observer',current);});
     owner.observer.observe(owner.root,{subtree:true,childList:true,attributes:true,attributeFilter:['class','src']});
     owner.observer.observe(owner.ui,{attributes:true,attributeFilter:['inert','data-entering','data-exiting']});
-    ['loadstart','loadedmetadata','emptied','error','webkitbeginfullscreen'].forEach(function(name){var fn=function(){if(owner===observed && (name==='emptied'||name==='error'||name==='webkitbeginfullscreen'||!same(context())))reset();};
+    ['loadstart','loadedmetadata','emptied','error','webkitbeginfullscreen'].forEach(function(name){var fn=function(){if(owner!==observed)return;var hard=name==='emptied'||name==='error'||name==='webkitbeginfullscreen',current=hard?undefined:context();if(hard||!same(current))reset(null,name,current);};
       owner.video.addEventListener(name,fn);owner.events.push([owner.video,name,fn]);});
+    trace('owner-created',current);
     return owner;
   }
-  function consume(event) { if(event.cancelable)event.preventDefault();event.stopImmediatePropagation(); }
+  function consume(event) {
+    if(/^(pointerdown|pointerup|pointercancel|touchstart|touchend|touchcancel)$/.test(event.type)){
+      var fullscreen=win.__langformFullscreen;
+      if(fullscreen && typeof fullscreen.observeContact==='function')fullscreen.observeContact(event);
+    }
+    if(event.cancelable)event.preventDefault();event.stopImmediatePropagation();
+  }
   function targetElement(event) { return event.target && (event.target.nodeType===1 ? event.target : event.target.parentElement); }
   function freeTarget(target) {
     return !!(owner && target && (owner.ui===target || owner.ui.contains(target) || owner.root===target || owner.root.contains(target)) &&
@@ -99,7 +143,7 @@ html[data-langform-fullscreen] #movie_player[data-langform-fullscreen-player] vi
   }
   function accept() {
     if(!owner || !gesture)return;
-    gesture.accepted=true;
+    gesture.accepted=true;trace('gesture-accepted');
     if(win.__langformPlaybackHold && typeof win.__langformPlaybackHold.cancel==='function')win.__langformPlaybackHold.cancel();
     owner.ui.setAttribute('data-langform-playback-zoom-gesture','');
     if(!owner.status){owner.status=doc.createElement('div');owner.status.id='langform-playback-zoom-status';owner.status.setAttribute('aria-hidden','true');owner.ui.appendChild(owner.status);}
@@ -124,8 +168,8 @@ html[data-langform-fullscreen] #movie_player[data-langform-fullscreen-player] vi
   }
   function move(event) {
     var current=context();
-    if(!owner || !same(current)){reset();return;}
-    if(current.blocked){endGesture();return;}
+    if(!owner || !same(current)){reset(null,'move',current);return;}
+    if(current.blocked){trace('blocked-move',current);endGesture();return;}
     if(!gesture || !contacts.size)return;
     var now=geometry(Array.from(contacts.values())),start=gesture.start,original=gesture.pose;
     if(!gesture.accepted && Math.hypot(now.x-start.x,now.y-start.y)<4)return;
@@ -158,7 +202,7 @@ html[data-langform-fullscreen] #movie_player[data-langform-fullscreen-player] vi
     if(!contacts.has(event.pointerId))return;
     var accepted=!!(gesture && gesture.accepted);
     contacts.delete(event.pointerId);
-    if(/cancel|lostpointercapture/.test(event.type) || !contacts.size)endGesture();
+    if(/cancel|lostpointercapture/.test(event.type) || !contacts.size)endGesture(event.type);
     else if(gesture)startGesture(accepted);
     if(accepted)consume(event);
   }
@@ -184,13 +228,13 @@ html[data-langform-fullscreen] #movie_player[data-langform-fullscreen-player] vi
     if(!changed.some(function(touch){return contacts.has(touch.identifier);} ))return;
     var accepted=!!(gesture && gesture.accepted);
     changed.forEach(function(touch){contacts.delete(touch.identifier);});
-    if(event.type==='touchcancel' || !contacts.size)endGesture();else if(gesture)startGesture(accepted);
+    if(event.type==='touchcancel' || !contacts.size)endGesture(event.type);else if(gesture)startGesture(accepted);
     if(accepted)consume(event);
   }
   function click(event) {
     var target=targetElement(event);
     if(owner && owner.button && target && owner.button.contains(target)){
-      if(!same(context())){reset();return;}
+      var current=context();if(!same(current)){reset(null,'reset-click',current);return;}
       consume(event);endGesture();apply(1,0,0);return;
     }
     var currentID;try{currentID=new win.URL(win.location.href).searchParams.get('v');}catch(_){}
@@ -210,14 +254,21 @@ html[data-langform-fullscreen] #movie_player[data-langform-fullscreen-player] vi
   listen(win,'click',click,true);listen(win,'tap',click,true);
   ['loadedmetadata','loadeddata','canplay'].forEach(function(name){listen(doc,name,function(event){var current=context();if(current && event.target===current.video)sync();},true);});
   ['player-fullscreen-change','yt-navigate-finish','state-navigateend','popstate'].forEach(function(name){listen(win,name,sync);});
-  ['yt-navigate-start','pagehide'].forEach(function(name){listen(win,name,function(){reset();});});
-  ['resize','orientationchange','blur'].forEach(function(name){listen(win,name,function(){reset();sync();});});
-  listen(doc,'visibilitychange',function(){if(doc.hidden)reset();else sync();});
-  listen(win,'pagehide',function(event){alive=false;reset();style.remove();if(!event.persisted){listeners.forEach(function(entry){entry[0].removeEventListener(entry[1],entry[2],entry[3]);});}});
+  ['yt-navigate-start','pagehide'].forEach(function(name){listen(win,name,function(){reset(null,name);});});
+  ['resize','orientationchange','blur'].forEach(function(name){listen(win,name,function(){reset(null,name);sync();});});
+  ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){listen(doc,name,function(){if(pageInactive())reset(null,name);else sync();});});
+  listen(win,'pagehide',function(event){alive=false;reset(null,'pagehide');style.remove();if(!event.persisted){listeners.forEach(function(entry){entry[0].removeEventListener(entry[1],entry[2],entry[3]);});}});
   listen(win,'pageshow',function(){if(!alive){alive=true;(doc.head || doc.documentElement).appendChild(style);rule=style.sheet && style.sheet.cssRules[style.sheet.cssRules.length-1];sync();}});
   // Layout measurements must remain independent of the visible crop: native
   // owns the fullscreen viewport and must never scale its WKWebView again.
-  win.__langformPlaybackZoom={reset:reset,getLayoutRect:function(video){return owner && owner.scale>1 && owner.video===video && same(context()) ? rectCopy(owner.rect) : null;},
-    getState:function(){return owner && same(context()) ? {scale:owner.scale,x:owner.x,y:owner.y,gesturing:!!(gesture&&gesture.accepted),videoID:owner.id} : null;}};
+  win.__langformPlaybackZoom={reset:reset,getLayoutRect:function(video){
+      if(!owner || owner.scale<=1 || owner.video!==video)return null;
+      var current=context();if(!same(current)){trace('layout-mismatch',current);return null;}return rectCopy(owner.rect);
+    },getState:function(){
+      if(!owner)return null;
+      var current=context();if(!same(current)){trace('state-mismatch',current);return null;}
+      return {scale:owner.scale,x:owner.x,y:owner.y,gesturing:!!(gesture&&gesture.accepted),videoID:owner.id};
+    }};
+  if(diagnostics)win.__langformPlaybackZoom.getDiagnostics=function(){return diagnosticRows.map(function(entry){return Object.assign({},entry.row);});};
   sync();
 })(typeof window!=='undefined'?window:this);

@@ -855,6 +855,105 @@ test("Desktop-Ende und Popstate behalten nach mobilen Wechseln ihre Kapitelinval
   assert.equal(page.video.currentTime, 5);
 });
 
+test("lange Kapitelnamen reservieren den AirPlay-Layer neben der normalen Zeitzeile", function (t) {
+  const dom = screenshotPlayerDom();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document, list = chapters.chaptersFromPlayer(playerWithChapters());
+  list[0].title = "KapitelnameOhneLeerzeichen".repeat(20);
+  const airplay = doc.createElement("button");
+  airplay.id = "langform-airplay";
+  airplay.setAttribute("aria-label", "AirPlay");
+  doc.body.appendChild(airplay);
+  placeBox(airplay, 352, 310, 44, 44);
+  chapters.renderChapterUi(doc, list, () => {});
+  let chip = doc.getElementById("langform-chapter-chip");
+  assert.equal(chip.style.left, "148px");
+  assert.equal(chip.style.maxWidth, "196px", "der eigene AirPlay-Button außerhalb des Players begrenzt den Titel");
+  assert.equal(chip.getAttribute("aria-label"), list[0].title + ", Kapitel");
+  assert.equal(doc.getElementById("fullscreen").getAttribute("style"), null);
+  airplay.style.visibility = "hidden";
+  chapters.renderChapterUi(doc, list, () => {});
+  chip = doc.getElementById("langform-chapter-chip");
+  assert.equal(chip.style.maxWidth, "240px", "ein verborgener Layer blockiert keinen Platz");
+  airplay.style.visibility = "";
+  placeBox(airplay, 352, 140, 44, 44);
+  chapters.renderChapterUi(doc, list, () => {});
+  assert.equal(doc.getElementById("langform-chapter-chip").style.maxWidth, "240px", "AirPlay in der oberen Zeile begrenzt den unteren Titel nicht");
+});
+
+test("der eigene Kapitelbutton verschiebt AirPlay bei gemeinsamer Steuerzeile nicht auf die Zeit", function (t) {
+  const dom = screenshotPlayerDom();
+  t.after(() => dom.window.close());
+  const win = dom.window, doc = win.document, row = doc.getElementById("row");
+  row.appendChild(doc.getElementById("cc"));
+  row.appendChild(doc.getElementById("gear"));
+  placeBox(doc.getElementById("cc"), 340, 314, 36, 36);
+  placeBox(doc.getElementById("gear"), 396, 314, 36, 36);
+  doc.getElementById("v").webkitShowPlaybackTargetPicker = () => {};
+  const first = chapters.ensureAirPlay(win);
+  assert.equal(first.style.left, "300px");
+  chapters.renderChapterUi(doc, chapters.chaptersFromPlayer(playerWithChapters()), () => {});
+  const chip = doc.getElementById("langform-chapter-chip");
+  placeBox(chip, 148, 310, 144, 44);
+  chapters.ensureAirPlay(win);
+  assert.equal(first.style.left, "300px", "nur YouTubes echte Controls bestimmen den AirPlay-Anker");
+  assert.equal(first.style.top, "314px");
+  assert.equal(first.parentNode, doc.body);
+  assert.equal(chip.previousElementSibling, doc.getElementById("time"));
+});
+
+test("nach spätem Chrome-Reveal reserviert der vorhandene Kapitelchip sofort AirPlay und bleibt danach idle", function (t) {
+  const dom = screenshotPlayerDom();
+  t.after(() => dom.window.close());
+  const win = dom.window, doc = win.document, row = doc.getElementById("row");
+  row.appendChild(doc.getElementById("cc"));
+  row.appendChild(doc.getElementById("gear"));
+  placeBox(doc.getElementById("cc"), 340, 314, 36, 36);
+  placeBox(doc.getElementById("gear"), 396, 314, 36, 36);
+  doc.getElementById("v").webkitShowPlaybackTargetPicker = () => {};
+  row.style.opacity = "0";
+  assert.equal(chapters.ensureAirPlay(win), null);
+  const list = chapters.chaptersFromPlayer(playerWithChapters());
+  list[0].title = "Ein viel zu langer Kapitelname ".repeat(20);
+  chapters.renderChapterUi(doc, list, () => {});
+  const chip = doc.getElementById("langform-chapter-chip");
+  assert.equal(chip.style.maxWidth, "184px");
+  const originalRect = win.HTMLElement.prototype.getBoundingClientRect;
+  win.HTMLElement.prototype.getBoundingClientRect = function () {
+    if (this.id !== "langform-airplay") return originalRect.call(this);
+    const left = parseFloat(this.style.left), top = parseFloat(this.style.top), width = parseFloat(this.style.width), height = parseFloat(this.style.height);
+    return { left, top, width, height, right:left + width, bottom:top + height };
+  };
+  row.style.opacity = "1";
+  const airplay = chapters.ensureAirPlay(win);
+  assert.equal(airplay.style.left, "300px");
+  assert.equal(chip.style.maxWidth, "144px", "sichtbar werdendes AirPlay verkürzt den bestehenden Chip im selben Aufruf");
+  const observer = new win.MutationObserver(() => {});
+  observer.observe(chip, {subtree:true,attributes:true,childList:true});
+  observer.observe(airplay, {subtree:true,attributes:true,childList:true});
+  let timeReads = 0;
+  const time = doc.getElementById("time"), timeRect = time.getBoundingClientRect;
+  time.getBoundingClientRect = () => { timeReads++; return timeRect(); };
+  for (let i = 0; i < 8; i++) chapters.ensureAirPlay(win);
+  assert.equal(timeReads, 0, "unveränderte Follow-Ticks messen die Kapitelzeile nicht erneut");
+  assert.equal(observer.takeRecords().length, 0, "unveränderte Follow-Ticks mutieren weder Picker noch Kapitel");
+  observer.disconnect();
+});
+
+test("Kapitel namens Settings werden bei fehlendem Zahnrad nicht als Systemsteuerung entdeckt", function (t) {
+  const dom = screenshotPlayerDom();
+  t.after(() => dom.window.close());
+  const win = dom.window, doc = win.document;
+  doc.getElementById("gear").remove();
+  doc.getElementById("cc").remove();
+  doc.getElementById("v").webkitShowPlaybackTargetPicker = () => {};
+  const list = chapters.chaptersFromPlayer(playerWithChapters());
+  list[0].title = "Settings für dieses Kapitel";
+  chapters.renderChapterUi(doc, list, () => {});
+  placeBox(doc.getElementById("langform-chapter-chip"), 148, 310, 144, 44);
+  assert.equal(chapters.ensureAirPlay(win), null, "ein Kapitelname erzeugt keinen falschen AirPlay-Anker");
+});
+
 test("nach Scrollen und Drehen folgen Kapitel und AirPlay der neuen Steuerzeile", async function (t) {
   const dom = screenshotPlayerDom();
   const win = dom.window;

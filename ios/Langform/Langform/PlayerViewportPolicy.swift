@@ -3,6 +3,38 @@ import CoreGraphics
 
 /// Geometry rules used when UIKit and WebKit change viewport at different times.
 enum PlayerViewportPolicy {
+    /// Both44pt targets remain inside the visible crop. Portrait cards cannot
+    /// fit them side by side, so playback travels toward the lower edge as the
+    /// card shrinks. Using the destination layout and continuous progress avoids
+    /// a button jumping rows when a finger reverses across a width breakpoint.
+    static func miniControls(in size: CGSize, target: CGSize, progress: CGFloat,
+                             correction: SurfaceCorrection? = nil)
+        -> (close: CGRect, playback: CGRect) {
+        let x = min(4, max(0, size.width - 44) / 2)
+        let y = min(4, max(0, size.height - 44) / 2)
+        let t = min(1, max(0, progress))
+        let targetY = min(4, max(0, target.height - 44) / 2)
+        // Interpolate the destination offset, not currentHeight * progress:
+        // the latter is quadratic and would jump when a running linear UIKit
+        // frame animation is grabbed and replaced by direct finger geometry.
+        let lower = target.width < 96 ? max(0, target.height - 44 - 2 * targetY) * t : 0
+        let weight = correction?.weight(at: t) ?? 0
+        let close = correction?.controls?.close ?? .zero
+        let playback = correction?.controls?.playback ?? .zero
+        return (CGRect(x: size.width - 44 - x + close.x * weight, y: y + close.y * weight, width: 44, height: 44),
+                CGRect(x: x + playback.x * weight, y: y + lower + playback.y * weight, width: 44, height: 44))
+    }
+
+    struct ControlCorrection {
+        let close: CGPoint
+        let playback: CGPoint
+
+        init(shownClose: CGRect, shownPlayback: CGRect, regularClose: CGRect, regularPlayback: CGRect) {
+            close = CGPoint(x: shownClose.minX - regularClose.minX, y: shownClose.minY - regularClose.minY)
+            playback = CGPoint(x: shownPlayback.minX - regularPlayback.minX, y: shownPlayback.minY - regularPlayback.minY)
+        }
+    }
+
     struct SurfaceGeometry {
         let frame: CGRect
         let scale: CGFloat
@@ -18,6 +50,7 @@ enum PlayerViewportPolicy {
         let scale: CGFloat
         let origin: CGPoint
         let progress: CGFloat
+        var controls: ControlCorrection?
 
         init?(shown: SurfaceGeometry, regular: SurfaceGeometry, progress: CGFloat) {
             let values = [shown.frame.minX, shown.frame.minY, shown.frame.width, shown.frame.height,

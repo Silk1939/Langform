@@ -36,10 +36,28 @@ test("Native Player übernimmt Reveal sofort und konsumiert Vollbild-Ausgang ohn
   const app = path.join(__dirname, "../ios/Langform/Langform");
   const source = fs.readFileSync(path.join(app, "YouTubeWebView.swift"), "utf8");
   const policy = fs.readFileSync(path.join(app, "PlayerGesturePolicy.swift"), "utf8");
-  const callbacks = ["gestureRecognizerShouldBegin", "dragPlayer", "follow", "edgeBackDragged"].map(name => method(source, name)).join("\n");
+  const callbacks = ["gestureRecognizerShouldBegin", "dragPlayer", "follow", "edgeBackDragged", "acceptsFullscreenEntry", "fullscreenEntryBinding", "fullscreenEntryAdmissionIsCurrent", "revokeFullscreenEntryAdmission", "endDrag", "enterFullscreenFromSwipe"].map(name => method(source, name)).join("\n");
+  const admission = block(source, "private struct FullscreenEntryAdmission").replace("private ", "");
+  const stateAllows = block(source, "private var fullscreenEntryStateAllows").replace("private ", "");
+  assert.ok(admission && stateAllows, "compile the actual admission binding and current-state gate");
+  // Extract only the admission-relevant statements from the real successful
+  // close/load/stop paths, preserving their shipping order. Other lifecycle
+  // subsystems remain outside this small input-state fixture.
+  const lifecycle = ["stop", "openWatch", "closePlayer"].map(name => {
+    const body = method(source, name);
+    const rows = body.match(/^\s*(?:revokeFullscreenEntryAdmission\(\)|endDrag\(\)|loadTicket \+= 1|mode = \.closed|startupVideoID = (?:loadingVideoID|nil)|player = nil)\s*$/gm) || [];
+    const expected = {
+      stop: ["endDrag()", "revokeFullscreenEntryAdmission()", "loadTicket += 1", "mode = .closed", "player = nil"],
+      openWatch: ["revokeFullscreenEntryAdmission()", "loadTicket += 1", "startupVideoID = loadingVideoID", "endDrag()"],
+      closePlayer: ["revokeFullscreenEntryAdmission()", "loadTicket += 1", "mode = .closed", "endDrag()", "startupVideoID = nil"],
+    };
+    assert.deepEqual(rows.map(row => row.trim()), expected[name], name + " lifecycle order is taken from shipping");
+    return "func admissionCleanup_" + name + "() {\n" + rows.join("\n") + "\n}";
+  }).join("\n");
   const exercise = `
 import Foundation
 import CoreGraphics
+class UIApplication { enum State { case active, inactive }; static let shared = UIApplication(); var applicationState = State.active }
 class UIGestureRecognizer { enum State: Int { case possible, began, changed, ended, cancelled, failed }; var state = State.possible }
 class UIPanGestureRecognizer: UIGestureRecognizer {
   var delta = CGPoint.zero, speed = CGPoint.zero, cancelsTouchesInView = false
@@ -48,8 +66,14 @@ class UIPanGestureRecognizer: UIGestureRecognizer {
 }
 class UIScreenEdgePanGestureRecognizer: UIPanGestureRecognizer {}
 class Base { func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool { true } }
-class Web { var url: URL? = URL(string: "https://m.youtube.com/watch?v=abcdefghijk") }
-enum YouTubeWebView { static func isWatchPage(_ url: URL?) -> Bool { url?.path == "/watch" } }
+class Web {
+ var url: URL? = URL(string: "https://m.youtube.com/watch?v=abcdefghijk"), scripts: [String] = []
+ func evaluateJavaScript(_ script: String) { scripts.append(script) }
+}
+enum YouTubeWebView {
+ static func isWatchPage(_ url: URL?) -> Bool { url?.path == "/watch" }
+ static func videoID(_ url: URL?) -> String? { URLComponents(url:url!,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name=="v"})?.value }
+}
 enum StartupDiagnostics {
   static let enabled = false
   static func mark(_ e: String, once: Bool = false, documentMilliseconds: Double? = nil) {}
@@ -58,15 +82,24 @@ enum StartupDiagnostics {
 enum UIView { static func performWithoutAnimation(_ block: () -> Void) { block() } }
 class Card { var transform = CGAffineTransform.identity }
 class Stage: Base {
+  ${admission}
+  var fullscreenEntryAdmission: FullscreenEntryAdmission?
+  var fullscreenEntryAdmissionRevoked = false
+  ${stateAllows}
+  var loadingVideoID: String? = "zyxwvutsrqp"
+  ${lifecycle}
   var feedOpening: Int?
   func reverseFeedOpening() {}
   enum Mode { case expanded, mini, closed, loading }
   var mode = Mode.expanded
   var dragging = false, edgeBackTracking = false, playerOverlayOpen = false, playerFullscreen = false
   var customFullscreenID: String?
-  var fullscreenExitDrag = false, dragCanTakeOver = false, settlingBetweenModes = false
+  var fullscreenExitDrag = false, fullscreenEnterDrag = false, dragCanTakeOver = false, settlingBetweenModes = false
   var revealer: NSObject?, settler: NSObject?
-  var player = Web()
+  var player: Web! = Web()
+  var nativeDragVideoID: String?, startupVideoID: String? = "abcdefghijk"
+  var bounds = CGRect(x:0,y:0,width:390,height:844)
+  var cardMoving: Bool { settler != nil || revealer != nil || dragging }
   var drag = UIPanGestureRecognizer(), edgeBack = UIScreenEdgePanGestureRecognizer()
   var progress: CGFloat = 0, dragOrigin: CGFloat = 0, dragRevealOrigin: CGFloat = 0, dragTravel: CGFloat = 600
   var edgeBackUsesPicture = false, pictureOnScreen = true
@@ -78,7 +111,11 @@ class Stage: Base {
   func cancelFeedPrewarm() {}
   func cancelVideoProbe() {}
   func updateChrome() {}
-  func setNativeDragging(_ active: Bool) { nativeDragging = active }
+  func setNativeDragging(_ active: Bool) {
+    nativeDragging = active
+    nativeDragVideoID = active ? YouTubeWebView.videoID(player.url) : nil
+    player.evaluateJavaScript(active ? "LOCK" : "UNLOCK")
+  }
   func traceEdgeWindowState(_ phase: String) {}
   var loadTicket = 1
   func freezeSettle() {}
@@ -86,7 +123,6 @@ class Stage: Base {
   func beginVideoCrop() {}
   func requestFullscreenExit() { exitRequests += 1 }
   func apply(_ progress: CGFloat) { follows += 1 }
-  func endDrag() { dragging = false; edgeBackTracking = false; fullscreenExitDrag = false; nativeDragging = false }
   func followEdgeBack(_ pan: UIPanGestureRecognizer) { follows += 1 }
   func minimizePlayer() { mode = .mini }
   func settle(_ target: Mode, speed: CGFloat = 0, travel: CGFloat = 1) { settles += 1; mode = target }
@@ -101,7 +137,7 @@ expect(s.gestureRecognizerShouldBegin(s.drag), "moving reveal can be grabbed in 
 s.playerOverlayOpen = true
 expect(!s.gestureRecognizerShouldBegin(s.drag), "comments keep their own scrolling while reveal runs")
 s.playerOverlayOpen = false; s.revealer = nil
-expect(!s.gestureRecognizerShouldBegin(s.drag), "stationary expanded upward scroll remains with YouTube")
+expect(s.gestureRecognizerShouldBegin(s.drag), "stationary expanded portrait upward picture swipe enters fullscreen")
 s.drag.delta = CGPoint(x: 20, y: 5)
 expect(!s.gestureRecognizerShouldBegin(s.drag), "horizontal scrub remains with YouTube")
 s.drag.delta = CGPoint(x: 0, y: 20); s.playerFullscreen = true
@@ -196,6 +232,103 @@ otherActive.edgeBack.state = .failed; otherActive.edgeBackDragged(otherActive.ed
 expect(otherActive.nativeDragging && otherActive.dragging, "unstarted other recognizer cannot unlock an active drag")
 otherActive.drag.state = .ended; otherActive.dragPlayer(otherActive.drag)
 expect(!otherActive.nativeDragging, "active gesture's own terminal event releases its lock")
+let upward = Stage(); upward.drag.delta = CGPoint(x:0,y:-20)
+expect(upward.gestureRecognizerShouldBegin(upward.drag), "portrait video admits upward entry")
+upward.drag.state = .began; upward.dragPlayer(upward.drag)
+expect(upward.fullscreenEnterDrag && upward.nativeDragging && upward.follows == 0 && upward.settles == 0, "upward contact owns page without cropping to mini")
+upward.drag.delta.y = -100; upward.drag.state = .changed; upward.dragPlayer(upward.drag)
+expect(upward.follows == 0 && upward.player.scripts == ["LOCK"], "tracking does not move the mini card or enter before release")
+upward.drag.state = .ended; upward.dragPlayer(upward.drag)
+expect(upward.player.scripts.count == 3 && upward.player.scripts[1] == "UNLOCK" && upward.player.scripts[2].contains("enterForGesture"), "committed entry unlocks page before invoking exact-owner fullscreen API")
+expect(!upward.fullscreenEnterDrag && !upward.dragging && upward.mode == .expanded && upward.settles == 0, "upward release never minimizes")
+for terminal in [UIGestureRecognizer.State.cancelled, .failed] {
+ let cancelled = Stage(); cancelled.drag.delta.y = -20; expect(cancelled.gestureRecognizerShouldBegin(cancelled.drag), "upward contact admitted before began"); cancelled.drag.state = .began; cancelled.dragPlayer(cancelled.drag)
+ cancelled.drag.delta.y = -100; cancelled.drag.state = terminal; cancelled.dragPlayer(cancelled.drag)
+ expect(cancelled.player.scripts == ["LOCK","UNLOCK"] && !cancelled.dragging && cancelled.settles == 0, "cancelled upward contact only unlocks, no fullscreen or mini")
+}
+let reversed = Stage(); reversed.drag.delta.y = -20; expect(reversed.gestureRecognizerShouldBegin(reversed.drag), "upward contact admitted before began"); reversed.drag.state = .began; reversed.dragPlayer(reversed.drag)
+reversed.drag.delta.y = 80; reversed.drag.speed.y = 700; reversed.drag.state = .ended; reversed.dragPlayer(reversed.drag)
+expect(reversed.player.scripts == ["LOCK","UNLOCK"] && reversed.settles == 0, "upward then downward reversal cannot commit either route")
+for guardCase in 0..<6 {
+ let guarded = Stage(); guarded.drag.delta.y = -20
+ switch guardCase { case 0: guarded.bounds.size = CGSize(width:844,height:390); case 1: guarded.playerOverlayOpen = true; case 2: guarded.mode = .mini; case 3: guarded.customFullscreenID = "abcdefghijk"; case 4: guarded.dragCanTakeOver = true; default: guarded.revealer = NSObject() }
+ expect(!guarded.acceptsFullscreenEntry(guarded.drag), "fullscreen entry retains portrait, overlay, mini and transition guards")
+}
+let replaced = Stage(); replaced.drag.delta.y = -20; expect(replaced.gestureRecognizerShouldBegin(replaced.drag), "upward contact admitted before began"); replaced.drag.state = .began; replaced.dragPlayer(replaced.drag)
+replaced.player.url = URL(string:"https://m.youtube.com/watch?v=zyxwvutsrqp")
+replaced.drag.delta.y = -100; replaced.drag.state = .ended; replaced.dragPlayer(replaced.drag)
+expect(replaced.player.scripts == ["LOCK","UNLOCK"], "source replacement revokes old upward contact")
+
+// An accepted direction belongs to one contact. Later UIKit input samples may
+// be neutral; source/state changes still revoke it without generic card motion.
+var admissionCases = 0
+func admissionCheck(_ name: String, _ success: Bool, _ stage: Stage) {
+  admissionCases += 1; expect(success, "admission: " + name)
+}
+for timing in 0..<3 {
+ let s=Stage();s.drag.delta=timing==1 ? .zero:CGPoint(x:0,y:-12);s.drag.speed=CGPoint(x:0,y:-400)
+ let admitted=s.gestureRecognizerShouldBegin(s.drag)
+ if timing != 0 {s.drag.delta = .zero;s.drag.speed = .zero}
+ s.drag.state = .began;s.dragPlayer(s.drag)
+ admissionCheck("accepted-upward-direction-latched-"+String(timing),admitted && s.fullscreenEnterDrag && s.follows==0 && s.nativeDragging,s)
+ s.drag.delta=CGPoint(x:0,y:-115);s.drag.state = .ended;s.dragPlayer(s.drag)
+ admissionCheck("matching-release-enters-once-"+String(timing),s.player.scripts.filter{$0.contains("enterForGesture")}.count==1 && s.settles==0 && !s.dragging,s)
+}
+for mutation in 0..<11 {
+ let s=Stage();s.drag.delta=CGPoint(x:0,y:-12);_ = s.gestureRecognizerShouldBegin(s.drag)
+ switch mutation {
+ case 0:s.player.url=URL(string:"https://m.youtube.com/watch?v=zyxwvutsrqp")
+ case 1:s.loadTicket += 1
+ case 2:s.player=Web()
+ case 3:s.mode = .mini
+ case 4:s.playerOverlayOpen=true
+ case 5:s.revealer=NSObject()
+ case 6:s.dragCanTakeOver=true
+ case 7:UIApplication.shared.applicationState = .inactive
+ case 8:s.playerFullscreen=true
+ case 9:s.bounds.size=CGSize(width:844,height:390)
+ default:s.startupVideoID="zyxwvutsrqp"
+ }
+ s.drag.state = .began;s.dragPlayer(s.drag)
+ admissionCheck("changed-binding-or-state-aborts-without-crop-"+String(mutation),!s.fullscreenEnterDrag && !s.dragging && s.follows==0 && s.exitRequests==0 && !s.drag.cancelsTouchesInView,s)
+ UIApplication.shared.applicationState = .active
+}
+let revoked=Stage();revoked.drag.delta.y = -12;_ = revoked.gestureRecognizerShouldBegin(revoked.drag)
+revoked.revokeFullscreenEntryAdmission();revoked.drag.state = .began;revoked.dragPlayer(revoked.drag)
+admissionCheck("revoked-old-contact-never-falls-into-crop",revoked.follows==0 && !revoked.dragging && !revoked.fullscreenEnterDrag,revoked)
+for terminal in [UIGestureRecognizer.State.cancelled,.failed,.ended] {
+ let s=Stage();s.drag.delta.y = -12;_ = s.gestureRecognizerShouldBegin(s.drag);s.drag.state=terminal;s.dragPlayer(s.drag)
+ admissionCheck("terminal-clears-pending-owner-"+String(terminal.rawValue),s.fullscreenEntryAdmission==nil && !s.fullscreenEntryAdmissionRevoked && s.follows==0 && s.player.scripts.isEmpty,s)
+}
+let admissionReversed=Stage();admissionReversed.drag.delta.y = -12;_ = admissionReversed.gestureRecognizerShouldBegin(admissionReversed.drag);admissionReversed.drag.state = .began;admissionReversed.dragPlayer(admissionReversed.drag)
+admissionReversed.drag.delta.y=100;admissionReversed.drag.speed.y=700;admissionReversed.drag.state = .ended;admissionReversed.dragPlayer(admissionReversed.drag)
+admissionCheck("reversal-cancels-entry-without-mini",admissionReversed.settles==0 && admissionReversed.player.scripts==["LOCK","UNLOCK"],admissionReversed)
+for variant in 0..<3 {
+ let s=Stage();s.drag.delta.y=variant==0 ? 12:-12
+ if variant==1 {s.revealer=NSObject();s.dragCanTakeOver=true}
+ if variant==2 {s.mode = .mini}
+ let admitted=s.gestureRecognizerShouldBegin(s.drag);s.drag.state = .began;s.dragPlayer(s.drag)
+ admissionCheck("ordinary-down-transition-mini-preserved-"+String(variant),admitted && !s.fullscreenEnterDrag && s.follows==1 && s.dragging,s)
+}
+let reject=Stage();reject.drag.delta.y = -12;_ = reject.gestureRecognizerShouldBegin(reject.drag);reject.drag.delta=CGPoint(x:30,y:0)
+admissionCheck("rejected-admission-clears-pending-owner",!reject.gestureRecognizerShouldBegin(reject.drag) && reject.fullscreenEntryAdmission==nil,reject)
+
+for cleanup in 0..<3 {
+ let s = Stage(); s.drag.delta.y = -12
+ expect(s.gestureRecognizerShouldBegin(s.drag), "lifecycle fixture starts with accepted upward contact")
+ switch cleanup {
+ case 0: s.admissionCleanup_closePlayer()
+ case 1: s.admissionCleanup_openWatch()
+ default: s.admissionCleanup_stop()
+ }
+ let oldScripts = s.player?.scripts ?? []
+ s.drag.state = .began; s.dragPlayer(s.drag)
+ admissionCheck("actual-lifecycle-order-rejects-late-began-" + String(cleanup),
+   !s.dragging && !s.fullscreenEnterDrag && s.follows == 0 && !s.drag.cancelsTouchesInView && (s.player?.scripts ?? []) == oldScripts, s)
+}
+expect(admissionCases == 29, "all 26 admission and three shipping lifecycle sequences executed")
+print("NATIVE_FULLSCREEN_ADMISSION_29_OK")
+
 print("NATIVE_PLAYER_INTERACTION_OK")
 `;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "langform-native-interaction-"));
@@ -206,6 +339,7 @@ print("NATIVE_PLAYER_INTERACTION_OK")
     assert.equal(result.error, undefined, String(result.error));
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /NATIVE_PLAYER_INTERACTION_OK/);
+    assert.match(result.stdout, /NATIVE_FULLSCREEN_ADMISSION_29_OK/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -229,7 +363,7 @@ class Layer {
   func presentation() -> Layer? { shown }
   func affineTransform() -> CGAffineTransform { pose }
 }
-class Card { var alpha: CGFloat = 1; var layer = Layer(); var bounds = CGRect(x: 0, y: 0, width: 400, height: 800); var transform = CGAffineTransform.identity }
+class Card { var alpha: CGFloat = 1; var layer = Layer(); var bounds = CGRect(x: 0, y: 0, width: 400, height: 800); var frame = CGRect.zero; var transform = CGAffineTransform.identity }
 class Animator { var stopped = false; var onStop: (() -> Void)?; func stopAnimation(_ immediately: Bool) { stopped = true; onStop?() } }
 enum UIView { static func performWithoutAnimation(_ block: () -> Void) { block() } }
 class OpeningMotion { func cancel() {}; func viewportChanged() {} }
@@ -242,6 +376,7 @@ class Stage {
   var openingMotion = OpeningMotion()
   var videoCropActive = false, pictureRect = CGRect(x: 0, y: 107, width: 400, height: 225)
   var card = Card(), bounds = CGRect(x: 0, y: 0, width: 400, height: 800)
+  let closeButton = Card(), miniPlaybackButton = Card()
   var revealer: Animator?, settler: Animator?, settlingBetweenModes = false
   var progress: CGFloat = 0
   func miniFrame() -> CGRect { CGRect(x: 200, y: 600, width: 180, height: 100) }

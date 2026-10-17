@@ -8,6 +8,10 @@
       typeof win.__langformObserveOverlayContainers !== 'function') return;
   win.__langformCommentReactions = true;
   var doc = win.document, panels = new Map(), entries = new Map(), frame = 0, pending = null, alive = true, noticeTimer = 0, traceCount = 0;
+  function pageInactive() {
+    try { var visibility=win.__langformRealVisibility; if (visibility && typeof visibility.inactive==='function') return !!visibility.inactive(); } catch (_) {}
+    return !!doc.hidden;
+  }
   var containerSelector = 'bottom-sheet-container, #dialog-container';
   var style = doc.createElement('style'); style.id = 'langform-comment-reactions-style';
   style.textContent = `
@@ -251,7 +255,7 @@ button[data-langform-comment-reaction]:focus-visible { outline:2px solid current
   ['yt-navigate-start','state-navigatestart','engagement-panel-pop'].forEach(function (name) { win.addEventListener(name,cancel); });
   win.addEventListener('popstate',function () { if (pending && !sameRequest(pending)) cancel(); });
   win.addEventListener('resize',schedule);
-  doc.addEventListener('visibilitychange',function () { if (doc.hidden) cancel(); });
+  ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){doc.addEventListener(name,function () { if (pageInactive()) cancel(); });});
   win.addEventListener('pagehide',function () {
     cancel(); alive=false; if (frame) win.cancelAnimationFrame(frame); frame=0;
     panels.forEach(function (observer) { observer.disconnect(); }); panels.clear(); entries.forEach(remove);

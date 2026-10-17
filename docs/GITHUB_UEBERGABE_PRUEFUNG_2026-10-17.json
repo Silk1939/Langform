@@ -1,0 +1,107 @@
+{
+  "date": "2026-10-17",
+  "repository": "https://github.com/Silk1939/Langform",
+  "visibility": "PUBLIC",
+  "status": "validated_ready_for_upload",
+  "source_build": "1.0 (72)",
+  "review": {
+    "independent_areas": 3,
+    "confirmed_product_bugs_fixed": 2,
+    "patches_independently_cross_reviewed": true,
+    "fixes": [
+      {
+        "backlog": "LF-73",
+        "problem": "Reduce Motion/Crossfade preferences reverted after retained WebView document navigation.",
+        "change": "Refresh app-owned document-start script in place; synchronize notification/foreground/commit; honor false media preference.",
+        "files": [
+          "ios/Langform/Langform/Motion.swift",
+          "ios/Langform/Langform/YouTubeWebView.swift",
+          "tests/motion-system.test.js",
+          "tests/silent-diagnostics.test.js"
+        ]
+      },
+      {
+        "backlog": "LF-22",
+        "problem": "Native chapter takeover invalidated the shared AirPlay controls follower before later fade.",
+        "change": "Retire only fallback chip ownership after exact native takeover; preserve source/player/overlay/generation/timeout guards.",
+        "files": [
+          "extension/src/page-captions.js",
+          "tests/chapters-sibling-owner.test.js"
+        ]
+      }
+    ]
+  },
+  "verification": {
+    "root": {
+      "tests": 2266,
+      "pass": 2266,
+      "fail": 0,
+      "skipped": 0
+    },
+    "web": {
+      "passed": 87,
+      "failed": 0,
+      "skipped": 0
+    },
+    "web_lint": "passed",
+    "web_production_build": "passed",
+    "simulator": {
+      "case": "test35PortraitUpFullscreenDownSettingsAndSustainedHold",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "platform": "iOS27 Simulator",
+      "code_signing_allowed": false,
+      "runtime_warnings": 0
+    },
+    "resources": {
+      "source_built_installed_matched": 44,
+      "total": 44,
+      "simulator_build": "72"
+    },
+    "initial_full_run": {
+      "passed": 2263,
+      "failed": 3,
+      "skipped": 0,
+      "resolved": "Three extracted Swift fixtures now explicitly count the new foreground preference dependency; original assertions retained."
+    }
+  },
+  "snapshot": {
+    "tested_files": 396,
+    "code_and_tests_manifest_sha256": "f6d9351342f7b9e4b3eb6806311ddd008e756d73d79324358b8462989eb13be6",
+    "required_public_qa_fixtures": 2
+  },
+  "dependency_audit": {
+    "root_vulnerabilities": 0,
+    "web_high_package_paths": 9,
+    "distinct_underlying_advisories": 1,
+    "backlog": "LF-74",
+    "advisory": "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
+    "patched_version_published": false,
+    "unsafe_major_downgrades_applied": false,
+    "langform_remote_exploit_proven": false
+  },
+  "physical_device": {
+    "new_installation": false,
+    "last_confirmed_build": "1.0 (71), 16.10.2026",
+    "personal_acceptance": false
+  },
+  "known_limits": [
+    "LF-33 early fullscreen shrink remains open",
+    "LF-56 exit zoom reset remains open",
+    "LF-70 prior caption/provider issue remains open",
+    "LF-67 Bluetooth/audio cause remains open",
+    "No continuous motion/FPS, audible sound, physical finger or system settings acceptance claimed."
+  ],
+  "private_data_excluded": [
+    "local QA recordings/logs/network captures",
+    "local environment files",
+    "private keys/certificates/provisioning profiles",
+    "build products"
+  ],
+  "runtime": {
+    "node": "22.16.0",
+    "npm": "10.9.2",
+    "xcode": "27.0 (27A266a)"
+  }
+}

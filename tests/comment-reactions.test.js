@@ -154,13 +154,14 @@ test('an unrelated menu appearing later cannot be adopted as this comment’s co
   const s=setup(t,{noMenu:true});s.button('a',0).click();s.menu.hidden=false;s.populate(s.root('b'));await s.flush();
   assert.deepEqual(s.actions,[]);assert.equal(s.menu.hidden,false);
 });
-for(const change of ['video','comment','remove','input','hide','escape','pagehide'])test(`an unfinished reaction cannot act after ownership changes (${change})`,async t=>{
+for(const change of ['video','comment','remove','input','hide','real-hidden','native-inactive','escape','pagehide'])test(`an unfinished reaction cannot act after ownership changes (${change})`,async t=>{
   const s=setup(t,{lazy:true});s.button('a',0).click();
   if(change==='video')s.win.history.replaceState({},'','/watch?v=zyxwvutsrqp');
   if(change==='comment')s.root('a').querySelector('.YtmCommentRendererText').textContent='A different hydrated comment';
   if(change==='remove')s.root('a').remove();
   if(change==='input')s.doc.body.dispatchEvent(new s.win.Event('pointerdown',{bubbles:true}));
   if(change==='hide'){Object.defineProperty(s.doc,'hidden',{value:true});s.doc.dispatchEvent(new s.win.Event('visibilitychange'));}
+  if(change==='real-hidden'||change==='native-inactive'){s.win.__langformRealVisibility={hidden:()=>change==='real-hidden',inactive:()=>true};Object.defineProperty(s.doc,'hidden',{value:false});s.doc.dispatchEvent(new s.win.Event('langform-real-visibilitychange'));}
   if(change==='escape')s.doc.dispatchEvent(new s.win.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
   if(change==='pagehide')s.win.dispatchEvent(new s.win.Event('pagehide'));
   const root=s.root('a')||s.root('b');s.populate(root);await s.flush();s.timeout(2000);await s.flush();assert.deepEqual(s.actions,[]);assert.equal(s.menu.hasAttribute('data-langform-comment-direct-menu'),false);

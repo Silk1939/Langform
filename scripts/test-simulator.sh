@@ -84,6 +84,21 @@ if [[ "$task_iterations" -gt 1 ]]; then
 fi
 if [[ -n "$task_only" ]]; then
   task_test_command+=(-only-testing "$task_only")
+else
+  # Historical failing background A/B controls are explicit comparisons, not
+  # ordinary smoke criteria. Keep them available via --only-testing; the normal
+  # suite uses the silent source and enabled policy in cases 27-30.
+  for task_comparison in \
+    test19PlayingWatchContinuesThroughHomeAndReturn \
+    test20PausedWatchStaysPausedThroughHomeAndReturn \
+    test21PlayingWatchWithBackgroundCategoryProbe \
+    test22PausedWatchWithBackgroundCategoryProbe \
+    test23SilentAudioTrackWatchHomeBaseline \
+    test24PausedSilentAudioTrackWatchHomeBaseline \
+    test25SilentAudioTrackWatchWithBackgroundCategoryProbe \
+    test26PausedSilentAudioTrackWatchWithBackgroundCategoryProbe; do
+    task_test_command+=(-skip-testing "LangformDeviceTests/DeviceAccessibilityTests/$task_comparison")
+  done
 fi
 set +e
 "${task_test_command[@]}" > "$task_output/smoke.log" 2>&1

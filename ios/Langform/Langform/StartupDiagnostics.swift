@@ -1,10 +1,13 @@
 import Foundation
+import CoreFoundation
 
 /// Opt-in local timing only. Never logs account data, URLs or search queries.
 /// Launch with LANGFORM_DIAGNOSTICS=1 and collect Library/Caches/langform-startup.jsonl.
 enum StartupDiagnostics {
     static let enabled = ProcessInfo.processInfo.environment["LANGFORM_DIAGNOSTICS"] == "1"
     static let playerEventsEnabled = enabled && ProcessInfo.processInfo.environment["LANGFORM_PLAYER_TRACE"] == "1"
+    static let audioRouteProbeEnabled = enabled && ProcessInfo.processInfo.environment["LANGFORM_AUDIO_ROUTE_PROBE"] == "1"
+    static let playerObserverEnabled = playerEventsEnabled || audioRouteProbeEnabled
     private static let runID = UUID().uuidString
     private static var playerRows = 0
     private static let origin = ProcessInfo.processInfo.systemUptime
@@ -36,6 +39,7 @@ enum StartupDiagnostics {
             entry["unixMilliseconds"] = Date().timeIntervalSince1970 * 1000
             entry["build"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
             entry["playerTrace"] = playerEventsEnabled
+            entry["audioRouteProbe"] = audioRouteProbeEnabled
         }
         #if DEBUG
         entry["configuration"] = "Debug"
@@ -175,15 +179,27 @@ enum StartupDiagnostics {
 /// Whitelist again at the native boundary; never persist arbitrary page strings.
 enum PlayerDiagnosticEvent {
     static func sanitized(_ row: [String: Any]) -> [String: Any]? {
-        let events: Set<String> = ["loadstart", "loadedmetadata", "loadeddata", "play", "playing", "pause", "waiting", "stalled", "canplay", "seeking", "seeked", "emptied", "ended", "error", "progress", "timeupdate", "pointerdown", "pointerup", "touchstart", "touchend", "click", "after-input", "webkitbeginfullscreen", "webkitendfullscreen", "fullscreen-api"]
+        let events: Set<String> = ["loadstart", "loadedmetadata", "loadeddata", "play", "playing", "pause", "waiting", "stalled", "canplay", "seeking", "seeked", "emptied", "ended", "error", "progress", "timeupdate", "volumechange", "ratechange", "pointerdown", "pointerup", "touchstart", "touchend", "click", "after-input", "webkitbeginfullscreen", "webkitendfullscreen", "fullscreen-api"]
         guard let event = row["event"] as? String, events.contains(event),
               let target = row["target"] as? String, ["media", "control", "video", "surface"].contains(target) else { return nil }
         var result: [String: Any] = ["event": event, "target": target]
         for key in ["sequence", "route", "documentEpoch", "documentMilliseconds", "unixMilliseconds", "playerState", "readyState", "networkState", "currentTime", "bufferAhead", "errorCode"] {
             if let value = row[key] as? NSNumber, value.doubleValue.isFinite { result[key] = value.doubleValue }
         }
-        for key in ["hasVideo", "playerMatches", "paused", "seeking", "manualQuality", "controlsToggle", "hidden", "trusted", "prevented", "pageInert", "fullscreenUI", "fullscreenMarked", "nativeVideoFullscreen", "documentFullscreen", "apiIntercepted", "nativeDragging", "nativeMini"] {
+        for key in ["hasVideo", "playerMatches", "paused", "seeking", "muted", "apiMuted", "manualQuality", "controlsToggle", "hidden", "trusted", "prevented", "pageInert", "fullscreenUI", "fullscreenMarked", "nativeVideoFullscreen", "documentFullscreen", "apiIntercepted", "nativeDragging", "nativeMini"] {
             if let value = row[key] as? Bool { result[key] = value }
+        }
+        let audioRanges: [String: ClosedRange<Double>] = ["volume": 0...1, "apiVolume": 0...100, "rate": 0...16,
+            "audioDecoded": -1...Double.greatestFiniteMagnitude, "audioTracks": -1...32, "audioEnabled": -1...32,
+            "mediaToken": 0...Double.greatestFiniteMagnitude, "sourceToken": 0...Double.greatestFiniteMagnitude]
+        for (key, range) in audioRanges {
+            if let value = row[key] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(),
+               value.doubleValue.isFinite, range.contains(value.doubleValue) { result[key] = value.doubleValue }
+        }
+        let audioStrings = ["audioSession": ["inactive", "active", "interrupted", "unknown"],
+            "audioSessionType": ["auto", "playback", "ambient", "transient", "transient-solo", "play-and-record", "unknown"]]
+        for (key, choices) in audioStrings {
+            if let value = row[key] as? String, choices.contains(value) { result[key] = value }
         }
         if let value = row["fullscreenAPI"] as? String,
            ["requestFullscreen", "webkitRequestFullscreen", "webkitRequestFullScreen", "webkitEnterFullscreen", "webkitEnterFullScreen"].contains(value) {

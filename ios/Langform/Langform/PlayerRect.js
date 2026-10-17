@@ -478,6 +478,127 @@
     playbackChanged();
   }
 
+  var replayAutonavCancelNode = null;
+  function traceReplay(phase, values) {
+    if (win.__langformGestureInputProbe !== true || typeof win.__langformReplayDiagnostic !== "function") return;
+    try { win.__langformReplayDiagnostic(Object.assign({phase:phase},values)); } catch (_) { /* opt-in diagnostics cannot affect playback */ }
+  }
+
+  function replayAutonavOwner(root) {
+    return root && (root.closest("ytm-player,ytd-player") || root.closest("#player-container-id"));
+  }
+
+  function replayTargetMatches(expectedID, video, root, owner, source) {
+    if (typeof expectedID !== "string" || !expectedID || !matchesVideo(expectedID) || nativeDragging ||
+        !root || !root.isConnected || doc.getElementById("movie_player") !== root ||
+        !video || !video.isConnected || currentVideo() !== video || root.querySelector("video") !== video ||
+        !root.contains(video) || !owner || !owner.isConnected || replayAutonavOwner(root) !== owner ||
+        owner.querySelector("#movie_player") !== root ||
+        (video.currentSrc || video.src || "") !== source ||
+        (navigation && (!navigation.complete || !navigation.presented || !navigationMatches(navigation)))) return false;
+    var data = typeof root.getVideoData === "function" && root.getVideoData();
+    return !!(data && data.video_id === expectedID && !data.isAd &&
+      !root.classList.contains("ad-showing") && !root.classList.contains("ad-interrupting"));
+  }
+
+  function replayControlAvailable(control, root, video, owner, expectedID) {
+    if (!control.isConnected || replayAutonavOwner(control) !== owner ||
+        (control.closest("#movie_player") && control.closest("#movie_player") !== root)) {
+      traceReplay("control", {result:"target"}); return false;
+    }
+    if (control.disabled || control.matches(":disabled") || control.getAttribute("aria-disabled") === "true" ||
+        typeof control.click !== "function") { traceReplay("control", {result:"disabled"}); return false; }
+    if (control.closest("[hidden]")) { traceReplay("control", {result:"hidden"}); return false; }
+    var ownFullscreen = false, custom = win.__langformFullscreen;
+    if (custom && typeof custom.isOpen === "function" && custom.isOpen() === true && typeof custom.getZoomContext === "function") {
+      var context = custom.getZoomContext();
+      ownFullscreen = !!(context && context.id === expectedID && context.root === root && context.video === video);
+    }
+    // Our confirmed fullscreen deliberately hides/inerts YouTube's original
+    // controls. Its programmatic Cancel still owns this exact ended player.
+    if (ownFullscreen) return true;
+    var html = doc.documentElement, miniAttribute = "data-langform-mini-video";
+    var ownMini = !!(win.__langformStageInsets && win.__langformStageInsets.nativeMini === true &&
+      html.hasAttribute(miniAttribute) && !html.hasAttribute("data-langform-fullscreen"));
+    var miniValue = ownMini ? html.getAttribute(miniAttribute) : null, available = true;
+    // The native mini deliberately hides the original endscreen via this one
+    // CSS marker. Read its underlying visibility synchronously without that
+    // rule; foreign hidden/inert/display/opacity still reject the control.
+    // Restore before the original click, without yielding a paint or timer.
+    if (ownMini) html.removeAttribute(miniAttribute);
+    try {
+      // Visibility is inherited but can be overridden by a descendant. The
+      // original endscreen does this while hiding its surrounding chrome.
+      // Check effective visibility at the actionable control/live media only;
+      // display, opacity, hidden and inert still apply through every ancestor.
+      for (var index = 0, branches = [control, video]; available && index < branches.length; index++) {
+        var branchVisible = false;
+        for (var node = branches[index]; node; node = node.parentElement) {
+          if (node.hasAttribute("inert") || node.inert || node.hidden) { traceReplay("control",{result:node.hidden ? "hidden" : "inert",tag:node.tagName}); available = false; break; }
+          var css = win.getComputedStyle(node);
+          var visibilityHidden = css.visibility === "hidden" || css.visibility === "collapse";
+          if (node === branches[index]) branchVisible = !visibilityHidden;
+          if (visibilityHidden && win.__langformGestureInputProbe === true) {
+            var role = node === control ? "control" : node === root ? "player" :
+              node.matches(".player-controls-content") ? "controls-content" :
+              node.matches("#player-control-overlay") ? "control-overlay" :
+              node.matches(".ytwPlayerEndscreenContainer") ? "endscreen-container" :
+              node.matches(".ytwPlayerEndscreenPlayerEndscreen") ? "endscreen-body" :
+              node.matches(".ytwPlayerEndscreenButtonContainer") ? "endscreen-buttons" : "other";
+            traceReplay("control",{result:"visibility",tag:node.tagName,beforeMini:ownMini,
+              controlVisible:branchVisible,rootBranch:index === 1,nodeRole:role,matched:node !== branches[index]});
+          }
+          if (css.display === "none" || visibilityHidden && node === branches[index] ||
+              css.opacity !== "" && Number(css.opacity) === 0) { traceReplay("control",{result:css.display === "none" ? "display" : css.opacity !== "" && Number(css.opacity) === 0 ? "opacity" : "visibility",tag:node.tagName,beforeMini:ownMini}); available = false; break; }
+        }
+      }
+    } finally {
+      if (ownMini && win.__langformStageInsets && win.__langformStageInsets.nativeMini === true && !html.hasAttribute(miniAttribute))
+        html.setAttribute(miniAttribute, miniValue);
+    }
+    var valid = available && (!ownMini || !!(win.__langformStageInsets && win.__langformStageInsets.nativeMini === true && html.getAttribute(miniAttribute) === miniValue));
+    traceReplay("control",{result:"available",matched:valid,beforeMini:ownMini,afterMini:html.hasAttribute(miniAttribute)});
+    return valid;
+  }
+
+  function cancelEndedAutonav(expectedID, video, root, initial) {
+    traceReplay("start",{ended:video.ended === true,initial:initial === true,nativeMini:!!(win.__langformStageInsets && win.__langformStageInsets.nativeMini),miniMarker:doc.documentElement.hasAttribute("data-langform-mini-video")});
+    if (initial || video.ended !== true) return true;
+    if (replayAutonavCancelNode) return false;
+    var owner = replayAutonavOwner(root), source = video.currentSrc || video.src || "";
+    var matchingTarget = replayTargetMatches(expectedID, video, root, owner, source);
+    if (win.__langformGestureInputProbe === true) traceReplay("target",{matched:matchingTarget,owner:!!owner,sourceMatches:(video.currentSrc || video.src || "") === source,navComplete:!navigation || !!navigation.complete,navPresented:!navigation || !!navigation.presented,navMatches:!navigation || navigationMatches(navigation)});
+    if (!matchingTarget) return true;
+    // Verified on the live mobile endscreen: this action cancels its current
+    // countdown, while the global Autoplay switch retains the user's choice.
+    var selector = ".player-controls-content > player-endscreen.ytwPlayerEndscreenHost " +
+      ".ytwPlayerEndscreenPlayerEndscreen > .ytwPlayerEndscreenButtonContainer > " +
+      "ytm-button-renderer.ytwPlayerEndscreenActionButton > button.ytSpecButtonShapeNextHost.ytSpecButtonShapeNextTonal";
+    var originalControls = owner.querySelectorAll(selector);
+    var controls = Array.prototype.filter.call(originalControls, function (control) {
+      var label = String(control.getAttribute("aria-label") || control.textContent || "").replace(/\s+/g, " ").trim();
+      return /^(Abbrechen|Cancel)$/i.test(label) && replayControlAvailable(control, root, video, owner, expectedID);
+    });
+    traceReplay("candidates",{count:Math.min(8,controls.length),rawCount:Math.min(8,originalControls.length)});
+    if (controls.length !== 1) return true;
+    if (!replayTargetMatches(expectedID, video, root, owner, source)) return false;
+    replayAutonavCancelNode = controls[0];
+    try { replayAutonavCancelNode.click(); traceReplay("cancel",{result:"clicked"}); }
+    finally { replayAutonavCancelNode = null; }
+    return replayTargetMatches(expectedID, video, root, owner, source);
+  }
+
+  // A deliberate seek back from the end also abandons this endscreen's
+  // pending Next action. Keep the same original-control/owner checks as Replay;
+  // this entry point neither starts media nor changes global Autoplay.
+  win.__langformCancelEndedAutonav = function (expectedID, expectedVideo, expectedRoot) {
+    var video = currentVideo(), root = doc.getElementById("movie_player");
+    if (!matchesVideo(expectedID) || nativeDragging || !video || video !== expectedVideo ||
+        root !== expectedRoot || video.ended !== true || video.paused !== true) return false;
+    try { return cancelEndedAutonav(expectedID, video, root, false); }
+    catch (_) { return false; }
+  };
+
   // Native mini-player and expanded Start/Retry buttons call this. Reports
   // follow actual media events and rejected requests, without optimistic state.
   function requestPlayback(expectedID, playOnly, initial) {
@@ -497,6 +618,11 @@
           if (data && data.video_id && data.video_id !== videoID()) return false;
         }
       }
+      var swipe = win.__langformPlaybackSwipe;
+      if(swipe && typeof swipe.cancelEndedSeekGuard === "function")swipe.cancelEndedSeekGuard(expectedID);
+      if (shouldPlay && !cancelEndedAutonav(expectedID, video, root, initial)) return false;
+      if (win.__langformWatchBackgroundAudio && typeof win.__langformWatchBackgroundAudio.explicitAction === "function")
+        win.__langformWatchBackgroundAudio.explicitAction(expectedID);
       cancelPlayDeadline();
       playbackIssue = "";
       if (shouldPlay) attempt = watchPlaybackStart(video);
@@ -539,6 +665,27 @@
     return requestPlayback(expectedID, true, initial === true);
   };
 
+  // A system Pause is meaningful even while WebKit has already paused on Home:
+  // revoke the old continuation privilege before issuing the original command.
+  win.__langformPause = function (expectedID) {
+    if (!matchesVideo(expectedID) || nativeDragging) return false;
+    var video=currentVideo(),root=doc.getElementById("movie_player");
+    if (!video || !root || !root.contains(video)) return false;
+    var mediaSource=String(video.currentSrc || video.src || ""),sourceAttribute=video.getAttribute("src");
+    try {
+      var data=typeof root.getVideoData==="function" && root.getVideoData();
+      if (data && (data.isAd || data.video_id && data.video_id!==expectedID) ||
+          !matchesVideo(expectedID) || nativeDragging || root!==doc.getElementById("movie_player") ||
+          video!==currentVideo() || !root.isConnected || !video.isConnected || !root.contains(video) ||
+          String(video.currentSrc || video.src || "")!==mediaSource || video.getAttribute("src")!==sourceAttribute ||
+          root.classList.contains("ad-showing") || root.classList.contains("ad-interrupting")) return false;
+      if (win.__langformWatchBackgroundAudio && typeof win.__langformWatchBackgroundAudio.explicitAction === "function")
+        win.__langformWatchBackgroundAudio.explicitAction(expectedID);
+      if (!video.paused) { if (typeof root.pauseVideo === "function") root.pauseVideo(); else video.pause(); }
+      playbackChanged();return true;
+    } catch (_) { return false; }
+  };
+
   function eventPath(event) {
     if (typeof event.composedPath === "function") {
       var path = event.composedPath();
@@ -577,7 +724,16 @@
   // absence turn the black picture into YouTube's mouse-like Play/Pause button.
   win.__langformHandlePlayerClick = function (event) {
     if (!event || event.defaultPrevented || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !matchesVideo()) return false;
+    // The earlier common WebViewLinks capture handler calls this entry before
+    // the gesture modules' window listeners. Give their owned trailing clicks
+    // and current touch-click lease first refusal on this path as well.
+    if (typeof win.__langformConsumePlaybackSwipeClick === "function" && win.__langformConsumePlaybackSwipeClick(event)) return true;
+    if (typeof win.__langformConsumePlaybackHoldClick === "function" && win.__langformConsumePlaybackHoldClick(event)) return true;
+    if (typeof win.__langformConsumeFullscreenGestureClick === "function" && win.__langformConsumeFullscreenGestureClick(event)) return true;
     var path = eventPath(event);
+    // Only the exact internal countdown Cancel bypasses a remaining drag-click
+    // guard, and only during its synchronous, deliberately untrusted click.
+    if (replayAutonavCancelNode && event.isTrusted === false && path[0] === replayAutonavCancelNode) return false;
     if (!path.some(playerNode)) return false;
     if (dragVideoID === videoID() && (nativeDragging || Date.now() < suppressClickUntil)) return consume(event);
     if (typeof win.__langformHasOpenOverlay === "function" && win.__langformHasOpenOverlay()) return false;
@@ -635,9 +791,36 @@
     return isFinite(value) && value > 0 ? value : 0;
   }
 
+  function inactivePlayerViewport(video, mediaRect, actualID, fullscreen, state) {
+    var id=videoID(),root=doc.getElementById("movie_player");
+    // At the real media end, the mobile player can move its video offscreen
+    // while showing a replay/endscreen in the same visible player. Native must
+    // follow that current surface, rather than crop the invisible media node.
+    var poster=video && state==="unstarted" && video.paused===true && video.ended===false &&
+      video.readyState<2 && video.currentTime===0 && !video.error && !video.seeking;
+    if(!video || !(video.ended===true || poster) || !id || actualID!==id || fullscreen || !root || !root.isConnected ||
+        !root.contains(video) || root.querySelector("video")!==video ||
+        (navigation ? !navigationMatches(navigation) || !navigation.complete || !navigation.presented : id!==documentVideoID))return null;
+    function valid(rect){return rect && [rect.left,rect.top,rect.width,rect.height].every(Number.isFinite) && rect.width>8 && rect.height>8;}
+    function overlaps(a,b){return Math.min(a.left+a.width,b.left+b.width)>Math.max(a.left,b.left) && Math.min(a.top+a.height,b.top+b.height)>Math.max(a.top,b.top);}
+    try {
+      var data=typeof root.getVideoData==="function" && root.getVideoData();
+      if(!data || data.video_id!==id || data.isAd || root.classList.contains("ad-showing") || root.classList.contains("ad-interrupting"))return null;
+      var rect=root.getBoundingClientRect();
+      if(!valid(rect) || valid(mediaRect) && overlaps(mediaRect,rect) ||
+          !overlaps(rect,{left:0,top:0,width:viewportDimension(win.innerWidth),height:viewportDimension(win.innerHeight)}))return null;
+      for(var node=root;node;node=node.parentElement){
+        var css=win.getComputedStyle(node);
+        if(css.display==="none" || css.visibility==="hidden" || css.visibility==="collapse" || css.opacity!=="" && Number(css.opacity)===0)return null;
+      }
+      return rect;
+    } catch(err){return null;}
+  }
+
   function measure() {
     var video = currentVideo();
     var rect = null;
+    var zoomBasis = false;
     if (video && typeof video.getBoundingClientRect === "function") {
       try {
         // The native player follows the media viewport, not the enlarged pixels
@@ -646,7 +829,7 @@
         var basis = zoom && typeof zoom.getLayoutRect === "function" ? zoom.getLayoutRect(video) : null;
         if (basis && Number.isFinite(basis.left) && Number.isFinite(basis.top) &&
             Number.isFinite(basis.width) && Number.isFinite(basis.height) &&
-            basis.width > 8 && basis.height > 8) rect = basis;
+            basis.width > 8 && basis.height > 8) { rect = basis; zoomBasis = true; }
       } catch (err) {
         rect = null;
       }
@@ -655,21 +838,31 @@
       }
     }
     var actualID = playerVideoID();
+    var fullscreen = fullscreenInfo(video, actualID).open;
+    var playbackState = playbackStatus(video);
+    // The unstarted poster is visible before YouTube moves its unloaded media
+    // into place. Preserve the native Start contact without declaring a frame.
+    if(!zoomBasis && video)rect=inactivePlayerViewport(video,rect,actualID,fullscreen,playbackState) || rect;
     var mediaReady = navigation ? navigationMatches(navigation) && navigation.complete && navigation.presented :
       active && videoID() === documentVideoID && (!actualID || actualID === documentVideoID) && decoded(video);
     mediaReady = !!(mediaReady && rect && rect.width > 8 && rect.height > 8);
     var mediaPresented = navigation ? mediaReady : firstPicture(video, actualID) && mediaReady;
-    var playbackState = playbackStatus(video);
+    var seekRect = null;
+    try {
+      var swipe = win.__langformPlaybackSwipe;
+      if (video && actualID === videoID() && swipe && typeof swipe.getSeekRect === "function") seekRect = swipe.getSeekRect(video, actualID);
+    } catch (err) { /* keep the existing native media priority on unavailable seek context */ }
     return {
       x: rect ? Number(rect.left) || 0 : 0,
       y: rect ? Number(rect.top) || 0 : 0,
       width: rect ? Number(rect.width) || 0 : 0,
       height: rect ? Number(rect.height) || 0 : 0,
+      seekRect: seekRect,
       viewportWidth: viewportDimension(win.innerWidth),
       viewportHeight: viewportDimension(win.innerHeight),
       playing: !!(video && !video.paused && !video.ended),
       hasVideo: !!video,
-      fullscreen: fullscreenInfo(video, actualID).open,
+      fullscreen: fullscreen,
       playbackState: playbackState,
       playbackIssue: video && video.error ? "media-error" : playbackIssue,
       painted: navigation ? mediaReady : painted,
@@ -701,6 +894,7 @@
       Math.round(box.y),
       Math.round(box.width),
       Math.round(box.height),
+      JSON.stringify(box.seekRect),
       box.viewportWidth,
       box.viewportHeight,
       box.playing ? 1 : 0,
@@ -726,6 +920,10 @@
     lastPlayback = statusKey;
     try {
       target.postMessage(box);
+      if(typeof win.__langformPlayerRectDiagnostic==="function"){
+        try { win.__langformPlayerRectDiagnostic({x:box.x,y:box.y,width:box.width,height:box.height,
+          playerVideoID:box.playerVideoID,playbackState:box.playbackState,href:box.href}); } catch(err) { /* read-only diagnostic */ }
+      }
     } catch (err) {
       /* the page is going away */
     }

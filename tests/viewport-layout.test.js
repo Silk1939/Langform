@@ -67,7 +67,7 @@ test("Sichtbare fixed Filter stehen im gemeinsamen Koordinatenraum unter dem ein
   }
   const chipRules = [...p.doc.querySelector("#langform-viewport-layout").sheet.cssRules]
     .filter(rule => rule.selectorText && rule.selectorText.includes("ytm-feed-filter-chip-bar-renderer"));
-  assert.equal(chipRules.length, 2);
+  assert.equal(chipRules.length, 3);
   for (const rule of chipRules) assert.equal(rule.style.getPropertyPriority("top"), "important", "später geladene normale Website-Regeln dürfen den Inset nicht überfahren");
   assert.equal(p.doc.querySelectorAll("#langform-viewport-layout").length, 1);
 });
@@ -81,9 +81,9 @@ test("Scrollende Filter behalten static/in/out einschließlich persistent sichtb
   assert.equal(p.style(p.chips).top, "calc(48px + var(--lf-safe-top))");
   p.header.className = "sticky-player out";
   p.chips.className = "filter-chip-bar-out";
-  assert.equal(p.style(p.header).top, "-48px", "wegscrollender Header wird nicht durch eine pauschale Inset-Regel festgehalten");
+  assert.equal(p.style(p.header).top, "var(--lf-safe-top)", "Feedheader mit Logo und Suche bleibt beim Scrollen erreichbar");
   assert.equal(p.style(p.chips).position, "fixed");
-  assert.equal(p.style(p.chips).top, "var(--lf-safe-top)", "persistent Filter bleiben unter der Statusleiste sichtbar");
+  assert.equal(p.style(p.chips).top, "calc(48px + var(--lf-safe-top))", "persistente Feedfilter bleiben unter dem festen Header");
   p.holder.classList.remove("persistent-header");
   assert.equal(p.style(p.chips).top, "-60px", "nicht persistente Out-Leiste darf YouTube vollständig wegscrollen");
   p.header.className = "sticky-player in";
@@ -117,7 +117,7 @@ test("Header im Player und Fullscreen erhalten keine doppelte Safe-Area-Geometri
   p.chips.className = "filter-chip-bar-out";
   assert.equal(p.style(p.chips).top, "0px", "auch persistente Scrollzustände behalten im Fullscreen YouTubes Geometrie");
   p.doc.documentElement.removeAttribute("data-langform-fullscreen");
-  assert.equal(p.style(p.chips).top, "var(--lf-safe-top)");
+  assert.equal(p.style(p.chips).top, "calc(48px + var(--lf-safe-top))");
   p.chips.className = "filter-chip-bar-static";
   assert.equal(p.style(p.chips).position, "relative");
   assert.equal(p.style(p.chips).top, "0px");
@@ -138,7 +138,7 @@ test("Aktueller View-Model-Suchkopf erhält dasselbe einzelne Safe-Area-Inset",t
   p.doc.querySelector('ytm-app').insertAdjacentHTML('beforeend','<div class="ytTopBarViewModelHost" data-mode="searching"></div>');
   const header=p.doc.querySelector('.ytTopBarViewModelHost');
   assert.equal(p.win.getComputedStyle(header).top,'var(--lf-safe-top)');
-  header.classList.add('out');assert.equal(p.win.getComputedStyle(header).top,'0px','original out layout remains owned by YouTube');
+  header.classList.add('out');assert.equal(p.win.getComputedStyle(header).top,'var(--lf-safe-top)','feed search remains available while scrolling');
 });
 
 test("Desktop-Suchvorschläge erhalten kein zusätzliches mobiles Inset",t=>{
@@ -222,7 +222,7 @@ test("Layout bleibt auf native YouTube-WebViews begrenzt", t => {
   assert.equal(p.doc.querySelector("#langform-viewport-layout"), null);
   assert.equal(p.meta().content, "width=600,viewport-fit=contain");
   const native = fs.readFileSync(path.join(app, "YouTubeWebView.swift"), "utf8");
-  assert.match(native, /static let scriptNames = \["ViewportLayout",/);
+  assert.match(native, /static let scriptNames = \[[^\]]*"ViewportLayout"/);
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "../extension/manifest.json"), "utf8"));
   assert.equal(JSON.stringify(manifest).includes("ViewportLayout"), false, "Safari-Erweiterung injiziert das native Layout nicht");
 });
@@ -586,4 +586,74 @@ test('SafeTop-Revealretry wahrt aktuelle Author-Opacity und Captionguards ohne w
     else p.header().lastElementChild.remove();
     await p.flush();assert.ok(p.cover(),'ordinary author mutation can later admit the genuinely visible clean header');
   }
+});
+
+function headerSearchPage(t,modern=false) {
+ const p=page(t,undefined,undefined,`
+ ytm-mobile-topbar-renderer,.ytTopBarViewModelHost{display:flex;position:fixed;top:0;height:48px}
+ header.mobile-topbar-header,.mobile-topbar-header-content,.ytTopBarViewModelTrailingButtons{display:flex;height:48px}
+ button{color:#0f0f0f} .mobile-topbar-title{color:#0f0f0f}
+ `);
+ p.doc.body.innerHTML=modern?'<ytm-app><div class="ytTopBarViewModelHost"><span class="mobile-topbar-title">NASA</span><div class="ytTopBarViewModelTrailingButtons"><button id="profile">Profil</button><button id="more">Mehr</button></div></div></ytm-app>':'<ytm-app><ytm-mobile-topbar-renderer><header class="mobile-topbar-header"><span class="mobile-topbar-title">NASA</span><div class="mobile-topbar-header-content"><button id="profile">Profil</button><button id="more">Mehr</button></div></header></ytm-mobile-topbar-renderer></ytm-app>';
+ p.win.HTMLElement.prototype.getBoundingClientRect=function(){return {x:0,y:59,width:this.hidden?0:120,height:this.hidden?0:48,top:59,bottom:107,left:0,right:120}};
+ const posts=[],frames=new Map();let serial=0;
+ const nativeTimer=p.win.setTimeout.bind(p.win),nativeCancel=p.win.clearTimeout.bind(p.win);
+ p.win.setTimeout=(cb,delay)=>{if(delay===0){frames.set(++serial,cb);return serial}return nativeTimer(cb,delay)};p.win.clearTimeout=id=>{if(!frames.delete(id))nativeCancel(id)};
+ p.win.webkit={messageHandlers:{langformOpenWatch:{postMessage(){}},langformNativeSearch:{postMessage(body){posts.push(body)}}}};
+ p.win.__langformFeedActive=true;
+ const paint=()=>{const callbacks=[...frames.values()];frames.clear();callbacks.forEach(cb=>cb())};
+ p.win.__langformSetStageInsets({top:59,left:0,right:0,bottom:34,nativeMini:false});
+ return Object.assign(p,{posts,paint,frames,button:()=>p.doc.querySelector('#langform-feed-search'),header:()=>p.doc.querySelector(modern?'.ytTopBarViewModelHost':'.mobile-topbar-header')});
+}
+for(const modern of [false,true]) {
+ test('Feste Headerlupe erhält eigenen 44px Flexplatz ohne Profil/Mehr zu überdecken, modern='+modern,async t=>{
+  const p=headerSearchPage(t,modern);await p.flush();p.paint();const button=p.button();assert.ok(button);
+  assert.equal(button.getAttribute('aria-label'),'In YouTube suchen');assert.equal(p.doc.querySelectorAll('#langform-feed-search').length,1);
+  const slot=button.parentElement;assert.equal(slot.children[0].id,'profile');assert.equal(slot.children[1].id,'more');assert.equal(slot.children[2],button);
+  assert.equal(p.win.getComputedStyle(button).width,'44px');assert.equal(p.win.getComputedStyle(button).height,'44px');assert.equal(p.win.getComputedStyle(button).flex,'0 0 44px');
+  button.click();assert.deepEqual(JSON.parse(JSON.stringify(p.posts)),[{action:'open',href:p.win.location.href}]);
+  p.win.__langformSetStageInsets({top:59,left:0,right:0,bottom:34,nativeMini:true});await p.flush();p.paint();assert.equal(p.button(),button,'visible Mini feed retains header search');
+  p.doc.documentElement.setAttribute('data-langform-fullscreen','');await p.flush();assert.equal(p.button(),null);
+  button.click();assert.equal(p.posts.length,1,'detached fullscreen control cannot reopen native search');
+  p.doc.documentElement.removeAttribute('data-langform-fullscreen');await p.flush();p.paint();assert.ok(p.button());
+ });
+}
+test('Hydrierte Original-Lupe ersetzt genau die eigene Lupe; verborgenes Duplikat ersetzt sie nicht',async t=>{
+ const p=headerSearchPage(t);const original=p.doc.createElement('button');original.className='topbar-button-search-button';original.hidden=true;p.header().appendChild(original);
+ await p.flush();p.paint();assert.ok(p.button());original.hidden=false;await p.flush();p.paint();assert.equal(p.button(),null);
+ original.remove();await p.flush();p.paint();assert.ok(p.button());assert.equal(p.doc.querySelectorAll('#langform-feed-search').length,1);
+});
+test('Headerlupe gibt inaktive Feeds/Navigation/BFCache und fehlende Appbrücke frei',async t=>{
+ const p=headerSearchPage(t);const stale=p.button();p.win.__langformFeedActive=false;p.event('langform-feed-visibility');assert.equal(p.button(),null);stale.click();assert.equal(p.posts.length,0);
+ p.win.__langformFeedActive=true;p.event('langform-feed-visibility');assert.ok(p.button());p.event('yt-navigate-start');assert.equal(p.button(),null);
+ p.win.history.replaceState({},'','/watch?v=abcdefghijk');p.event('yt-navigate-finish');await p.flush();assert.equal(p.button(),null);
+ p.win.history.replaceState({},'','/');p.event('yt-navigate-finish');await p.flush();assert.ok(p.button());p.event('pagehide');assert.equal(p.button(),null);p.event('pageshow');await p.flush();assert.ok(p.button());
+ delete p.win.webkit.messageHandlers.langformNativeSearch;p.event('langform-feed-visibility');assert.equal(p.button(),null);
+});
+test('Headerkontrast bleibt auf bekannte Feedheader begrenzt und behält die rote SVG-Markenfarbe',t=>{
+ const p=headerSearchPage(t);p.header().insertAdjacentHTML('afterbegin','<c3-icon class="mobile-topbar-logo" style="color:rgb(255,0,51)"><svg><path fill="#ff0033"></path></svg></c3-icon>');
+ const logo=p.doc.querySelector('.mobile-topbar-logo');assert.equal(p.win.getComputedStyle(logo).color,'rgb(255, 0, 51)');assert.equal(logo.querySelector('path').getAttribute('fill'),'#ff0033');
+ assert.equal(p.win.getComputedStyle(p.doc.querySelector('#profile')).color,'rgb(255, 255, 255)');
+ assert.equal(p.win.getComputedStyle(p.doc.querySelector('.mobile-topbar-title')).color,'rgb(255, 255, 255)');
+ const outside=p.doc.createElement('button');outside.textContent='Feedaktion';p.doc.body.appendChild(outside);assert.equal(p.win.getComputedStyle(outside).color,'rgb(15, 15, 15)');
+});
+
+test('native Watch collapse has a reserved logo slot without hiding feed navigation or player content', t => {
+  const p=page(t,undefined,undefined,'ytm-mobile-topbar-renderer{display:block;position:fixed} .mobile-topbar-logo{display:block;visibility:visible} a{display:block;width:117px;height:48px}');
+  p.doc.body.innerHTML='<ytm-mobile-topbar-renderer><header class="mobile-topbar-header"><a id="brand" href="/"><c3-icon class="mobile-topbar-logo full-logo"></c3-icon></a><button id="search">Suchen</button></header></ytm-mobile-topbar-renderer><video></video><div class="caption-window">Untertitel</div>';
+  p.win.webkit={messageHandlers:{langformPlayer:{postMessage(){}}}};
+  p.win.history.replaceState({},'', '/watch?v=aqz-KE-bpKQ');
+  p.win.__langformSetStageInsets({top:59,right:0,bottom:34,left:0});
+  const logo=p.doc.querySelector('.mobile-topbar-logo'),brand=p.doc.querySelector('#brand');
+  assert.equal(p.win.getComputedStyle(logo).visibility,'hidden','native chevron cannot paint over the wordmark');
+  assert.equal(p.win.getComputedStyle(brand).visibility,'hidden','no invisible underlying Home link in the reserved native slot');
+  assert.equal(p.win.getComputedStyle(brand).width,'117px','right-side original controls keep their layout');
+  for(const item of p.doc.querySelectorAll('#search,video,.caption-window')) assert.notEqual(p.win.getComputedStyle(item).visibility,'hidden');
+  p.doc.documentElement.setAttribute('data-langform-fullscreen','');
+  assert.equal(p.win.getComputedStyle(logo).visibility,'visible','fullscreen owns its header independently');
+  p.doc.documentElement.removeAttribute('data-langform-fullscreen');
+  p.win.history.replaceState({},'','/feed/subscriptions');p.event('yt-navigate-finish');
+  assert.equal(p.win.getComputedStyle(logo).visibility,'visible','feed Premium/YouTube logo remains intact');
+  p.win.history.replaceState({},'','/watch?v=aqz-KE-bpKQ');delete p.win.webkit.messageHandlers.langformPlayer;p.event('yt-navigate-finish');
+  assert.equal(p.win.getComputedStyle(logo).visibility,'visible','ordinary website without native player keeps its logo');
 });

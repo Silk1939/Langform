@@ -25,7 +25,8 @@ function setup(t,options={}){
   win.webkit={messageHandlers:{langformFullscreen:{postMessage:value=>messages.push(value)}}};
   win.__langformTogglePlayback=id=>{calls.push(['toggle',id]);video.paused=!video.paused;video.dispatchEvent(new win.Event(video.paused?'pause':'play'));return true;};
   win.__langformPlay=id=>{calls.push(['play',id]);video.paused=false;video.dispatchEvent(new win.Event('play'));return true;};
-  win.eval(source);if(options.hold)win.eval(hold);win.eval(fullscreen);
+  win.__langformFullscreenDiagnostics=options.diagnostics;
+  win.eval(source);win.__langformFullscreenDiagnostics=false;if(options.hold)win.eval(hold);win.eval(fullscreen);
   const enter=()=>root.querySelector('.ytp-fullscreen-button').click();
   const ui=()=>doc.getElementById('langform-fullscreen-ui');
   const state=()=>win.__langformPlaybackZoom.getState();
@@ -237,4 +238,52 @@ test('a non-primary second finger after real control down cannot masquerade as a
 test('a newly decoded same-element source rearms fullscreen touch ownership before another gesture begins',async t=>{
   const s=setup(t);s.enter();s.pinch(2,437,201);s.video.src='https://example.test/b';await Promise.resolve();assert.equal(s.state(),null);
   s.video.dispatchEvent(new s.win.Event('loadeddata'));assert.deepEqual(fields(s.state()),[1,0,0]);assert.equal(s.ui().hasAttribute('data-langform-playback-zoom-surface'),true);
+});
+
+
+test('zoom diagnosis requires the exact opt-in flag and never exposes a production getter',t=>{
+  for(const diagnostics of [undefined,false,1,'true']){
+    const s=setup(t,{diagnostics});s.enter();s.pinch(2);assert.equal(s.win.__langformPlaybackZoom.getDiagnostics,undefined);assert.equal(s.state().scale,2);
+  }
+});
+test('zoom diagnosis retains at most16 finite source-free snapshots and returns detached rows',t=>{
+  const s=setup(t,{diagnostics:true});s.enter();
+  for(let i=0;i<12;i++){s.pinch(2);s.win.dispatchEvent(new s.win.Event('resize'));}
+  const rows=s.win.__langformPlaybackZoom.getDiagnostics();assert.equal(rows.length,16);
+  assert.ok(rows.some(row=>row.event==='gesture-accepted'));assert.ok(rows.some(row=>row.event==='reset-resize'));
+  assert.ok(rows.every(row=>Object.values(row).every(value=>typeof value!=='number'||Number.isFinite(value))));
+  assert.doesNotMatch(JSON.stringify(rows),/https:|example|abcdefghijk|"Video"|src=/);
+  rows[0].event='foreign';rows.pop();assert.equal(s.win.__langformPlaybackZoom.getDiagnostics().length,16);assert.notEqual(s.win.__langformPlaybackZoom.getDiagnostics()[0].event,'foreign');
+  s.root.getBoundingClientRect=s.video.getBoundingClientRect=()=>assert.fail('diagnostic getter must not read geometry');s.win.getComputedStyle=()=>assert.fail('diagnostic getter must not read styles');
+  assert.equal(s.win.__langformPlaybackZoom.getDiagnostics().length,16);
+});
+test('getter-only intrinsic mismatch is distinguished from subsequent move reset without inferring a source change',t=>{
+  const s=setup(t,{diagnostics:true});s.enter();s.pointer('pointerdown',1,387,201);s.pointer('pointerdown',2,487,201);
+  s.video.videoWidth=1280;s.video.videoHeight=720;assert.equal(s.state(),null);
+  let rows=s.win.__langformPlaybackZoom.getDiagnostics(),last=rows.at(-1);
+  assert.equal(last.event,'state-mismatch');assert.equal(last.owner,true);assert.equal(last.context,true);assert.equal(last.sourceSame,true);assert.equal(last.sourceAttributeSame,true);
+  assert.equal(last.intrinsicWidth,1280);assert.equal(last.ownerIntrinsicWidth,1920);assert.equal(last.intrinsicHeight,720);assert.equal(last.ownerIntrinsicHeight,1080);
+  assert.ok(!rows.some(row=>row.event==='reset-move'));
+  s.pointer('pointermove',1,337,201);rows=s.win.__langformPlaybackZoom.getDiagnostics();assert.ok(rows.some(row=>row.event==='reset-move'&&row.context&&row.intrinsicWidth===1280));
+  assert.equal(s.video.hasAttribute('data-langform-playback-zoom-video'),false);assert.equal(s.video.playbackRate,1);
+});
+test('zoom diagnosis uses the existing context read and hard media reset adds none',t=>{
+  const s=setup(t,{diagnostics:true});s.enter();s.pinch(2);
+  const get=s.win.__langformFullscreen.getZoomContext;let reads=0;s.win.__langformFullscreen.getZoomContext=function(){reads++;return get.apply(this,arguments);};
+  s.video.videoWidth=1280;s.video.videoHeight=720;assert.equal(s.state(),null);assert.equal(reads,1);
+  s.win.__langformPlaybackZoom.getDiagnostics();assert.equal(reads,1);
+  reads=0;s.video.dispatchEvent(new s.win.Event('emptied'));assert.equal(reads,0);
+  assert.ok(s.win.__langformPlaybackZoom.getDiagnostics().some(row=>row.event==='reset-emptied'));
+});
+test('missing fullscreen context and a local overlay rejection have separate diagnostic causes',t=>{
+  const s=setup(t,{diagnostics:true});s.enter();s.pinch(2);const get=s.win.__langformFullscreen.getZoomContext;
+  s.win.__langformFullscreen.getZoomContext=()=>null;assert.equal(s.state(),null);let row=s.win.__langformPlaybackZoom.getDiagnostics().at(-1);assert.equal(row.context,false);assert.equal(row.contextReason,1);
+  s.win.__langformFullscreen.getZoomContext=get;s.win.__langformHasOpenOverlay=()=>true;assert.equal(s.state(),null);
+  assert.ok(s.win.__langformPlaybackZoom.getDiagnostics().some(row=>row.event==='context-rejected'&&row.contextReason===10&&row.context));
+});
+test('diagnosis distinguishes an accepted pinch Hold cancel from a later pointer cancellation without losing crop',t=>{
+  const s=setup(t,{diagnostics:true,hold:true});s.enter();s.pointer('pointerdown',1,387,201);s.pointer('pointerdown',2,487,201);s.pointer('pointermove',2,587,201);
+  const before=fields(s.state());s.pointer('pointercancel',2,587,201);assert.deepEqual(fields(s.state()),before);
+  const rows=s.win.__langformPlaybackZoom.getDiagnostics();assert.ok(rows.some(row=>row.event==='gesture-accepted'));assert.ok(rows.some(row=>row.event==='pointercancel'));
+  assert.ok(!rows.some(row=>row.event.startsWith('reset-')));assert.equal(s.video.playbackRate,1);
 });
