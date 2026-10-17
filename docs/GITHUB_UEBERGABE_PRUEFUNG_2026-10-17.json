@@ -2,7 +2,7 @@
   "date": "2026-10-17",
   "repository": "https://github.com/Silk1939/Langform",
   "visibility": "PUBLIC",
-  "status": "validated_ready_for_upload",
+  "status": "published_and_anonymous_clone_verified",
   "source_build": "1.0 (72)",
   "review": {
     "independent_areas": 3,
@@ -103,5 +103,13 @@
     "node": "22.16.0",
     "npm": "10.9.2",
     "xcode": "27.0 (27A266a)"
-  }
+  },
+  "publication": {
+    "source_commit": "00e156e5f7d13fb0955b24dc7dddd859d3cb6205",
+    "anonymous_clone": true,
+    "files": 397,
+    "content_and_executable_modes_match": true,
+    "default_branch": "main"
+  },
+  "simulator_restored_to_initial_shutdown": true
 }
