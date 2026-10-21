@@ -7,8 +7,9 @@ enum LangformMotion {
         static let pressIn: TimeInterval = 0.08
         static let pressOut: TimeInterval = 0.16
         static let fade: TimeInterval = 0.16
-        static let sheetEnter: TimeInterval = 0.28
-        static let sheetExit: TimeInterval = 0.18
+        static let sheetEnter: TimeInterval = 0.36
+        static let sheetExit: TimeInterval = 0.22
+        static let surface: TimeInterval = 0.24
         static let submenu: TimeInterval = 0.18
         static let hero: TimeInterval = 0.40
     }
@@ -90,7 +91,7 @@ enum LangformMotion {
             "version": 1,
             "durations": ["pressIn": Duration.pressIn * 1000, "pressOut": Duration.pressOut * 1000,
                 "fade": Duration.fade * 1000, "sheetEnter": Duration.sheetEnter * 1000,
-                "sheetExit": Duration.sheetExit * 1000, "submenu": Duration.submenu * 1000,
+                "sheetExit": Duration.sheetExit * 1000, "surface": Duration.surface * 1000, "submenu": Duration.submenu * 1000,
                 "hero": Duration.hero * 1000],
             "easings": ["enter": Easing.enter, "exit": Easing.exit, "move": Easing.move, "fade": Easing.fade],
             "scales": ["icon": Double(Scale.icon), "card": Double(Scale.card)],

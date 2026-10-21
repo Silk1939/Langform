@@ -24,6 +24,9 @@ for filter in LangformSearchFilter.allCases {
 check(LangformSearchPolicy.resultsURL(query:" \\n ",filter:.videos)==nil,"empty does not navigate")
 check(LangformSearchPolicy.query(String(repeating:"x",count:500)).count==200,"bounded query")
 check(LangformSearchPolicy.suggestionURL(query:"x")==nil,"single key no request")
+for link in ["https://youtu.be/aqz-KE-bpKQ?t=23", "HTTP://example.com/private?q=secret", "langform://watch?v=aqz-KE-bpKQ", "youtube.com/watch?v=aqz-KE-bpKQ", "www.youtube.com/@NASA", "m.youtube.com/watch?v=aqz-KE-bpKQ", "youtu.be/aqz-KE-bpKQ"] {
+ check(LangformSearchPolicy.suggestionURL(query:link)==nil,"pasted URL never goes to autocomplete: " + link)
+}
 let suggest = LangformSearchPolicy.suggestionURL(query:text)!
 check(suggest.host == "suggestqueries.google.com" && URLComponents(url:suggest,resolvingAgainstBaseURL:false)!.queryItems!.contains(where:{$0.name=="q" && $0.value==text}),"suggestion query is not a URL or code")
 let payload = try! JSONSerialization.data(withJSONObject:["NASA",["nasa live","NASA LIVE",2,"","next","bad\\nrow",String(repeating:"z",count:161)]])
@@ -34,7 +37,7 @@ check(LangformSearchPolicy.suggestions(from:Data(repeating:32,count:65537),expec
 print("search policy passed")
 `;
   const file=path.join(dir,'main.swift');fs.writeFileSync(file,main);
-  const r=spawnSync('xcrun',['swift',file],{encoding:'utf8',timeout:50000});assert.equal(r.status,0,r.stdout+r.stderr);assert.match(r.stdout,/search policy passed/);
+  const r=spawnSync('xcrun',['swift','-module-cache-path',path.join(dir,'cache'),file],{encoding:'utf8',timeout:50000});assert.equal(r.status,0,r.stdout+r.stderr);assert.match(r.stdout,/search policy passed/);
 });
 
 test('native Oberfläche verwirft verspätete Vorschläge, behält Tastatur und Medien unabhängig',()=>{

@@ -27,6 +27,7 @@
     learn: '<path d="M9 18h6M10 21h4M8 15a7 7 0 1 1 8 0l-1 3H9Z"/>',
     podcast: '<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/>',
     bell: '<path d="M5 17h14l-2-3V9a5 5 0 0 0-10 0v5ZM10 21h4"/>',
+    link: '<path d="m10 13 4-4M8 16l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M16 8l1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>',
   };
 
   // Verified against the mobile site's real browse responses, 2026-10-08.
@@ -270,6 +271,19 @@
     grid.className = "lf-discovery-grid";
     topics.forEach(function (item) { addLink(grid, item[0], item[1], item[2]); });
     content.appendChild(grid);
+    if (handlers.langformOpenExternalLink) {
+      heading(content, "Langform");
+      var openLink = doc.createElement("button");
+      openLink.type = "button";
+      openLink.className = "lf-discovery-notifications";
+      openLink.innerHTML = icon("link") + "<span>YouTube-Link öffnen</span>";
+      openLink.addEventListener("click", function () {
+        if (!active()) return;
+        closeSheet(true);
+        handlers.langformOpenExternalLink.postMessage({});
+      });
+      content.appendChild(openLink);
+    }
     heading(content, "Dein YouTube");
     var account = doc.createElement("div");
     account.className = "lf-discovery-list";
@@ -329,7 +343,9 @@
       bar.id = "langform-discovery";
       bar.setAttribute("aria-label", "Themen entdecken");
       trigger = doc.createElement("button");
+      trigger.id = "langform-discovery-trigger";
       trigger.type = "button";
+      trigger.setAttribute("aria-label", "Entdecken-Menü öffnen");
       trigger.setAttribute("aria-haspopup", "dialog");
       trigger.setAttribute("aria-expanded", "false");
       trigger.innerHTML = icon("compass") + "<span>Entdecken</span>";

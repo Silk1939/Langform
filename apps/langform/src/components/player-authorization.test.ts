@@ -142,4 +142,53 @@ describe("Player erst nach Videoentscheidung und mit passender Identität", () =
     expect(host.textContent).toContain("Die Vorschläge sind gerade nicht zu erreichen.");
     expect(frame().src).toContain(`/embed/${A}?`);
   });
+
+  it("stoppt denselben Player, wenn die spätere Anreicherung das Video als Kurzvideo einstuft", async () => {
+    let enrich!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({ ...details(), video: { ...details().video, durationSeconds: null }, related: [] }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { enrich = resolve; })));
+    await renderWatch(A);
+    const existingFrame = frame();
+    expect(existingFrame.src).toContain(`/embed/${A}?`);
+
+    await act(async () => enrich(Response.json(details(A, "Nachträglich erkanntes Kurzvideo", true))));
+    expect(host.textContent).toContain("Das ist ein Kurzvideo");
+    expect(frame()).toBe(existingFrame);
+    expect(frame().src).toBe("about:blank");
+  });
+
+  it("eine verspätete Kurzvideo-Anreicherung für A stoppt den inzwischen geöffneten Player B nicht", async () => {
+    let enrichA!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({ ...details(), related: [] }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { enrichA = resolve; }))
+      .mockResolvedValueOnce(Response.json(details(B, "Zweite lange Doku"))));
+    await renderWatch(A);
+    route.pathname = `/schauen/${B}`;
+    await renderWatch(B);
+    const existingFrame = frame(), existingSrc = existingFrame.src;
+    expect(existingSrc).toContain(`/embed/${B}?`);
+
+    await act(async () => enrichA(Response.json(details(A, "Altes Kurzvideo", true))));
+    expect(host.textContent).not.toContain("Das ist ein Kurzvideo");
+    expect(host.textContent).toContain("Zweite lange Doku");
+    expect(frame()).toBe(existingFrame);
+    expect(frame().src).toBe(existingSrc);
+  });
+
+  it("eine passende lange Anreicherung erhält den laufenden Embed unverändert", async () => {
+    let enrich!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({ ...details(), related: [] }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { enrich = resolve; })));
+    await renderWatch(A);
+    const existingFrame = frame(), existingSrc = existingFrame.src;
+
+    await act(async () => enrich(Response.json(details(A, "Vervollständigte Doku"))));
+    expect(host.textContent).toContain("Vervollständigte Doku");
+    expect(host.textContent).toContain("Ähnliche Doku");
+    expect(frame()).toBe(existingFrame);
+    expect(frame().src).toBe(existingSrc);
+  });
 });

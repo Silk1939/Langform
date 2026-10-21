@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { JSDOM } = require("jsdom");
 const app = path.join(__dirname, "../ios/Langform/Langform");
-const source = fs.readFileSync(path.join(app, "ViewportLayout.js"), "utf8");
+const source = fs.readFileSync(process.env.LANGFORM_VIEWPORT_TEST_SOURCE || path.join(app, "ViewportLayout.js"), "utf8");
 
 function page(t, content = "width=device-width,initial-scale=1", host = "m.youtube.com", siteCSS = "") {
   const dom = new JSDOM('<!doctype html><html><head><meta name="viewport">' + (siteCSS ? '<style>' + siteCSS + '</style>' : '') + '</head><body><ytm-app><ytm-header></ytm-header></ytm-app></body></html>', {
@@ -20,6 +20,19 @@ function page(t, content = "width=device-width,initial-scale=1", host = "m.youtu
 }
 
 function tokens(meta) { return meta.content.split(",").map(value => value.trim()); }
+
+test('native stage snapshots publish all four validated CSS insets and rotation replaces the complete snapshot', t => {
+  const p = page(t), root = p.doc.documentElement;
+  const read = () => ['top','right','bottom','left'].map(side => root.style.getPropertyValue(`--lf-native-safe-${side}`));
+  assert.equal(p.win.__langformSetStageInsets({top:62,right:0,bottom:34,left:0,nativeMini:false}),true);
+  assert.deepEqual(read(),['62px','0px','34px','0px']);
+  assert.equal(p.win.__langformSetStageInsets({top:0,right:62,bottom:21,left:62,nativeMini:false}),true);
+  assert.deepEqual(read(),['0px','62px','21px','62px']);
+  for (const invalid of [{top:3,right:-1,bottom:4,left:5},{top:3,right:4,bottom:NaN,left:5},{top:3,right:4,bottom:5,left:'6'},{top:3,right:4,bottom:5}]) {
+    assert.equal(p.win.__langformSetStageInsets(invalid),false);
+    assert.deepEqual(read(),['0px','62px','21px','62px'],'an invalid member cannot partially overwrite trusted native insets');
+  }
+});
 
 // Current public mweb root CSS (c3_base.QswTdmvETwA, 2026-10-09). These are
 // YouTube's scroll-state rules, not a copy of Langform's inset implementation.

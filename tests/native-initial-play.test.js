@@ -31,7 +31,7 @@ test("erster Watch-Start und opt-in Diagnose starten einmal, verwerfen stale Req
     .map(name => declaration(native, "private func " + name + "(")).join("\n");
   const property = declaration(native, "private var awaitingInitialPlayback:");
   const watchStart = native.indexOf('case "langformWatchIntent":');
-  const watchEnd = native.indexOf('case "langformNavigateFeed":', watchStart);
+  const watchEnd = native.indexOf('case "langformOpenExternalLink":', watchStart);
   assert.ok(watchStart >= 0 && watchEnd > watchStart);
   const watchRoute = native.slice(watchStart + 'case "langformWatchIntent":'.length, watchEnd);
   const exercise = `

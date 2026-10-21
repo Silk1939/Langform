@@ -593,6 +593,7 @@ test("fehlende, fehlerhafte und unbegrenzte Statusdaten verändern weder Vorscha
     progressResponse({ sourceIncomplete: "false" }), progressResponse({ coverageIncomplete: undefined }),
     progressResponse({ tldr: "a".repeat(2001) }), progressResponse({ tldr: {} }),
     progressResponse({ phase: "reading", tldr: "Zu früh." }),
+    progressResponse({ phase: "checking", tldr: "Ein ungeprüfter Entwurf." }),
     progressResponse({ processedSections: 0, tldr: "Nicht vollständig gelesen." }),
     progressResponse({ coverageIncomplete: true, tldr: "Unvollständige Auswahl." }),
     progressResponse({ sourceIncomplete: true, tldr: "Die verfügbare Teilquelle ist keine vollständige Vorschau." }),
@@ -691,6 +692,27 @@ function progressUi(t, ids) {
   return { ...ui, relay };
 }
 
+test("Quellenprüfung zeigt nur Status und übernimmt keinen ungeprüften Entwurf", async function (t) {
+  const ui = progressUi(t, ["abcdefghijk"]);
+  ui.open("abcdefghijk");
+  await delay(0);
+  ui.relay.poll();
+  ui.relay.statusRequests.at(-1).reply(progressResponse({ phase: "checking" }));
+  await delay(0);
+  const sheet = ui.win.document.getElementById("langform-kurzfassung");
+  assert.match(sheet.textContent, /mit der Quelle abgeglichen/);
+  assert.equal(sheet.querySelector("h3"), null);
+  assert.equal(ui.win.__langformKurzCache.entries.length, 0);
+  ui.relay.poll();
+  ui.relay.statusRequests.at(-1).reply(progressResponse({ phase: "checking", tldr: "Ungeprüfte Behauptung." }));
+  await delay(0);
+  assert.equal(sheet.textContent.includes("Ungeprüfte Behauptung"), false);
+  assert.equal(sheet.querySelector("h3"), null);
+  ui.relay.reply(modelSummary());
+  await delay(0);
+  assert.equal(sheet.getAttribute("data-summary-state"), "ready");
+});
+
 test("TLDR erscheint sicher als laufende Vorschau und bleibt beim Schließen und Zurückwechseln sofort verfügbar", async function (t) {
   const ui = progressUi(t, ["abcdefghijk", "zyxwvutsrqp"]);
   ui.open("abcdefghijk");
@@ -706,7 +728,7 @@ test("TLDR erscheint sicher als laufende Vorschau und bleibt beim Schließen und
   const draft = "Der gesamte Versuch zeigt <img src=x onerror=alert(1)> einen Unterschied.";
   ui.relay.statusRequests.at(-1).reply(progressResponse({ tldr: draft }));
   await delay(0);
-  assert.equal(sheet.querySelector("h3").textContent, "TLDR");
+  assert.equal(sheet.querySelector("h3").textContent, "Auf einen Blick");
   assert.match(sheet.textContent, /Wird noch ergänzt/);
   assert.equal(sheet.querySelector("img"), null, "Vorschau wird als Text eingesetzt");
   assert.ok(sheet.textContent.includes(draft));
@@ -818,7 +840,7 @@ test("TLDR, erklärte Punkte und Merksatz bleiben vollständig erhalten und werd
   const doc = ui.win.document;
   const body = doc.querySelector(".langform-kurz-body");
   assert.deepEqual([...body.querySelectorAll("h3")].map(function (h) { return h.textContent; }), [
-    "TLDR", "Die wichtigsten Punkte", "Das bleibt hängen", "Wichtige Einordnung",
+    "Auf einen Blick", "Die wichtigsten Punkte", "Das bleibt hängen", "Wichtige Einordnung",
   ]);
   assert.deepEqual([...body.querySelectorAll("p")].map(function (p) { return p.textContent; }), [
     supplied.tldr, supplied.takeaway, supplied.caveat,
@@ -855,7 +877,7 @@ test("neue Kurzfassungen bleiben reiner Text, fehlende Einordnungen und alte Ant
   assert.doesNotMatch(body.textContent, /\*\*/);
   assert.match(body.textContent, /\[0,1\]/, "fachlich relevante Klammern bleiben erhalten");
   assert.deepEqual([...body.querySelectorAll("h3")].map(function (h) { return h.textContent; }), [
-    "TLDR", "Die wichtigsten Punkte", "Das bleibt hängen",
+    "Auf einen Blick", "Die wichtigsten Punkte", "Das bleibt hängen",
   ]);
   ui.close();
   ui.open("zyxwvutsrqp");

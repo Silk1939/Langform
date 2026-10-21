@@ -80,8 +80,8 @@ final class FeedMotion {
         // selection feel like a page push and exposed mismatched feed edges.
         incoming = view
         incomingPose = view.layer.sublayerTransform
-        let animation = UIViewPropertyAnimator(duration: 0.18,
-            controlPoint1: CGPoint(x: 0.2, y: 0), controlPoint2: CGPoint(x: 0, y: 1)) {
+        let animation = UIViewPropertyAnimator(duration: LangformMotion.Duration.surface,
+            controlPoint1: CGPoint(x: 0.16, y: 1), controlPoint2: CGPoint(x: 0.3, y: 1)) {
                 cover.alpha = 0
         }
         animator = animation

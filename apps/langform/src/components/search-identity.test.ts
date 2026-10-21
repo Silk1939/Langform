@@ -3,7 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchView } from "@/components/search-view";
-import { readQueries } from "@/lib/recent";
+import { readQueries, rememberQuery } from "@/lib/recent";
 import type { Video } from "@/lib/types";
 
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams({ q: "Weltall" }) }));
@@ -122,6 +122,84 @@ describe("Ergebnisse gehören zum angeforderten Suchbegriff", () => {
     expect(host.textContent).not.toContain("Kurz offline");
     expect(host.querySelector("button")).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(240); });
+    expect(host.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+
+  it.each([0, 120, 239])("startet eine fehlgeschlagene Suche nach Leeren und schneller Verlaufsauswahl nach %d ms erneut", async (delay) => {
+    rememberQuery("Weltall");
+    let searches = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/suggest")) return Response.json({ suggestions: [] });
+      searches += 1;
+      return searches === 1 ? Response.json({ error: "Kurz offline" }, { status: 503 }) : response([oldVideo]);
+    }));
+    await act(async () => root.render(createElement(SearchView)));
+    expect(host.textContent).toContain("Kurz offline");
+    await type("");
+    await act(async () => { await vi.advanceTimersByTimeAsync(delay); });
+    expect(host.textContent).not.toContain("Kurz offline");
+    expect(searches).toBe(1);
+    const previous = Array.from(host.querySelectorAll("button")).find((button) => button.textContent === "Weltall")!;
+    await act(async () => previous.click());
+    expect(searches).toBe(2);
+    expect(host.textContent).toContain("Weltallfilm");
+    expect(host.querySelector('[aria-busy="true"]')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(240); });
+    expect(searches).toBe(2);
+    expect(host.textContent).toContain("Weltallfilm");
+  });
+
+  it("kann dieselbe fehlgeschlagene Suche auch nach Ablauf der Leeren-Frist aus dem Verlauf wiederholen", async () => {
+    rememberQuery("Weltall");
+    let searches = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.startsWith("/api/suggest")) return Response.json({ suggestions: [] });
+      searches += 1;
+      return searches === 1 ? Response.json({ error: "Kurz offline" }, { status: 503 }) : response([oldVideo]);
+    }));
+    await act(async () => root.render(createElement(SearchView)));
+    await type("");
+    await act(async () => { await vi.advanceTimersByTimeAsync(240); });
+    expect(searches).toBe(1);
+    const previous = Array.from(host.querySelectorAll("button")).find((button) => button.textContent === "Weltall")!;
+    await act(async () => previous.click());
+    expect(searches).toBe(2);
+    expect(host.textContent).toContain("Weltallfilm");
+    expect(host.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+
+  it("verwendet erfolgreiche Treffer bei schneller gleicher Verlaufsauswahl ohne zweite Anfrage weiter", async () => {
+    rememberQuery("Weltall");
+    const fetcher = vi.fn(async (url: string) => url.startsWith("/api/suggest")
+      ? Response.json({ suggestions: [] }) : response([oldVideo]));
+    vi.stubGlobal("fetch", fetcher);
+    await act(async () => root.render(createElement(SearchView)));
+    await type("");
+    const previous = Array.from(host.querySelectorAll("button")).find((button) => button.textContent === "Weltall")!;
+    await act(async () => previous.click());
+    await act(async () => { await vi.advanceTimersByTimeAsync(240); });
+    expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/search"))).toHaveLength(1);
+    expect(host.textContent).toContain("Weltallfilm");
+  });
+
+  it("behält eine noch laufende Suche bei schneller gleicher Verlaufsauswahl ohne Abbruch oder Doppelanfrage", async () => {
+    rememberQuery("Weltall");
+    let finish!: (response: Response) => void;
+    let pendingSignal!: AbortSignal;
+    const fetcher = vi.fn((url: string, options: RequestInit) => {
+      if (url.startsWith("/api/suggest")) return Promise.resolve(Response.json({ suggestions: [] }));
+      pendingSignal = options.signal!;
+      return new Promise<Response>((resolve) => { finish = resolve; });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    await act(async () => root.render(createElement(SearchView)));
+    await type("");
+    const previous = Array.from(host.querySelectorAll("button")).find((button) => button.textContent === "Weltall")!;
+    await act(async () => previous.click());
+    expect(pendingSignal.aborted).toBe(false);
+    expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/search"))).toHaveLength(1);
+    await act(async () => finish(response([oldVideo])));
+    expect(host.textContent).toContain("Weltallfilm");
     expect(host.querySelector('[aria-busy="true"]')).toBeNull();
   });
 });

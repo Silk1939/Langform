@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const {JSDOM}=require('jsdom');
-const source=fs.readFileSync(path.join(__dirname,'../ios/Langform/Langform/PlaybackSwipe.js'),'utf8');
+const source=fs.readFileSync(process.env.LANGFORM_SWIPE_TEST_SOURCE || path.join(__dirname,'../ios/Langform/Langform/PlaybackSwipe.js'),'utf8');
 const hold=fs.readFileSync(path.join(__dirname,'../ios/Langform/Langform/PlaybackHold.js'),'utf8');
 const zoom=fs.readFileSync(path.join(__dirname,'../ios/Langform/Langform/PlaybackZoom.js'),'utf8');
 const fullscreen=fs.readFileSync(path.join(__dirname,'../ios/Langform/Langform/FullscreenMotion.js'),'utf8');
@@ -99,13 +99,22 @@ for(const cls of ['ytp-chrome-top','ytp-chrome-bottom'])test(`empty ${cls} pictu
   }
   assert.deepEqual(s.sets,[45,30]);
 });
-test('empty own fullscreen control-bar padding admits picture swipe; buttons and timeline stay protected',t=>{
+test('own fullscreen control bars reserve their padding for controls and never perform a picture seek',t=>{
   const s=setup(t,{fullscreen:true});const ui=s.ui(),padding=ui.querySelector('.lf-fs-controls');
-  s.swipe(200,320,40,padding);s.swipe(450,330,830,padding);assert.deepEqual(s.sets,[45,30]);
+  s.swipe(200,320,40,padding);s.swipe(450,330,830,padding);assert.deepEqual(s.sets,[]);
   for(const target of [ui.querySelector('[data-action=play]'),ui.querySelector('input')])s.swipe(200,320,40,target);
-  assert.deepEqual(s.sets,[45,30]);assert.deepEqual(s.calls,[]);
+  assert.deepEqual(s.sets,[]);assert.deepEqual(s.calls,[]);
+  s.swipe(200,320,200,ui);assert.deepEqual(s.sets,[45],'the free fullscreen picture still supports seeking');
 });
-for(const cls of ['ytp-progress-bar-container','ytp-progress-bar','ytp-scrubber-container'])test(`actual ${cls} timeline remains excluded from picture swipe`,t=>{
+for(const touch of [false,true])test(`hidden fullscreen timeline keeps its physical strip when browser retargets to picture; touch=${touch}`,t=>{
+  const s=setup(t,{fullscreen:true,touch}),ui=s.ui(),range=ui.querySelector('input');
+  range.getBoundingClientRect=()=>rect(20,800,834,44);ui.setAttribute('data-hidden','');
+  if(touch){s.touch('touchstart',[[7,200,820]],ui);s.touch('touchmove',[[7,320,820]],ui);s.touch('touchend',[],ui,[[7,320,820]]);}else s.swipe(200,320,820,ui);
+  assert.deepEqual(s.sets,[],'a contact on the timeline must not become a ±15s picture seek');
+  if(touch){s.touch('touchstart',[[8,200,600]],ui);s.touch('touchmove',[[8,320,600]],ui);s.touch('touchend',[],ui,[[8,320,600]]);}else s.swipe(200,320,600,ui);
+  assert.deepEqual(s.sets,[45],'free picture immediately outside the timeline still seeks');
+});
+for(const cls of ['ytp-progress-bar-container','ytp-progress-bar','ytp-scrubber-container','player-controls-progress-bar','ytmProgressBarViewModelHost','ytmProgressBarViewModelProgressBar','ytmScrubberViewModelHost'])test(`actual ${cls} timeline remains excluded from picture swipe`,t=>{
   const s=setup(t),timeline=s.doc.createElement('div');timeline.className=cls;s.surface.appendChild(timeline);
   s.swipe(100,180,210,timeline);assert.deepEqual(s.sets,[]);assert.equal(s.click(150,210,timeline).defaultPrevented,false);
 });

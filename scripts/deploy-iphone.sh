@@ -24,6 +24,10 @@ LANGFORM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # can make codesign reject an otherwise valid app.
 LANGFORM_BUILD="$HOME/Library/Developer/Xcode/DerivedData/Langform-device"
 LANGFORM_PROFILE_ARGS=()
+LANGFORM_PACKAGE_ARGS=()
+if [[ -n "${LANGFORM_SOURCE_PACKAGES_DIRECTORY:-}" ]]; then
+  LANGFORM_PACKAGE_ARGS=(-clonedSourcePackagesDirPath "$LANGFORM_SOURCE_PACKAGES_DIRECTORY")
+fi
 if [[ -n "${LANGFORM_SIGNING_PROFILES_DIRECTORY:-}" ]]; then
   LANGFORM_PROFILE_ARGS=(--profiles-directory "$LANGFORM_SIGNING_PROFILES_DIRECTORY")
 fi
@@ -50,6 +54,7 @@ if [[ "$LANGFORM_BUILD_ONLY" == false ]] && ! xcrun devicectl device info detail
 fi
 
 xcodebuild \
+  ${LANGFORM_PACKAGE_ARGS[@]+"${LANGFORM_PACKAGE_ARGS[@]}"} \
   -project "$LANGFORM_ROOT/ios/Langform/Langform.xcodeproj" \
   -scheme Langform \
   -configuration Release \

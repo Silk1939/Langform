@@ -44,6 +44,7 @@ export function WatchView({ id }: { id: string }) {
                 if (controller.signal.aborted) return;
                 setResult({ id, details: enriched });
                 setRelatedState({ id, status: "done" });
+                if (enriched.blocked) closeVideo(id);
               })
               .catch(() => {
                 if (!controller.signal.aborted) setRelatedState({ id, status: "error" });

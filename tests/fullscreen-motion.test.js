@@ -738,6 +738,46 @@ function snapPage(t) {
   s.snaps=()=>s.messages.filter(value=>value.kind==='chapter-snap');
   return s;
 }
+for (const boundary of ['pointercancel','lostpointercapture','blur','second-contact']) test(`abandoned fullscreen range cannot seek on a delayed input/change (${boundary})`, t => {
+  const s=snapPage(t);
+  const fire=(target,type,id=7,primary=true)=>{const event=new s.win.Event(type,{bubbles:true,cancelable:true});Object.assign(event,{pointerId:id,isPrimary:primary,button:0});target.dispatchEvent(event);};
+  fire(s.range,'pointerdown');s.input(28);
+  if(boundary==='blur')s.win.dispatchEvent(new s.win.Event('blur'));
+  else if(boundary==='second-contact')fire(s.ui(),'pointerdown',8,false);
+  else fire(s.range,boundary);
+  s.input(82);s.range.dispatchEvent(new s.win.Event('change',{bubbles:true}));
+  fire(s.win,'pointerup');
+  assert.equal(s.video.currentTime,40,'a cancelled browser slider must not commit a late native change');
+  fire(s.range,'pointerdown',9);s.input(52);fire(s.win,'pointerup',9);
+  assert.equal(s.video.currentTime,52,'the next real range contact immediately recovers');
+  s.range.dispatchEvent(new s.win.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+  s.input(54);s.range.dispatchEvent(new s.win.Event('change',{bubbles:true}));
+  assert.equal(s.video.currentTime,54,'keyboard range adjustment retains its own intent');
+});
+test('new actual range focus admits accessibility changes after cancel, forged focus cannot revive a stale scrub', t => {
+  const s=snapPage(t);s.range.focus();s.pointer();s.input(28);
+  s.win.dispatchEvent(new s.win.Event('pointercancel'));
+  s.range.dispatchEvent(new s.win.FocusEvent('focus'));
+  s.input(82);s.range.dispatchEvent(new s.win.Event('change',{bubbles:true}));
+  assert.equal(s.video.currentTime,40,'a synthetic focus event is not a fresh accessibility intent');
+  s.button('play').focus();s.range.focus();
+  s.input(52);s.range.dispatchEvent(new s.win.Event('change',{bubbles:true}));
+  assert.equal(s.video.currentTime,52,'fresh focus permits native nonpointer/AX slider adjustment');
+});
+for (const boundary of ['release','cancel','foreign-release','second-contact']) test(`touch-only fullscreen range preserves its actual contact (${boundary})`, t => {
+  const s=snapPage(t);
+  touchEvent(s,s.range,'touchstart',[{identifier:7,clientX:80,clientY:200}]);s.input(52);
+  if(boundary==='second-contact')touchEvent(s,s.ui(),'touchstart',[{identifier:7,clientX:80,clientY:200},{identifier:8,clientX:120,clientY:200}]);
+  if(boundary==='foreign-release'){
+    touchEvent(s,s.range,'touchend',[{identifier:7,clientX:120,clientY:200}],[{identifier:8,clientX:150,clientY:200}]);
+    assert.equal(s.video.currentTime,40,'another finger does not release the range');
+  }
+  touchEvent(s,s.range,boundary==='cancel'?'touchcancel':'touchend',[],[{identifier:7,clientX:150,clientY:200}]);
+  const expected=boundary==='cancel'||boundary==='second-contact'?40:52;
+  assert.equal(s.video.currentTime,expected,'the matching touch release commits without depending on change');
+  if(expected===40){s.input(86);s.range.dispatchEvent(new s.win.Event('change',{bubbles:true}));assert.equal(s.video.currentTime,40,'cancelled touch cannot reappear as a stray change');}
+  assert.ok(s.ui(),'timeline gestures never exit fullscreen');assert.deepEqual(s.calls,[]);
+});
 test('pointer scrubbing detents preview clock and chapter without seeking, and notify once per entry',t=>{
   const s=snapPage(t);s.pointer();s.input(27);
   assert.equal(Number(s.range.value),30);assert.equal(s.video.currentTime,40);
@@ -758,6 +798,7 @@ test('keyboard/nonpointer scrubs and pointercancel retain continuous values with
   s.input(29);assert.equal(Number(s.range.value),29);assert.equal(s.snaps().length,0);
   s.pointer();s.input(28);assert.equal(s.snaps().length,1);
   s.win.dispatchEvent(new s.win.Event('pointercancel'));assert.equal(s.video.currentTime,40);assert.equal(Number(s.range.value),40);
+  s.range.dispatchEvent(new s.win.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
   s.input(28);assert.equal(Number(s.range.value),28);assert.equal(s.snaps().length,1);
 });
 test('chapter snapping never reports feedback for stale ownership, Live, ads or unavailable bridge',t=>{
@@ -797,6 +838,7 @@ test('fractional chapter detent commits its exact timestamp after range step rou
   s.range.dispatchEvent(new s.win.Event('change',{bubbles:true}));
   assert.equal(s.video.currentTime,95.88,'commit raw chapter timestamp rather than rounded range value');
   s.pointer(); s.input(95); s.win.dispatchEvent(new s.win.Event('pointercancel'));
+  s.range.dispatchEvent(new s.win.KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}));
   s.input(90); s.range.dispatchEvent(new s.win.Event('change',{bubbles:true}));
   assert.equal(s.video.currentTime,90,'cancel cannot leak the earlier exact target');
   s.pointer(); s.input(95); s.range.dispatchEvent(new s.win.KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}));
@@ -2113,6 +2155,15 @@ for(const family of ['pointer','touch'])test(`free fullscreen ${family} downward
   const click=new s.win.MouseEvent('click',{bubbles:true,cancelable:true,detail:1,clientX:155,clientY:215});
   Object.defineProperty(click,'target',{value:s.root});
   assert.equal(s.win.__langformConsumeFullscreenGestureClick(click),true);assert.equal(click.defaultPrevented,true);assert.equal(s.win.__langformConsumeFullscreenGestureClick(click),false,'one click only');
+});
+for(const family of ['pointer','touch'])test(`hidden fullscreen timeline cannot become a downward exit after browser retargeting (${family})`,t=>{
+  const s=setup(t,{nativeSetup:(v,r,w)=>{if(family==='pointer')w.PointerEvent=w.MouseEvent;}});s.enter();const ui=s.ui();
+  ui.setAttribute('data-hidden','');ui.querySelector('input').getBoundingClientRect=()=>({left:20,top:700,width:900,height:44,right:920,bottom:744});
+  function fire(type,y){const e=new s.win.Event(type,{bubbles:true,cancelable:true});if(family==='pointer')Object.assign(e,{pointerType:'touch',pointerId:1,isPrimary:true,clientX:150,clientY:y});else{const ended=/end/.test(type);Object.defineProperties(e,{touches:{value:ended?[]:[{identifier:1,clientX:150,clientY:y}]},changedTouches:{value:[{identifier:1,clientX:150,clientY:y}]}});}ui.dispatchEvent(e);}
+  const names=family==='pointer'?['pointerdown','pointermove','pointerup']:['touchstart','touchmove','touchend'];
+  fire(names[0],720);fire(names[1],815);fire(names[2],815);
+  assert.ok(s.ui(),'the strip keeps its owner even with invisible controls and an empty picture target');
+  assert.equal(s.video.currentTime,40);assert.deepEqual(s.calls,[]);
 });
 for(const kind of ['cancel','up','horizontal','reversed','control','zoom','overlay','foreign-source'])test(`fullscreen downward swipe preserves ${kind} ownership`,t=>{
   const s=setup(t,{nativeSetup:(v,r,w)=>{w.PointerEvent=w.MouseEvent;}});s.enter();const ui=s.ui();

@@ -29,13 +29,14 @@ export function isVideoList(body: unknown): body is { videos: Video[] } {
   return isRecord(body) && isVideoArray(body.videos);
 }
 
-export function isChannelDetails(body: unknown): body is { channel: ChannelInfo; videos: Video[] } {
+export function isChannelDetails(body: unknown, expectedId?: string): body is { channel: ChannelInfo; videos: Video[] } {
   if (!isRecord(body) || !isVideoArray(body.videos) || !isRecord(body.channel)) return false;
   const channel = body.channel;
   return typeof channel.id === "string"
     && typeof channel.name === "string"
     && typeof channel.description === "string"
-    && isOptionalNumber(channel.subscriberCount);
+    && isOptionalNumber(channel.subscriberCount)
+    && (expectedId === undefined || channel.id === expectedId);
 }
 
 export function isWatchDetails(body: unknown, expectedId?: string): body is WatchDetails {

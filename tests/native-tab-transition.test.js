@@ -27,6 +27,7 @@ import Foundation
 import CoreGraphics
 import QuartzCore
 enum UIAccessibility { static var isReduceMotionEnabled = false }
+enum LangformMotion { enum Duration { static let surface: Double = 0.24 } }
 class Layer {
     var poses: [CATransform3D] = []
     var sublayerTransform = CATransform3DIdentity {

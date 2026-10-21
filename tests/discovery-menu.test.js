@@ -105,6 +105,41 @@ test("Entdecken sitzt im natürlichen Feedfluss und lässt Suche, Cast und Karte
   assert.equal(env.doc.querySelectorAll("#langform-discovery").length, 1);
 });
 
+test("Langforms eindeutig benannter Entdecken-Auslöser öffnet die native Linkeingabe statt YouTubes gleichnamiger Navigation", t => {
+  const nativeRequests = [];
+  const env = page(t, {
+    html: html.replace('<button id="cast"', '<button id="youtube-discover">Entdecken</button><button id="cast"'),
+    handlers: {
+      langformOpenWatch: { postMessage() {} },
+      langformOpenExternalLink: { postMessage(body) { nativeRequests.push(body); } },
+    },
+  });
+  const original = env.doc.getElementById("youtube-discover");
+  let originalClicks = 0;
+  original.addEventListener("click", () => originalClicks++);
+  original.click();
+  assert.equal(originalClicks, 1);
+  assert.equal(env.doc.getElementById("langform-discovery-sheet"), null);
+  const trigger = env.doc.getElementById("langform-discovery-trigger");
+  assert.ok(trigger);
+  assert.equal(trigger.getAttribute("aria-label"), "Entdecken-Menü öffnen");
+  assert.equal(trigger.textContent, "Entdecken", "der sichtbare Text bleibt kompakt");
+  assert.equal(env.doc.querySelectorAll('[aria-label="Entdecken-Menü öffnen"]').length, 1);
+  trigger.click();
+  const sheet = env.doc.getElementById("langform-discovery-sheet");
+  assert.equal(sheet.open, true);
+  const action = [...sheet.querySelectorAll("button")].find(button => button.textContent === "YouTube-Link öffnen");
+  assert.ok(action, "nur das Langform-Menü enthält die native Linkaktion");
+  action.click();
+  assert.equal(sheet.open, false);
+  assert.equal(trigger.getAttribute("aria-expanded"), "false");
+  assert.equal(nativeRequests.length, 1);
+  assert.deepEqual(env.overlays.at(-1), { name: "discovery", open: false });
+  env.visibility(false);
+  action.click();
+  assert.equal(nativeRequests.length, 1, "inaktive Feeds dürfen die native Eingabe nicht erneut öffnen");
+});
+
 test("Downloads öffnen die native Bibliothek nur aus dem aktiven Feed und lassen YouTubes Ziele erhalten", t => {
   const downloads = [];
   const env = page(t, { handlers: {

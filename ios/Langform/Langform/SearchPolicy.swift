@@ -7,6 +7,13 @@ enum LangformSearchFilter: String, CaseIterable {
     }
 }
 
+/// Preserve the decision made against the complete input. A bounded search
+/// query must never be reparsed as a different, truncated opening request.
+enum NativeSearchSubmission {
+    case query(String)
+    case youtubeLink(URL)
+}
+
 /// Typed routing shared by the native entry and the result chips. Queries never
 /// become JavaScript, HTML, a host name, or a navigation to an account endpoint.
 enum LangformSearchPolicy {
@@ -40,7 +47,11 @@ enum LangformSearchPolicy {
 
     static func suggestionURL(query value: String) -> URL? {
         let value = query(value)
-        guard value.count >= 2 else { return nil }
+        // A pasted URL is an opening request, not a search suggestion. Keep
+        // its video identifier, timestamp and private query out of autocomplete.
+        let lower = value.lowercased()
+        guard value.count >= 2,
+              !["http://", "https://", "langform://", "youtube.com/", "www.youtube.com/", "m.youtube.com/", "youtu.be/"].contains(where: lower.hasPrefix) else { return nil }
         var parts = URLComponents(string: "https://suggestqueries.google.com/complete/search")!
         parts.queryItems = [URLQueryItem(name: "client", value: "firefox"), URLQueryItem(name: "ds", value: "yt"),
                             URLQueryItem(name: "hl", value: "de"), URLQueryItem(name: "q", value: value)]

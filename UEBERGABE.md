@@ -1,22 +1,34 @@
 # Übergabe Langform
 
+## Aktueller Einstieg · 22.10.2026
+
+Der aktuelle Stand und alle offenen Abnahmen stehen ausschließlich im [gemeinsamen Backlog](docs/VERBESSERUNGS_BACKLOG.md). Den Umfang der erneuten öffentlichen Entwicklerübergabe und die tatsächlich verwendeten Prüfungen dokumentiert [GITHUB_UPDATE_2026-10-22.json](docs/GITHUB_UPDATE_2026-10-22.json). Die folgenden datierten Versions- und Installationsangaben sind Historie; sie ersetzen den aktuellen Backlogstand nicht.
+
+## Historischer Google-Auftrag · 18.10.2026
+
+Gemma4-Einbau in Arbeit, installiert bleibt75. E2B nach echter Vollquellenprüfung wegen Inhaltsfehlern nicht freigegeben; E4B wird geprüft. Technischer Runtime-/Simulatornachweis vorhanden; gezielte Framework-Signierung und Geräteprüfung offen. Verbindlicher Status und nächste Schritte ausschließlich im [Backlog LF-39/LF-40](docs/VERBESSERUNGS_BACKLOG.md#lf-39--lf-40--google-gemma4e2b--18102026).
+
+## Historischer Gerätenachtrag · 18.10.2026 · Build75
+
+**1.0(75) auf SrTan installiert**, Inventar75/Installationssequenz4336 bestätigt. Native Kurzfassungs-Wiederverwendung/Streaming sowie bewusste WhatsApp-Nachrichtenübergabe umgesetzt;90 gezielte Tests und finale tatsächliche Simulator49/50 grün. Signatur und44/44 Ressourcen je Paket bestätigt. Nach bestätigtem Entsperren normal gestartet, PID78104. Shortcutimport, reale WhatsApp-/Kurzfassungszeit und persönliche Abnahme bleiben offen. Qwen nicht eingebaut; lange Erstberechnung und bekannte semantische Grenzen offen. Aktueller Status und alle nächsten Schritte ausschließlich im [Backlog LF-39/LF-40/LF-75](docs/VERBESSERUNGS_BACKLOG.md#lf-39--lf-40--lf-75--kurzfassungswartezeit-und-whatsapp-übergabe--18102026), Nachweise in [QA](docs/qa/summary-links-2026-10-18/README.md). Die nachfolgenden Versionsangaben bleiben datierte Historie.
+
 ## Entwicklerübergabe – 17.10.2026
 
 Der Einstieg für einen neuen Entwickler steht in [docs/WEITERARBEITEN.md](docs/WEITERARBEITEN.md). Das Repository enthält die native iPhone-App, die Safari-/Browser-Erweiterung, die separate Web-App und die zugehörigen Tests. [AGENTS.md](AGENTS.md) und das [gemeinsame Backlog](docs/VERBESSERUNGS_BACKLOG.md) bleiben für Änderungen und Statuspflege maßgeblich.
 
-Aktueller iPhone-Quellstand: **Build72, nur im Simulator gebaut und geprüft**; echtes iPhone zuletzt **71 vom16.10.2026** bestätigt. Zweite unabhängige Astra-Prüfung: drei weitere belegte Fehler unter LF-68/LF-48/LF-60 korrigiert. Finale Exportkopie **2.270 Root-/108 Webtests**, Lint/Produktionsbuild und separate Simulatorfälle37/32 bestanden; Transkript zusätzlich im echten WebKit geprüft. [Aktueller Astra-Prüfstand](docs/ASTRA_BUGCHECK_2026-10-17.json). Quellcommit `3f5c08469abe005fc9a014d0a0873a85af62b6d1` auf dem öffentlichen Main bestätigt und ohne Anmeldung geklont; alle401 Dateien samt ausführbaren Dateimodi bytegleich. Der [erste Prüfstand vom17.10.](docs/GITHUB_UEBERGABE_PRUEFUNG_2026-10-17.json) bleibt Historie. LF-74 und persönliche Abnahmen offen; keine neue Geräte-/Safari-Installation.
+Aktueller iPhone-Stand: **Build72 geprüft, am17.10.2026 auf SrTan installiert und normal gestartet**. [Installationsnachweis](docs/qa/device-install-build72-2026-10-17/validation.json). Zweite unabhängige Astra-Prüfung: drei weitere belegte Fehler unter LF-68/LF-48/LF-60 korrigiert. Finale Exportkopie **2.270 Root-/108 Webtests**, Lint/Produktionsbuild und separate Simulatorfälle37/32 bestanden; Transkript zusätzlich im echten WebKit geprüft. [Aktueller Astra-Prüfstand](docs/ASTRA_BUGCHECK_2026-10-17.json). Quellcommit `3f5c08469abe005fc9a014d0a0873a85af62b6d1` auf dem öffentlichen Main bestätigt und ohne Anmeldung geklont; alle401 Dateien samt ausführbaren Dateimodi bytegleich. Der [erste Prüfstand vom17.10.](docs/GITHUB_UEBERGABE_PRUEFUNG_2026-10-17.json) bleibt Historie. LF-74 und persönliche Abnahmen offen; keine neue Safari-Installation.
 
 Vor der nächsten Änderung die bestehenden Einträge **LF-33** (früher Größenschritt bei Vollbildrückkehr), **LF-56** (Zoom/Reset), **LF-70** (unter anderem offener Caption-Befund) und **LF-67** (Audioverlust nach gemischten Gesten, Bluetoothursache offen) im Backlog lesen. Diese Hinweise sind ein Einstieg in die dort gepflegten Befunde. LF-31 und LF-32 bleiben zurückgestellt. Bestandene Simulatorfälle ersetzen keine Finger-, Motion-, Ton- oder Bluetoothabnahme auf dem Gerät.
 
 Lokale QA-Aufnahmen, Rohlogs, Netzantworten, Schlüssel und Signierungsmaterial werden nicht öffentlich mitgeliefert. Deshalb sind viele historische `docs/qa/`-Links unten nur in der ursprünglichen lokalen Arbeitskopie auflösbar; die für Regressionen benötigten öffentlichen Fixtures sind enthalten. Die folgenden datierten Abschnitte bleiben als Historie erhalten. Frühere Angaben zu nicht ausgeführten Commits oder Deployments beschreiben jeweils den damaligen Auftrag.
 
-## Aktueller Quell-/Prüfstand – 17.10.2026,72
+## Historischer Motion-Quell-/Prüfstand vor Astra und Geräteinstallation – 17.10.2026,72
 
 Motionrollen, Sheets/Menüs/Thumbnail, sichtbare Vollbild-Fingerfolge, Controls-Fade sowie eng gebundene physische Quellpose/Cancel umgesetzt und automatisiert geprüft. Root2258/0/0, Web87/0/0. Gezielt positive Simulatorfälle stammen aus mehreren Bundles; die roten43-Zwischenläufe und der alte Caption40-Befund bleiben erhalten. Frühe Schrumpfstufe und Zoomreset bleiben offen. Die abschließende ruhige47-Gegenprobe bestätigt beide Ready; der vorangehende physische Grenzfall ohne Ready bleibt erhalten. Durchgehend verlässliche Bewegung und eine Hostlastursache sind nicht bewiesen.
 
 **72 nur im Simulator; auf SrTan weiterhin bestätigter71 vom16.10.** Keine neue persönliche Finger-/Haptik-/Motion-/Tonabnahme. Manuelle Signierung unverändert. Verbindlicher Status und nächste Schritte im [gemeinsamen Backlog](docs/VERBESSERUNGS_BACKLOG.md#motion-review--17102026), Belege im [QA-Bericht](docs/qa/motion-review-2026-10-17/README.md). Neue Motion.swift und uncommittete/ungetrackte Quellen sowie Git-ignorierte QA beim Macwechsel mitnehmen. Kein Commit, Push, PR oder Safari-Deployment in diesem Motionauftrag.
 
-## Aktueller Installationsstand – 16.10.2026
+## Historischer Installationsstand – 16.10.2026
 
 **Aktueller Installationsstand, 16.10.2026, 12:40 Uhr Berlin:** Langform **1.0 (71) auf SrTan installiert und normal gestartet**, Geräteinventar und laufender Prozess PID 69760 bestätigt. Neues Profil auf ausdrückliche Nutzerfreigabe mit unverändertem Zertifikat E94…F560 erstellt, gültig bis **23.10.2026 um 12:37:27 Uhr Berlin**. Zertifikatsbestand, manuelle Projekteinstellungen und Safari-Signierung unverändert. 44/44 Release-Ressourcen bytegleich, 74 Produkt-/UI-Dateien und 116 Tests unverändert; keine neue Simulatorserie. Gestriger Funktionsprüfstand 13/1 sowie Untertitel-/Motion-/Zoom-/Bluetoothbefunde und persönliche Abnahmen bleiben offen. [Installation und Nachweise](docs/qa/device-install-build71-2026-10-16/validation.json).
 
@@ -644,3 +656,9 @@ Auf SrTan installierter finaler Release **1.0 (12)**, Sequenz **3068**, App-Inve
 Einmalige Abo-Vorbereitung verlor beim Scrollen ihren Auftrag und konnte laufende Downloads wegwerfen. Jetzt 0,6 Sekunden Ruhe, erneutes Einplanen nach Interaktion, laufende Abos bleiben erhalten; Hintergrundinhalte werden verdeckt aufgebaut. Player-WebKit wird anschließend ohne ausgewähltes Video und mit gesperrten Medien vorbereitet. Weitere Watch-Seiten verwenden standardmäßig den bereits vorhandenen, identitäts-/framegeprüften Router. Erster Watch-Aufruf bleibt Vollnavigation. Home-SPA wurde auf dem Gerät verworfen: fünf Sekunden Stillstand vor Fallback; einmal auch erster Playbacktimeout. Die zusätzliche automatische Play-Anweisung wurde vollständig zurückgenommen.
 
 Finaler Gerätevergleich: vier abwechselnde Starts, Standard/Vollnavigation/Standard/Vollnavigation, gleiches Binary, acht Sekunden Vorlauf, bestehende Daten/Caches, unkontrolliertes Netz. Zweites Video: Playbackbericht Median **1,611 →0,550 s**, Medien-/Frame-Bereitschaft **1,358 →0,986 s**. Vollnavigation zeigt ihre Seitenschale früher (**0,352 gegenüber0,986 s**); keine pauschale Beschleunigung jeder sichtbaren Phase behauptet. Erstes Video beim Standard weiterhin **2,71–2,84 s** bis Wiedergabebericht. Abos verdeckt aufgebaut nach **3,24–4,82 s** ab Appinitialisierung; kein gemessener physischer Abo-Tipp. Acht native Mini/Pause/Fortsetzen/Schließen-Schritte im finalen Binary bestätigt, ohne Fallback/Timeout. DeviceHub-Computer-Use erneut Timeout; keine neue Finger-/FPS-/Offline-Abnahme. Rohmarker inklusive separat ausgeschlossener Experimente und Prüfstand: `docs/qa/player/build12-validation.json`, `docs/qa/player/build12/`. Bestehende Arbeit, Anmeldung, Cache und andere Apps erhalten; kein Commit/Upload.
+
+
+Google-Gemma-Fortsetzung18.10.2026: Build78/CPU-Absturzkorrektur installiert. Tatsächliche Prüfungen und offene Geräte-/Qualitäts-/Zeitabnahme ausschließlich im [gemeinsamen Backlog](docs/VERBESSERUNGS_BACKLOG.md#lf-39--lf-40--google-gemma4e2b--18102026). Keine GPU-Freigabe.
+
+
+Kurzfassungs-Absturzfortsetzung18.10.2026: **79 lokal gebaut/signiert/geprüft, nicht installiert;78 letzter Gerätebuild.** Auf Nutzerauftrag ohne iPhone weitergearbeitet. Normaler Kurzfassungseinstieg wieder Apple, Google aus normalem Knopf/Appstart entfernt. Verbindlicher Prüfstand, Grenzen und späterer Geräteschritt ausschließlich im [gemeinsamen Backlog](docs/VERBESSERUNGS_BACKLOG.md#lf-39--lf-40--google-gemma4e2b--18102026).

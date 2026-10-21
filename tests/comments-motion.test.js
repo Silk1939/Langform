@@ -1212,3 +1212,149 @@ test('pending2x rebases a finite old1x timeline without doubling the time before
   now=1040;old.currentTime=40;env.touch(panel.querySelector('.engagement-panel-content-wrapper'));now=1068;old.currentTime=68;panel.innerHTML=comments;await env.flush();const replacement=env.animations[1];assert.equal(replacement.currentTime,96);assert.equal(replacement.startTime,undefined);assert.equal(replacement.playbackRate,2);
   replacement.playbackRate=1;replacement.updatePlaybackRate=rate=>replacement.rates.push(rate);const count=replacement.rates.length;env.touch(panel.querySelector('.engagement-panel-content-wrapper'));assert.equal(replacement.rates.length,count,'replacement remembers the already accepted pending2x request');
 });
+
+test('reaching a settling sheet does not double the physical spring; a header contact holds its displayed pose immediately', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('h2'), surface = panel.querySelector('.engagement-panel-container');
+  dragEvent(env, header, 'pointerdown', 100, 300); dragEvent(env, header, 'pointermove', 100, 360); dragEvent(env, header, 'pointerup', 100, 360);
+  const spring = env.animations.at(-1), staleFinish = spring.onfinish, reservedHeight = surface.style.height;
+  env.pose(surface, '0px 28px');
+  dragEvent(env, header, 'pointerdown', 100, 320);
+  assert.equal(spring.cancelled, true, 'the owned header grabs the compositor before the movement threshold');
+  assert.deepEqual(spring.rates, [], 'a direct manipulation spring keeps its physical clock');
+  assert.equal(surface.style.translate, '0px 28px');
+  assert.equal(surface.style.height, reservedHeight, 'an undecided contact does not resize the scroll viewport');
+  env.advance(120); env.pose(surface, '0px 9px');
+  dragEvent(env, header, 'pointermove', 100, 323);
+  assert.equal(surface.style.translate, '0px 28px', 'subthreshold contact holds the exact contact pose');
+  dragEvent(env, header, 'pointermove', 100, 350);
+  assert.equal(surface.style.translate, '0px 58px', 'the full finger path starts at contact, not a later spring sample');
+  staleFinish(); assert.equal(surface.style.translate, '0px 58px');
+});
+
+test('a header tap or cancelled candidate resumes the held spring target without suppressing a tap or leaving styles', async t => {
+  for (const ending of ['pointerup', 'pointercancel', 'horizontal', 'multitouch']) {
+    const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+    const header = panel.querySelector('h2'), surface = panel.querySelector('.engagement-panel-container');
+    dragEvent(env, header, 'pointerdown', 100, 300); dragEvent(env, header, 'pointermove', 100, 240); dragEvent(env, header, 'pointerup', 100, 240);
+    const previous = env.animations.at(-1), target = previous.frames.at(-1).translate;
+    env.pose(surface, '0px -31px'); dragEvent(env, header, 'pointerdown', 100, 300);
+    let event;
+    if (ending === 'horizontal') event = dragEvent(env, header, 'pointermove', 150, 303);
+    else if (ending === 'multitouch') {
+      event = new env.win.Event('touchstart', { bubbles: true, cancelable: true });
+      event.touches = [{ identifier: 1 }, { identifier: 2 }]; header.dispatchEvent(event);
+    } else event = dragEvent(env, header, ending, 100, 300);
+    const resumed = env.animations.at(-1);
+    assert.notEqual(resumed, previous, ending + ' resumes rather than retaining a frozen pose');
+    assert.equal(resumed.frames[0].translate, '0px -31px');
+    assert.equal(resumed.frames.at(-1).translate, target, 'the interrupted expansion/return target is retained');
+    assert.equal(event.defaultPrevented, false, 'an unclaimed candidate preserves original tap semantics');
+    resumed.finish(); env.win.dispatchEvent(new env.win.Event('resize'));
+    assert.equal(surface.style.translate, '');
+  }
+});
+
+test('a touch in the scrolling comment body leaves a running spring and ordinary controls unchanged', async t => {
+  const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('h2'), body = panel.querySelector('.engagement-panel-content-wrapper');
+  dragEvent(env, header, 'pointerdown', 100, 300); dragEvent(env, header, 'pointermove', 100, 360); dragEvent(env, header, 'pointerup', 100, 360);
+  const spring = env.animations.at(-1), reads = env.reads(); body.scrollTop = 120;
+  const event = dragEvent(env, body, 'pointerdown', 100, 400);
+  assert.equal(spring.cancelled, false); assert.deepEqual(spring.rates, []);
+  assert.equal(body.scrollTop, 120); assert.equal(event.defaultPrevented, false);
+  assert.equal(env.reads().geometryReads, reads.geometryReads, 'list contact does not introduce layout work');
+  panel.querySelector('#reply').click(); assert.equal(spring.cancelled, false);
+});
+
+for (const delivery of ['high-rate', 'duplicate-endpoint', 'quantized-endpoint', 'quantized-reverse-endpoint', 'held-endpoint', 'coalesced-release', 'final-reversal', 'sustained-reversal']) test('expanded body release ' + delivery + ' retains velocity and the unchanged dismissal threshold', async t => {
+    const env = setup(t), panel = env.mount(); await env.flush(); env.animations[0].finish();
+    const header = panel.querySelector('h2'), surface = panel.querySelector('.engagement-panel-container'), body = panel.querySelector('.engagement-panel-content-wrapper');
+    env.win.innerHeight = 874; env.win.__langformStageInsets = { top: 62 };
+    env.rect(surface, { x: 0, y: 274.1, top: 274.1, left: 0, right: 402, bottom: 874, width: 402, height: 599.9 });
+    dragEvent(env, header, 'pointerdown', 201, 333.5);
+    dragEvent(env, header, 'pointermove', 201, 73.5, { elapsedMs: 400 });
+    dragEvent(env, header, 'pointerup', 201, 73.5, { elapsedMs: 150 }); env.animations.at(-1).finish();
+    assert.ok(Math.abs(parseFloat(surface.style.translate.split(' ')[1]) + 200.1) < .001);
+    dragEvent(env, header, 'pointerdown', 201, 133);
+    dragEvent(env, header, 'pointermove', 201, 168, { elapsedMs: 200 });
+    dragEvent(env, header, 'pointerup', 201, 168, { elapsedMs: 150 }); env.animations.at(-1).finish();
+    let closes = 0; panel.querySelector('button').addEventListener('click', () => { closes++; panel.remove(); });
+    dragEvent(env, body, 'pointerdown', 221, 393.3);
+    if (delivery === 'high-rate') {
+      for (let i = 1; i <= 125; i++) dragEvent(env, body, 'pointermove', 221, 393.3 + 375.6 * i / 125, { elapsedMs: 501 / 125 });
+    } else if (delivery === 'quantized-endpoint' || delivery === 'quantized-reverse-endpoint') {
+      const beforeEndpoint = 768.9 + (delivery === 'quantized-endpoint' ? -1 : 1) / 3;
+      for (let i = 1; i <= 30; i++) dragEvent(env, body, 'pointermove', 221, 393.3 + (beforeEndpoint - 393.3) * i / 30, { elapsedMs: 484 / 30 });
+      dragEvent(env, body, 'pointermove', 221, 768.9, { elapsedMs: 17 });
+    } else if (delivery === 'coalesced-release') {
+      dragEvent(env, body, 'pointermove', 221, 550, { elapsedMs: 208 });
+    } else {
+      dragEvent(env, body, 'pointermove', 221, 768.9, { elapsedMs: 501 });
+      if (delivery === 'duplicate-endpoint') dragEvent(env, body, 'pointermove', 221, 768.9, { elapsedMs: 16 });
+      if (delivery === 'held-endpoint') for (let i = 0; i < 8; i++) dragEvent(env, body, 'pointermove', 221, 768.9, { elapsedMs: 16 });
+      if (delivery === 'sustained-reversal') for (let i = 1; i <= 3; i++) dragEvent(env, body, 'pointermove', 221, 768.9 - 3 * i, { elapsedMs: 4 });
+    }
+    dragEvent(env, body, 'pointerup', 221, delivery === 'final-reversal' ? 740 : delivery === 'sustained-reversal' ? 759.9 : 768.9,
+      { elapsedMs: delivery === 'coalesced-release' ? 293 : delivery === 'final-reversal' ? 5 : 1 });
+    env.animations.at(-1).finish(); await env.flush();
+    assert.equal(closes, ['held-endpoint', 'final-reversal', 'sustained-reversal'].includes(delivery) ? 0 : 1, delivery + ' retains the unchanged threshold and physical release intent');
+});
+
+test('a typed comments renderer with an empty loading body owns header and body drags before network content arrives', async t => {
+  const loading = comments.replace('class="comment-item-section"', 'class="engagement-panel-comments-section"')
+    .replace('<ytm-comments-header-renderer></ytm-comments-header-renderer><button id="reply">Antworten</button>', '');
+  const env = setup(t), panel = env.push(loading, 'engagement-panel-comments-section'); await env.flush(); env.animations[0].finish();
+  const header = panel.querySelector('h2'), surface = panel.querySelector('.engagement-panel-container'), body = panel.querySelector('.engagement-panel-content-wrapper');
+  env.win.innerHeight = 874; env.win.__langformStageInsets = { top: 62 };
+  env.rect(surface, { x: 0, y: 274.1, top: 274.1, left: 0, right: 402, bottom: 874, width: 402, height: 599.9 });
+  dragEvent(env, header, 'pointerdown', 201, 333.5);
+  const small = dragEvent(env, header, 'pointermove', 201, 368.5, { elapsedMs: 200 });
+  assert.equal(small.defaultPrevented, true, 'visible known comments shell must not wait for network data to accept a header drag');
+  dragEvent(env, header, 'pointerup', 201, 368.5, { elapsedMs: 150 }); env.animations.at(-1).finish();
+  dragEvent(env, header, 'pointerdown', 201, 333.5); dragEvent(env, header, 'pointermove', 201, 73.5, { elapsedMs: 400 });
+  dragEvent(env, header, 'pointerup', 201, 73.5, { elapsedMs: 150 }); env.animations.at(-1).finish();
+  const renderer = panel.querySelector('ytm-engagement-panel-section-list-renderer');
+  assert.equal(renderer.hasAttribute('data-langform-comments-interactive'), true, 'the loading renderer clip is leased while expanded');
+  let closes = 0; panel.querySelector('button').addEventListener('click', () => { closes++; panel.remove(); });
+  dragEvent(env, body, 'pointerdown', 221, 393.3); dragEvent(env, body, 'pointermove', 221, 768.9, { elapsedMs: 501 });
+  dragEvent(env, body, 'pointerup', 221, 768.9, { elapsedMs: 1 }); env.animations.at(-1).finish(); await env.flush();
+  assert.equal(closes, 1, 'the current loading-shell X commits dismissal exactly once');
+  assert.equal(renderer.hasAttribute('data-langform-comments-interactive'), false);
+});
+
+test('typed empty comments shell retains deep hydration observation and the same entrance playhead', async t => {
+  const loading = comments.replace('class="comment-item-section"', 'class="engagement-panel-comments-section"')
+    .replace('<ytm-comments-header-renderer></ytm-comments-header-renderer><button id="reply">Antworten</button>', '');
+  const env = setup(t), panel = env.push(loading, 'engagement-panel-comments-section'); await env.flush();
+  const first = env.animations[0]; first.currentTime = 122;
+  const renderer = panel.querySelector('ytm-engagement-panel-section-list-renderer');
+  const replacement = env.doc.createElement('div'); replacement.innerHTML = loading;
+  renderer.innerHTML = replacement.firstElementChild.innerHTML; await env.flush();
+  assert.equal(env.animations.length, 2, 'a connected loading renderer keeps observing deep replacement of its moving surface');
+  assert.equal(env.animations[1].currentTime, 122); assert.equal(first.cancelled, true);
+  panel.querySelector('.engagement-panel-content-wrapper').innerHTML = '<ytm-comments-header-renderer></ytm-comments-header-renderer>';
+  await env.flush();
+  assert.equal(env.animations.length, 2, 'same-surface deep hydration never restarts its visible entrance');
+  assert.equal(env.animations[1].currentTime, 122); assert.equal(env.animations[1].cancelled, false);
+  env.animations[1].finish(); let closes = 0; panel.querySelector('button').addEventListener('click', () => { closes++; panel.remove(); });
+  panel.querySelector('button').click(); env.animations.at(-1).finish(); await env.flush(); assert.equal(closes, 1);
+});
+
+test('a known loading comments shell can close before hydration while a reused foreign panel revokes that intent', async t => {
+  const loading = comments.replace('class="comment-item-section"', 'class="engagement-panel-comments-section"')
+    .replace('<ytm-comments-header-renderer></ytm-comments-header-renderer><button id="reply">Antworten</button>', '');
+  for (const action of ['close-loading', 'reuse-foreign']) {
+    const env = setup(t), panel = env.push(loading, 'engagement-panel-comments-section'); await env.flush(); env.animations[0].finish();
+    if (action === 'reuse-foreign') {
+      panel.hidden = true; await env.flush();
+      panel.innerHTML = loading.replace('engagement-panel-comments-section', 'engagement-panel-playlist-section'); panel.hidden = false; await env.flush();
+      assert.equal(panel.hasAttribute('data-langform-comments-sheet'), false, 'a reused explicit foreign renderer cannot inherit the comments handle or entrance');
+    }
+    const count = env.animations.length; let closes = 0; panel.querySelector('button').addEventListener('click', () => { closes++; panel.remove(); });
+    panel.querySelector('button').click();
+    if (action === 'close-loading') { assert.equal(env.animations.length, count + 1, 'typed loading-shell X gets the ordinary exit'); assert.equal(closes, 0); env.animations.at(-1).finish(); }
+    else assert.equal(env.animations.length, count, 'foreign X remains immediate and undecorated');
+    await env.flush(); assert.equal(closes, 1);
+  }
+});

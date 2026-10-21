@@ -62,7 +62,10 @@ html[data-langform-fullscreen] #movie_player[data-langform-fullscreen-player] vi
   function same(current) {
     return !!(owner && current && owner.id===current.id && owner.root===current.root && owner.video===current.video &&
       owner.container===current.container && owner.ui===current.ui && owner.source===source(current.video) && owner.sourceAttribute===current.video.getAttribute('src') &&
-      owner.intrinsicWidth===current.video.videoWidth && owner.intrinsicHeight===current.video.videoHeight &&
+      // Adaptive decoding can change resolution on the same media source.
+      // Exact aspect equality preserves the contain-fit picture geometry;
+      // a changed aspect still invalidates the crop and contact projection.
+      owner.intrinsicWidth*current.video.videoHeight===owner.intrinsicHeight*current.video.videoWidth &&
       Math.abs(owner.rect.left-current.rect.left)<=1 && Math.abs(owner.rect.top-current.rect.top)<=1 &&
       Math.abs(owner.rect.width-current.rect.width)<=1 && Math.abs(owner.rect.height-current.rect.height)<=1);
   }

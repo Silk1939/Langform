@@ -230,8 +230,10 @@ export async function loadChannel(channelId: string): Promise<{ channel: Channel
           signal,
         ),
       ]);
+      const channel = mapYoutubeChannel(channelPayload, channelId);
+      if (channel.id !== channelId) throw new Error("Falsche Kanal-ID");
       const videos = await youtubeVideos(searchIds(searchPayload), signal);
-      return { channel: mapYoutubeChannel(channelPayload, channelId), videos };
+      return { channel, videos };
     });
     if (fromYoutube) return fromYoutube;
 
@@ -259,7 +261,7 @@ export async function loadChannel(channelId: string): Promise<{ channel: Channel
           },
         })),
       ],
-      (value) => value.channel.name !== "Kanal" || value.videos.length > 0,
+      (value) => value.channel.id === channelId && (value.channel.name !== "Kanal" || value.videos.length > 0),
     );
   });
 }

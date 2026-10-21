@@ -19,6 +19,45 @@ function balancedDeclaration(source, signature) {
   return source.slice(start, end);
 }
 
+test('native Suchfeldeingabe prüft vollständige Links vor dem Suchlimit und erhält normale Suchtexte', {
+  skip: process.platform !== 'darwin', timeout: 60000,
+}, () => {
+  const app = path.join(__dirname, '../ios/Langform/Langform');
+  const submit = balancedDeclaration(fs.readFileSync(path.join(app, 'NativeSearch.swift'), 'utf8'), 'func submit(');
+  const script = fs.readFileSync(path.join(app, 'SearchPolicy.swift'), 'utf8') + '\n' +
+    fs.readFileSync(path.join(app, 'ExternalYouTubeLink.swift'), 'utf8') + `
+class Search {
+ var filter = LangformSearchFilter.channels
+ var cancelled = 0
+ var submitted: [(NativeSearchSubmission, LangformSearchFilter)] = []
+ lazy var onSubmit: ((NativeSearchSubmission, LangformSearchFilter) -> Void)? = { [weak self] in self?.submitted.append(($0,$1)) }
+ func cancel() { cancelled += 1 }
+ ${submit}
+}
+func expect(_ value: Bool, _ text: String) { if !value { fatalError(text) } }
+func queryValue(_ value: NativeSearchSubmission) -> String? { if case .query(let query) = value { return query }; return nil }
+func linkValue(_ value: NativeSearchSubmission) -> URL? { if case .youtubeLink(let url) = value { return url }; return nil }
+let s=Search()
+s.submit(" https://youtu.be/aqz-KE-bpKQ?t=23&si=" + String(repeating:"x",count:300) + " ")
+expect(s.submitted.count == 1 && linkValue(s.submitted[0].0)?.absoluteString == "https://m.youtube.com/watch?v=aqz-KE-bpKQ&t=23", "full URL parsed before 200-character search limit")
+expect(s.submitted[0].1 == .channels && s.cancelled == 1, "URL preserves callback and closes keyboard")
+s.submit("  NASA Mars  ")
+expect(queryValue(s.submitted[1].0) == "NASA Mars" && s.submitted[1].1 == .channels && s.cancelled == 2,"ordinary query and filter preserved")
+s.submit("  ")
+expect(s.submitted.count == 2 && s.cancelled == 2,"empty input keeps the current search")
+s.submit(String(repeating:"q",count:300))
+expect(queryValue(s.submitted[2].0)?.count == 200,"ordinary query remains bounded")
+print("SEARCH_INPUT_FULL_URL_OK")
+`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'langform-search-input-'));
+  try {
+    const file = path.join(dir, 'Input.swift'); fs.writeFileSync(file, script);
+    const result = spawnSync('/usr/bin/xcrun', ['swift', '-module-cache-path', path.join(dir, 'cache'), file], {encoding:'utf8', timeout:50000});
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /SEARCH_INPUT_FULL_URL_OK/);
+  } finally { fs.rmSync(dir, {recursive:true, force:true}); }
+});
+
 test('echter nativer Suchrouter schützt Tickets und Overlaybesitz über Feed-, Dokument- und Lifecyclewechsel', {
   skip: process.platform !== 'darwin', timeout: 60000,
 }, t => {
@@ -27,6 +66,7 @@ test('echter nativer Suchrouter schützt Tickets und Overlaybesitz über Feed-, 
   const app = path.join(__dirname, '../ios/Langform/Langform');
   const source = fs.readFileSync(path.join(app, 'YouTubeWebView.swift'), 'utf8');
   const policy = fs.readFileSync(path.join(app, 'SearchPolicy.swift'), 'utf8');
+  const linkPolicy = fs.readFileSync(path.join(app, 'ExternalYouTubeLink.swift'), 'utf8');
   // The production method bodies run verbatim. Only UIKit presentation and
   // destination loading are passive stubs; this is not an iPhone UI/SDK test.
   const methods = ['nativeSearchChanged', 'dismissNativeSearch']
@@ -36,6 +76,12 @@ import Foundation
 import CoreFoundation
 import CoreGraphics
 ${policy}
+${linkPolicy}
+class ExternalLinkInbox {
+  static let shared = ExternalLinkInbox()
+  var links = [URL]()
+  func submit(_ text: String) throws { links.append(try ExternalYouTubeLink.parse(text).url) }
+}
 class WKNavigation {}
 class WKWebView { var url: URL?; init(_ raw: String = "https://m.youtube.com/") { url = URL(string:raw) } }
 class FeedState { var active = true, navigation: WKNavigation? = WKNavigation() }
@@ -51,13 +97,15 @@ enum UIAccessibility {
 class NativeSearchOverlay {
   enum Resize { case flexibleWidth, flexibleHeight }
   var frame = CGRect.zero, autoresizingMask: Set<Resize> = []
-  var onSubmit: ((String, LangformSearchFilter) -> Void)?, onClose: (() -> Void)?
+  var onSubmit: ((NativeSearchSubmission, LangformSearchFilter) -> Void)?, onClose: (() -> Void)?, onOpenLink: (() -> Void)?
   let query: String, filter: LangformSearchFilter, recent: [String]
   var focusCount = 0, cancelCount = 0, removeCount = 0
   init(query: String, filter: LangformSearchFilter, recent: [String]) { self.query=query; self.filter=filter; self.recent=recent }
   func focus() { focusCount += 1 }
+  func present() { focus() }
   func cancel() { cancelCount += 1 }
   func removeFromSuperview() { removeCount += 1 }
+  ${balancedDeclaration(fs.readFileSync(path.join(app, 'NativeSearch.swift'), 'utf8'), 'func submit(')}
 }
 class Stage {
   enum Mode { case closed, mini, expanded, loading }
@@ -66,6 +114,8 @@ class Stage {
   var pendingFeedSearch: (view: ObjectIdentifier, ticket: Int)?, feedSearchInFlight: Int?
   var nativeSearchOverlay: NativeSearchOverlay?, nativeSearchRecent = [String]()
   var added = 0, destinations = [URL](), forcedReloads = 0
+  var linkOpens = 0
+  lazy var onOpenLink: (() -> Void)? = { [weak self] in self?.linkOpens += 1 }
   let player = WKWebView("https://m.youtube.com/watch?v=abcdefghijk&t=17")
   func feedState(for web: WKWebView) -> FeedState? { web === feed ? state : nil }
   func addSubview(_ overlay: NativeSearchOverlay) { added += 1 }
@@ -124,7 +174,7 @@ expect(direct.nativeSearchOverlay!.focusCount == foreignFocus,"foreign document 
 let customFilter=Stage();customFilter.feed.url=URL(string:"https://m.youtube.com/results?search_query=NASA&sp=EgIQAQ%253D%253D")!
 customFilter.nativeSearchChanged(["action":"open","filter":"unwatched","href":customFilter.feed.url!.absoluteString],from:customFilter.feed)
 expect(customFilter.nativeSearchOverlay!.filter == .unwatched,"verified current native chip survives YouTube canonical parameter cleanup")
-customFilter.nativeSearchOverlay!.onSubmit?("NASA",.videos)
+customFilter.nativeSearchOverlay!.onSubmit?(.query("NASA"),.videos)
 expect(customFilter.destinations.count == 1 && customFilter.forcedReloads == 1,"explicit native Videos choice clears retained unwatched intent even when the canonical URL is already identical")
 let ticketed=Stage(); ticketed.prepareTicket(); ticketed.open(ticket:NSNumber(value:14))
 expect(ticketed.nativeSearchOverlay != nil && preservesMini(ticketed),"matching ticket opens without replacing Watch")
@@ -132,8 +182,9 @@ print("SEARCH_TICKET_AND_ENTRY_GUARDS_OK")
 
 let replaced=Stage(); replaced.open(); let old=replaced.nativeSearchOverlay!
 replaced.dismissNativeSearch(); replaced.open(); let replacement=replaced.nativeSearchOverlay!
-old.onSubmit?("old query",.channels); old.onClose?()
+old.onSubmit?(.query("old query"),.channels); old.onClose?(); old.onOpenLink?()
 expect(replaced.nativeSearchOverlay === replacement && replaced.destinations.isEmpty,"old callbacks cannot consume replacement overlay")
+expect(replaced.linkOpens == 0,"retired overlay cannot open external link input")
 expect(old.cancelCount == 1 && old.removeCount == 1 && replacement.cancelCount == 0,"old callback cannot cancel new surface")
 replacement.onClose?(); expect(replaced.nativeSearchOverlay == nil && replacement.cancelCount == 1 && replacement.removeCount == 1,"current close cancels and removes exactly its own surface")
 
@@ -151,15 +202,59 @@ for item in 0..<10 {
  case 8:UIApplication.shared.applicationState = .background
  default:s.dismissNativeSearch()
  }
- overlay.onSubmit?("stale",.unwatched)
+ overlay.onSubmit?(.query("stale"),.unwatched)
+ let linkCount = ExternalLinkInbox.shared.links.count
+ overlay.onSubmit?(.youtubeLink(URL(string:"https://youtu.be/aqz-KE-bpKQ?t=23")!),.videos)
+ overlay.onOpenLink?()
  expect(s.destinations.isEmpty && s.nativeSearchRecent == ["retained"],"stale submission cannot navigate or record private query " + String(item))
+ expect(s.linkOpens == 0,"stale link action cannot open native sheet " + String(item))
+ expect(ExternalLinkInbox.shared.links.count == linkCount,"stale URL submission cannot replace current media " + String(item))
  UIApplication.shared.applicationState = .active
 }
 print("SEARCH_OVERLAY_FEED_DOCUMENT_LIFECYCLE_LEASES_OK")
 
+let linkEntry=Stage();linkEntry.open();let linkForm=linkEntry.nativeSearchOverlay!
+linkForm.onOpenLink?()
+expect(linkEntry.linkOpens == 1 && linkEntry.nativeSearchOverlay == nil && linkForm.cancelCount == 1 && linkForm.removeCount == 1,"current link action dismisses its own search before opening the native sheet")
+linkForm.onOpenLink?()
+expect(linkEntry.linkOpens == 1 && linkEntry.destinations.isEmpty && preservesMini(linkEntry),"repeated old link action neither reopens nor changes current player/feed")
+
+let pasted=Stage(); pasted.nativeSearchRecent=["retained"]; pasted.open()
+let pastedForm=pasted.nativeSearchOverlay!
+let linksBefore=ExternalLinkInbox.shared.links.count
+pastedForm.submit("https://youtu.be/aqz-KE-bpKQ?t=23&si=remove")
+expect(ExternalLinkInbox.shared.links.count == linksBefore+1 && ExternalLinkInbox.shared.links.last!.absoluteString == "https://m.youtube.com/watch?v=aqz-KE-bpKQ&t=23","pasted URL goes through normal link inbox with its timestamp")
+expect(pasted.nativeSearchOverlay == nil && pasted.destinations.isEmpty && pasted.nativeSearchRecent == ["retained"],"pasted link closes search without becoming a result query or recent search")
+pastedForm.submit("https://youtu.be/M7lc1UVf-VE")
+expect(ExternalLinkInbox.shared.links.count == linksBefore+1,"retired search cannot replay URL submission")
+print("SEARCH_PASTED_URL_OWNERSHIP_OK")
+
+// Execute the unchanged production NativeSearch.submit together with the
+// unchanged production stage callback. The full URL is invalid; its first
+// 200 characters alone look like a valid, different opening intention.
+for raw in [
+ "https://youtu.be/aqz-KE-bpKQ?si=" + String(repeating:"x",count:250) + "&t=120&t=30",
+ "https://www.youtube.com/watch?v=aqz-KE-bpKQ&si=" + String(repeating:"x",count:250) + "&v=M7lc1UVf-VE"
+] {
+ var rejectedFull = false
+ do { _ = try ExternalYouTubeLink.parse(raw) } catch { rejectedFull = true }
+ expect(rejectedFull,"full duplicated v/t URL is rejected before any truncation")
+ expect((try? ExternalYouTubeLink.parse(LangformSearchPolicy.query(raw))) != nil,"the bounded prefix alone would incorrectly be a valid URL")
+ let s=Stage(); s.open(); let entry=s.nativeSearchOverlay!
+ let before=ExternalLinkInbox.shared.links.count
+ entry.submit(raw)
+ expect(ExternalLinkInbox.shared.links.count == before,"invalid full URL can never regain link semantics after the query limit")
+ expect(s.destinations.count == 1 && s.destinations[0].path == "/results","rejected URL follows the existing bounded ordinary-query route")
+ let query=URLComponents(url:s.destinations[0],resolvingAgainstBaseURL:false)!.queryItems!.first(where:{$0.name == "search_query"})!.value
+ expect(query == LangformSearchPolicy.query(raw),"bounded query stays literal and never becomes another video or time")
+ expect(s.nativeSearchOverlay == nil && preservesMini(s),"rejected full URL query preserves media and closes only its own search")
+}
+print("SEARCH_REJECTED_FULL_URL_NEVER_REINTERPRETED_OK")
+
+
 let legit=Stage(); legit.nativeSearchRecent=["NASA + Mars & #1 / 東京 😃"] + (0..<22).map { "query-" + String($0) }
 legit.open(); let form=legit.nativeSearchOverlay!
-form.onSubmit?("NASA + Mars & #1 / 東京 😃",.channels)
+form.onSubmit?(.query("NASA + Mars & #1 / 東京 😃"),.channels)
 expect(legit.destinations.count == 1 && legit.nativeSearchOverlay == nil && form.cancelCount == 1 && form.removeCount == 1,"legitimate submission routes once and closes its own UI")
 let parts=URLComponents(url:legit.destinations[0],resolvingAgainstBaseURL:false)!
 expect(parts.scheme == "https" && parts.host == "m.youtube.com" && parts.path == "/results","submission stays mobile YouTube")
@@ -184,12 +279,13 @@ print("NATIVE_SEARCH_ROUTING_OK assertions=" + String(assertions))
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'langform-native-search-routing-'));
   try {
     const file = path.join(dir, 'SearchRouting.swift'); fs.writeFileSync(file, script);
-    const result = spawnSync(swift.stdout.trim(), [file], { encoding: 'utf8', timeout: 50000 });
+    const result = spawnSync(swift.stdout.trim(), ['-module-cache-path', path.join(dir, 'cache'), file], { encoding: 'utf8', timeout: 50000 });
     assert.equal(result.error, undefined, String(result.error));
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /SEARCH_TICKET_AND_ENTRY_GUARDS_OK/);
     assert.match(result.stdout, /SEARCH_OVERLAY_FEED_DOCUMENT_LIFECYCLE_LEASES_OK/);
     assert.match(result.stdout, /SEARCH_LITERAL_QUERY_FILTER_AND_MINI_PRESERVED_OK/);
+    assert.match(result.stdout, /SEARCH_REJECTED_FULL_URL_NEVER_REINTERPRETED_OK/);
     assert.match(result.stdout, /NATIVE_SEARCH_ROUTING_OK assertions=\d+/);
     t.diagnostic(result.stdout.trim());
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }

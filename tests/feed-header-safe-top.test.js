@@ -4,10 +4,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
 const source = fs.readFileSync(path.join(__dirname, '../ios/Langform/Langform/ViewportLayout.js'), 'utf8');
-function page(t, route='/', modern=false) {
+function page(t, route='/', modern=false, authorCSS='') {
   const dom = new JSDOM(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
   ytm-mobile-topbar-renderer,.ytTopBarViewModelHost {position:fixed;top:-48px;transform:translateY(-48px);background:transparent;z-index:4}
   header.mobile-topbar-header {position:relative;height:48px;background:transparent}
+  ${authorCSS}
   </style></head><body><ytm-app>${modern ? '<div class="ytTopBarViewModelHost out"><button id="search">Suche</button></div>' : '<ytm-mobile-topbar-renderer class="out"><header class="mobile-topbar-header"><button id="search">Suche</button></header></ytm-mobile-topbar-renderer>'}<div id="feed">Feedinhalt</div></ytm-app></body></html>`, {url:'https://m.youtube.com'+route,runScripts:'outside-only'});
   t.after(()=>dom.window.close());
   const win=dom.window,doc=win.document;
@@ -29,6 +30,28 @@ test('Moderner mobiler Header bleibt nach Out/Hydration erreichbar und erhält k
  p.header().outerHTML='<div class="ytTopBarViewModelHost out" style="height:48px"><button id="search">Neu</button></div>';await p.flush();
  assert.equal(p.css(p.header()).top,'var(--lf-safe-top)');assert.equal(p.css(p.header()).height,'48px');assert.equal(p.doc.querySelectorAll('#langform-feed-safe-top-cover').length,1);
 });
+for (const modern of [false,true]) {
+ test('Feedkopf bleibt auch mit individuellen Scrolltransformationen direkt an der SafeArea: '+(modern?'ViewModel':'Renderer'),async t=>{
+  const p=page(t,'/feed/subscriptions',modern,'ytm-mobile-topbar-renderer.scroll-pose,.ytTopBarViewModelHost.scroll-pose {translate:0px 48px;scale:1 .98;rotate:1deg;transition:top 350ms,translate 350ms}');await p.flush();
+  // Individual transform properties compose after `transform`. Resetting the
+  // legacy transform alone leaves this supported author scroll pose active.
+  // JSDOM does not model !important against inline author declarations. Keep
+  // the author sheet before the injected sheet; WebKit separately tests pixels.
+  p.header().classList.add('scroll-pose','out');
+  const pinned=()=>{
+   const css=p.css(p.header());
+   assert.equal(css.top,'var(--lf-safe-top)');assert.equal(css.transform,'none');
+   assert.equal(css.translate,'none','scroll translation must not detach the fixed header from its inset');
+   assert.equal(css.scale,'none');assert.equal(css.rotate,'none');
+   assert.equal(css.transition,'none','author scroll transitions cannot animate a native safe-area correction');
+  };
+  pinned();p.header().classList.replace('out','in');pinned();
+  p.stage({top:0,left:59,right:59,bottom:21});pinned();assert.equal(p.cover(),null);
+  p.stage({top:59});pinned();assert.ok(p.cover());
+  p.doc.documentElement.setAttribute('data-langform-fullscreen','');
+  assert.equal(p.css(p.header()).translate,'0px 48px','fullscreen releases the author pose');
+ });
+}
 test('FeedSafeTop bleibt mit Mini, reagiert auf Rotation und wird in Fullscreen freigegeben',async t=>{
  const p=page(t);await p.flush();p.stage({nativeMini:true});await p.flush();assert.ok(p.cover());
  p.doc.documentElement.setAttribute('data-langform-fullscreen','');await p.flush();assert.equal(p.cover(),null);

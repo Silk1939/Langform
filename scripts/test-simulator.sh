@@ -7,6 +7,10 @@ task_device="${LANGFORM_SIMULATOR_UDID:-}"
 task_iterations=1
 task_output=""
 task_only=""
+task_package_args=()
+if [[ -n "${LANGFORM_SOURCE_PACKAGES_DIRECTORY:-}" ]]; then
+  task_package_args=(-clonedSourcePackagesDirPath "$LANGFORM_SOURCE_PACKAGES_DIRECTORY")
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device) task_device="$2"; shift 2 ;;
@@ -65,6 +69,7 @@ xcrun simctl bootstatus "$task_device" -b > "$task_output/boot.log" 2>&1
 
 printf 'Building Langform for Simulator %s.\n' "$task_device"
 xcodebuild build -quiet -project ios/Langform/Langform.xcodeproj -scheme Langform \
+  ${task_package_args[@]+"${task_package_args[@]}"} \
   -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,id=$task_device" \
   -derivedDataPath "$task_derived" CODE_SIGNING_ALLOWED=NO \
   > "$task_output/app-build.log" 2>&1

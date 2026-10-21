@@ -57,18 +57,24 @@ export function HomeFeed() {
     let armed = false;
     let distance = 0;
 
+    const onCancel = () => {
+      armed = false;
+      distance = 0;
+      setPull(0);
+    };
     const onStart = (event: TouchEvent) => {
-      if (el.scrollTop > 2 || controllerRef.current || event.touches.length !== 1) return;
+      if (el.scrollTop > 2 || controllerRef.current || event.touches.length !== 1) {
+        onCancel();
+        return;
+      }
       armed = true;
       startY = event.touches[0]?.clientY ?? 0;
       distance = 0;
     };
     const onMove = (event: TouchEvent) => {
       if (!armed) return;
-      if (el.scrollTop > 2) {
-        armed = false;
-        distance = 0;
-        setPull(0);
+      if (el.scrollTop > 2 || event.touches.length !== 1) {
+        onCancel();
         return;
       }
       const y = event.touches[0]?.clientY ?? startY;
@@ -76,18 +82,11 @@ export function HomeFeed() {
       if (distance > 8) event.preventDefault();
       setPull(Math.min(distance, 128));
     };
-    const onEnd = () => {
-      if (armed && distance > 72) {
+    const onEnd = (event: TouchEvent) => {
+      if (armed && event.touches.length === 0 && distance > 72) {
         refresh();
       }
-      armed = false;
-      distance = 0;
-      setPull(0);
-    };
-    const onCancel = () => {
-      armed = false;
-      distance = 0;
-      setPull(0);
+      onCancel();
     };
 
     el.addEventListener("touchstart", onStart, { passive: true });

@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-22",
+  "repository": "https://github.com/Silk1939/Langform",
+  "status": "prepared_for_publication",
+  "scope": [
+    "Native offline library and external link intake",
+    "Local Gemma CPU runtime, model file validation, fresh runtime cache leases and associated tests",
+    "Summary bridge lifecycle and web request, channel identity, Short reclassification and refresh fixes",
+    "Updated developer setup and central backlog"
+  ],
+  "currentPublicationChecks": {
+    "web": {
+      "files": 17,
+      "passed": 132,
+      "failed": 0,
+      "skipped": 0
+    },
+    "package": {
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0
+    },
+    "diffCheck": "passed",
+    "candidateSecretPatternScan": "no matches; targeted patterns only"
+  },
+  "reusedNativeVerification": {
+    "date": "2026-10-20",
+    "sourceFilesCompared": 53,
+    "changedComparedSources": [],
+    "bundleResourceSourcesCompared": 44,
+    "changedResourceSources": [],
+    "focusedRegressionGroups": {
+      "beforeNewBridgeFix": [
+        59,
+        115
+      ],
+      "afterBridgeFix": [
+        73,
+        9
+      ],
+      "note": "Groups overlap; do not add as distinct tests."
+    },
+    "simulator": {
+      "case54": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "case57": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    "newFullRootSuiteRun": false,
+    "newBuildOrSimulatorRun": false
+  },
+  "deliveryState": {
+    "nativeSourceBuild": 93,
+    "lastConfirmedInstalledIPhoneBuild": 91,
+    "normalIPhoneGemmaAcceptance": false,
+    "semanticQualityApproved": false,
+    "safariLocalVersion": "1.0.11 (16)",
+    "personalAcceptance": "open; central backlog is authoritative"
+  },
+  "excluded": [
+    "Local QA recordings, captures and device/account logs",
+    "Model weights and runtime caches",
+    "Apple signing keys, certificates and provisioning profiles",
+    "Generated personal signed shortcut under outputs/",
+    "Private WhatsApp recipient and message records"
+  ],
+  "backlog": "docs/VERBESSERUNGS_BACKLOG.md",
+  "limits": [
+    "This is a source handoff; it is not a working-Gemma or whole-app acceptance claim.",
+    "Existing historical QA links intentionally refer to local files absent from public clone.",
+    "Historical alternative-model evaluators can require excluded local manifests and are not standard tests.",
+    "LF-74 dependency advisory remains open according to the last recorded investigation."
+  ]
+}

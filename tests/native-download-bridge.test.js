@@ -25,6 +25,11 @@ test('Shipping Downloadbridge schützt späte Quellen und den Offlinebesitz der 
   const source = fs.readFileSync(path.join(native, 'YouTubeWebView.swift'), 'utf8');
   const snapshot = fs.readFileSync(path.join(native, 'SystemMedia.swift'), 'utf8').split('/// WebKit')[0].replace('import MediaPlayer', '').replace('import UIKit', '');
   const policy = fs.readFileSync(path.join(native, 'DownloadSource.swift'), 'utf8');
+  const externalPolicy = fs.readFileSync(path.join(native, 'ExternalYouTubeLink.swift'), 'utf8');
+  const acceptExternalLink = declaration(source, 'func acceptExternalLink(');
+  const makeController = declaration(source, 'func makeUIViewController(');
+  const updateController = declaration(source, 'func updateUIViewController(');
+  const offlinePlayback = declaration(source, 'func setOfflinePlaybackActive(');
   const request = declaration(source, 'func requestDownloads(');
   const cancelDownload = declaration(source, 'private func cancelDownloadSourceRequest(').replace('private func', 'func');
   const loading = declaration(source, 'private func setDownloadSourceLoading(').replace('private func', 'func');
@@ -35,7 +40,7 @@ test('Shipping Downloadbridge schützt späte Quellen und den Offlinebesitz der 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'langform-download-bridge-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'test.swift');
-  fs.writeFileSync(file, `${policy}\n${snapshot}\n
+  fs.writeFileSync(file, `${policy}\n${externalPolicy}\n${snapshot}\n
 class WebView {
   var url: URL? = URL(string:"https://m.youtube.com/watch?v=abcdefghijk")
   var replies: [(Any?, Error?) -> Void] = [], commands: [String] = [], pauses = 0, downloadLoading=false
@@ -47,19 +52,32 @@ class WebView {
   }
   func pauseAllMediaPlayback(completionHandler:(()->Void)?) { pauses += 1; completionHandler?() }
 }
-enum YouTubeWebView {
+struct YouTubeWebView {
+  struct Context {}
+  var unreachable:Bool {get {false} nonmutating set {}}
+  var reloadToken=0, downloadRequestToken=0
+  var offlinePlaybackActive=false
+  var externalLinkRequest:ExternalLinkInbox.Request?
+  var onFullscreen:((Bool)->Void)?, onOpenLink:(()->Void)?, onSummarySetup:(()->Void)?
+  var onDownloads:((DownloadSource?,String?,@escaping(Bool)->Void)->Void)?
+  var onOfflinePlaybackControl:((@escaping(Bool)->Void)->Void)?
   static func videoID(_ url:URL?)->String? { guard let url else{return nil}; return URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first{$0.name=="v"}?.value }
+  ${makeController}
+  ${updateController}
 }
+class PlayerStageController {let stage=Stage()}
 class Media {
   var clears=0, received=0
   func clear(){clears += 1}
   func receive(_ body:[String:Any],expectedID:String){received += 1}
 }
 class DownloadSourceResolver {
-  var hold=false, cancellations=0
+  var hold=false, cancellations=0, resolutions=0
   var pending:[(Result<DownloadSource,Error>)->Void]=[]
-  func cancel(){cancellations += 1}
+  var onCancel:(()->Void)?
+  func cancel(){cancellations += 1;let callback=onCancel;onCancel=nil;callback?()}
   func resolve(_ snapshot:[String:Any],expectedVideoID:String,completion:@escaping(Result<DownloadSource,Error>)->Void){
+    resolutions += 1
     let result=Result {try DownloadSourcePolicy.assessment(snapshot,expectedVideoID:expectedVideoID)}
     if hold {pending.append(completion)} else {completion(result)}
   }
@@ -68,6 +86,9 @@ struct Origin { var protocolName="https", host="m.youtube.com"; var \`protocol\`
 struct Frame { var securityOrigin=Origin() }
 struct Message { var webView:WebView?, frameInfo=Frame(), body:Any }
 struct FeedState {var active=true}
+struct ExternalLinkInbox {
+  struct Request {let id=UUID();let link:ExternalYouTubeLink}
+}
 class Stage {
   enum Mode {case closed,loading,expanded,mini}
   var mode=Mode.expanded, loadTicket=1, loadingVideoID:String?
@@ -76,14 +97,34 @@ class Stage {
   var downloadSourceResolver=DownloadSourceResolver(), downloadSourceRequestGeneration=0, downloadSourceLoading=false
   var sourceLoading:Bool {player?.downloadLoading == true}
   var customFullscreenID:String?, playerOverlayOpen=false
+  var feed:WebView?=WebView(), acceptedExternalLinkID:UUID?, lastWatchURL:URL?
+  var reloadToken=0, downloadRequestToken=0, starts=0, reloads=0
+  var onUnreachable:((Bool)->Void)?, onFullscreen:((Bool)->Void)?
+  var onOpenLink:(()->Void)?, onSummarySetup:(()->Void)?
+  func start(){starts += 1}
+  func reload(){reloads += 1}
+  var reusedExternalWatch=false
+  func cancelPendingFeedSearch(){}
+  func discardFeedOpening(){}
+  func closePlayer(){mode = .closed}
+  func showInFeed(_ url:URL){}
+  func openWatch(_ url:URL,userInitiated:Bool){
+    // Preserve the ordinary same-video shortcut without changing the ticket or
+    // player identity: stale-source safety must come from real link admission.
+    reusedExternalWatch = mode != .closed && YouTubeWebView.videoID(player?.url)==YouTubeWebView.videoID(url)
+    if reusedExternalWatch {return}
+    loadTicket += 1;lastWatchURL=url
+  }
   var backgroundTransitions:[String]=[]
   func watchBackgroundCategoryTransition(_ phase:String){backgroundTransitions.append(phase)}
   func feedState(for view:WebView)->FeedState? {nil}
   var onDownloads:((DownloadSource?,String?,@escaping(Bool)->Void)->Void)?
   ${request}
+  ${offlinePlayback}
   ${cancelDownload}
   ${loading}
   ${command}
+  ${acceptExternalLink}
   func receive(_ message:Message){${handler}}
   func receiveDownload(_ message:Message){${downloadHandler}}
 }
@@ -130,6 +171,7 @@ stage.requestDownloads();a.replies.removeFirst()(available("abcdefghijk"),nil)
 expect(accepted==nil,"wrong source ID rejected by native policy")
 ownership?(true)
 expect(stage.systemMediaSuspendedForOffline && stage.systemMedia.clears==1 && a.pauses==1,"offline playback pauses all WebKit media and removes remote owner")
+expect(stage.feed?.pauses==1,"download ownership pauses feed media too")
 expect(stage.backgroundTransitions.last=="cancel","offline ownership also retires the previous background lease")
 stage.receive(Message(webView:a,body:["kind":"state","playing":true]))
 expect(stage.systemMedia.received==0 && stage.systemMediaSuspendedForOffline,"late playing callback cannot steal offline system card")
@@ -191,6 +233,111 @@ for phase in ["javascript","resolver"] {
   resolving.downloadSourceResolver.pending.removeFirst()(.success(validSource))
   expect(!web.downloadLoading && !resolving.downloadSourceLoading,"original resolution retains its ordinary completion: "+phase)
 }
+for mode in [Stage.Mode.expanded,.mini] {
+  for phase in ["javascript","resolver","synchronous-cancel"] {
+    let linking=Stage(), web=linking.player!
+    linking.mode=mode;linking.downloadSourceResolver.hold=true
+    var latePresentations=0
+    linking.onDownloads={_,_,_ in latePresentations += 1}
+    linking.requestDownloads()
+    if phase != "javascript" {web.replies.removeFirst()(available("abcdefghijk"),nil)}
+    var lateResolution:((Result<DownloadSource,Error>)->Void)?
+    if phase != "javascript" {lateResolution=linking.downloadSourceResolver.pending.removeFirst()}
+    if phase=="synchronous-cancel" {
+      linking.downloadSourceResolver.onCancel={lateResolution?(.success(validSource))}
+    }
+    let ticket=linking.loadTicket
+    let link=ExternalLinkInbox.Request(link:try! ExternalYouTubeLink.parse("https://youtu.be/abcdefghijk?t=42"))
+    linking.acceptExternalLink(link)
+    expect(linking.reusedExternalWatch && linking.loadTicket==ticket && linking.player === web,"same-video link preserves player and load ticket: "+phase)
+    if phase=="javascript" {
+      web.replies.removeFirst()(available("abcdefghijk"),nil)
+      while !linking.downloadSourceResolver.pending.isEmpty {
+        linking.downloadSourceResolver.pending.removeFirst()(.success(validSource))
+      }
+    }
+    else if phase=="resolver" {lateResolution?(.success(validSource))}
+    expect(latePresentations==0 && linking.downloadSourceResolver.pending.isEmpty,"old download cannot reopen SwiftUI sheet after same-video link: "+phase)
+    expect(!web.downloadLoading && !linking.downloadSourceLoading,"accepted link retires download loading before same-video shortcut: "+phase)
+  }
+}
+for rejection in ["nil","duplicate","unstarted","unsafe"] {
+  let linking=Stage(), web=linking.player!
+  linking.downloadSourceResolver.hold=true
+  var presentations=0
+  linking.onDownloads={_,_,_ in presentations += 1}
+  linking.requestDownloads();web.replies.removeFirst()(available("abcdefghijk"),nil)
+  let link=ExternalLinkInbox.Request(link:try! ExternalYouTubeLink.parse("https://youtu.be/abcdefghijk?t=42"))
+  if rejection=="duplicate" {linking.acceptedExternalLinkID=link.id}
+  if rejection=="unstarted" {linking.feed=nil}
+  let cancellations=linking.downloadSourceResolver.cancellations
+  if rejection=="nil" {linking.acceptExternalLink(nil)}
+  else if rejection=="unsafe" {
+    linking.acceptExternalLink(ExternalLinkInbox.Request(link:ExternalYouTubeLink(url:URL(string:"https://evil.invalid/watch?v=abcdefghijk")!,destination:.video)))
+  } else {linking.acceptExternalLink(link)}
+  expect(linking.downloadSourceResolver.cancellations==cancellations && linking.sourceLoading,"rejected or duplicate link preserves current download request: "+rejection)
+  linking.downloadSourceResolver.pending.removeFirst()(.success(validSource))
+  expect(presentations==1 && !linking.sourceLoading,"original download completion remains valid after link rejection: "+rejection)
+}
+// Execute the shipping representable entry point: the native library receives
+// ownership independently of requestDownloads(), even before a watch exists.
+var reconnectControl:((Bool)->Void)?
+var reconnectView=YouTubeWebView(offlinePlaybackActive:true,onOfflinePlaybackControl:{reconnectControl=$0})
+let reconnectedController=reconnectView.makeUIViewController(context:YouTubeWebView.Context())
+let reconnected=reconnectedController.stage, reconnectWeb=reconnected.player!, reconnectFeed=reconnected.feed!
+expect(reconnectControl==nil && reconnected.systemMediaSuspendedForOffline,"a stage mounted during local playback is suspended synchronously before callback delivery")
+expect(reconnected.systemMedia.clears==1 && reconnectWeb.pauses==1 && reconnectFeed.pauses==1 && reconnected.backgroundTransitions == ["cancel"],"reconnect mount pauses existing web owners once")
+let reconnectDeadline=Date(timeIntervalSinceNow:1)
+while reconnectControl==nil && Date()<reconnectDeadline {RunLoop.main.run(until:Date(timeIntervalSinceNow:0.01))}
+expect(reconnectControl != nil,"reconnect callback arrives after synchronous suspension")
+reconnectControl?(true)
+reconnectView.updateUIViewController(reconnectedController,context:YouTubeWebView.Context())
+expect(reconnected.systemMedia.clears==1 && reconnectWeb.pauses==1 && reconnectFeed.pauses==1 && reconnected.backgroundTransitions == ["cancel"],"callback state replay and unchanged SwiftUI update do not pause or retire ownership twice")
+reconnectView.offlinePlaybackActive=false
+reconnectView.updateUIViewController(reconnectedController,context:YouTubeWebView.Context())
+reconnectControl?(false)
+expect(!reconnected.systemMediaSuspendedForOffline && reconnectWeb.commands == ["window.__langformPublishSystemMedia && window.__langformPublishSystemMedia()"] && reconnectFeed.commands.isEmpty,"inactive SwiftUI update refreshes metadata once without resuming either web view")
+expect(reconnected.downloadSourceResolver.resolutions==0 && reconnected.downloadSourceResolver.cancellations==0 && reconnected.reloads==0 && reconnectWeb.replies.isEmpty,"reconnect ownership handover never resolves a source or reloads the watch")
+for currentMode in [Stage.Mode.closed,.expanded,.mini] {
+  var libraryControl:((Bool)->Void)?
+  var deliveries=0, downloadPresentations=0
+  let view=YouTubeWebView(
+    onDownloads:{_,_,_ in downloadPresentations += 1},
+    onOfflinePlaybackControl:{libraryControl=$0;deliveries += 1}
+  )
+  let controller=view.makeUIViewController(context:YouTubeWebView.Context())
+  let native=controller.stage
+  native.mode=currentMode
+  native.feed?.url=nil
+  if currentMode == .closed {native.player=nil}
+  expect(libraryControl==nil && deliveries==0,"library ownership is delivered after representable creation")
+  let deadline=Date(timeIntervalSinceNow:1)
+  while libraryControl==nil && Date()<deadline {RunLoop.main.run(until:Date(timeIntervalSinceNow:0.01))}
+  expect(deliveries==1 && native.starts==1,"native library gets one control without page readiness")
+  let web=native.player, feed=native.feed!
+  libraryControl?(true)
+  expect(native.systemMediaSuspendedForOffline && native.systemMedia.clears==1 && native.backgroundTransitions == ["cancel"],"library retires web system and background owners")
+  expect(feed.pauses==1 && (web==nil || web?.pauses==1),"library pauses feed and any watch without loading a source")
+  if let web {
+    native.receive(Message(webView:web,body:["kind":"state","playing":true]))
+    native.systemPlaybackCommand(id:"abcdefghijk",action:"play")
+    expect(native.systemMedia.received==0 && web.commands.isEmpty,"late web state and queued remote play cannot steal library ownership")
+  }
+  libraryControl?(false)
+  expect(!native.systemMediaSuspendedForOffline,"library dismissal releases the remote suspension")
+  let expectedCommands=currentMode == .closed ? [] : ["window.__langformPublishSystemMedia && window.__langformPublishSystemMedia()"]
+  expect((web?.commands ?? [])==expectedCommands && feed.commands.isEmpty,"dismissal only refreshes paused watch metadata and never resumes playback")
+  expect(downloadPresentations==0 && native.downloadSourceResolver.resolutions==0 && native.downloadSourceResolver.cancellations==0 && (web?.replies.isEmpty ?? true),"direct library ownership never requests or resolves a network download source")
+}
+var retiredLibraryControl:((Bool)->Void)?
+var retiredController:PlayerStageController?=YouTubeWebView(onOfflinePlaybackControl:{retiredLibraryControl=$0}).makeUIViewController(context:YouTubeWebView.Context())
+weak var retiredStage:Stage?=retiredController?.stage
+let retirementDeadline=Date(timeIntervalSinceNow:1)
+while retiredLibraryControl==nil && Date()<retirementDeadline {RunLoop.main.run(until:Date(timeIntervalSinceNow:0.01))}
+expect(retiredLibraryControl != nil,"lifetime regression obtains the actual native callback")
+retiredController=nil
+expect(retiredStage==nil,"retained library control does not retain a retired web stage")
+retiredLibraryControl?(true);retiredLibraryControl?(false)
 print("DOWNLOAD_BRIDGE_IDENTITY_AND_OFFLINE_OWNERSHIP_OK")
 `);
   const result = spawnSync('/usr/bin/xcrun', ['swift', file], { encoding:'utf8', timeout:55000 });

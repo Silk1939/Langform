@@ -12,7 +12,7 @@ vi.mock("@/components/app-shell", () => ({ useAppShell: () => ({ ...context, now
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams({ q: "Natur" }) }));
 vi.mock("@/components/ui/input", () => ({ Input: (props: object) => createElement("input", props) }));
 const video = { id: "abcdefghijk", title: "Naturfilm", channelName: "Arte", channelId: "", description: "", durationSeconds: 600, viewCount: null, publishedAt: null, publishedText: "" };
-const channel = { id: "kanal", name: "Arte", description: "", subscriberCount: null };
+const channel = { id: `UC${"b".repeat(22)}`, name: "Arte", description: "", subscriberCount: null };
 
 vi.mock("@/components/feed", () => ({
   Feed: ({ videos }: { videos: { title: string }[] }) => createElement("div", null, videos.map((video) => video.title).join(",")),
@@ -110,7 +110,7 @@ describe("Erreichbares Wiederholen nach Verbindungsstillstand", () => {
     { channel: { id: "kanal", name: "Arte", description: "", subscriberCount: null }, videos: [null] },
   ])("zeigt bei einer unvollständigen Kanalantwort Wiederholen statt einer dauerhaften Ladehülle: %j", async (body) => {
     const fetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(body)))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ channel: { id: "kanal", name: "Arte", description: "", subscriberCount: null }, videos: [] })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ channel, videos: [] })));
     vi.stubGlobal("fetch", fetch);
     await act(async () => root.render(createElement(ChannelView, { id: `UC${"b".repeat(22)}` })));
     expect(host.querySelector('[aria-busy="true"]')).toBeNull();
@@ -153,7 +153,7 @@ describe("Erreichbares Wiederholen nach Verbindungsstillstand", () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementationOnce((_, options) => {
       signal = options.signal;
       return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
-    }).mockResolvedValueOnce(new Response(JSON.stringify({ channel: { ...channel, name: "Neuer Kanal" }, videos: [] }))));
+    }).mockResolvedValueOnce(new Response(JSON.stringify({ channel: { ...channel, id: `UC${"c".repeat(22)}`, name: "Neuer Kanal" }, videos: [] }))));
     await act(async () => root.render(createElement(ChannelView, { id: `UC${"b".repeat(22)}` })));
     await act(async () => root.render(createElement(ChannelView, { id: `UC${"c".repeat(22)}` })));
     expect(signal.aborted).toBe(true);

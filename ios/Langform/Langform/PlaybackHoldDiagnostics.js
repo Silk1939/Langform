@@ -428,6 +428,13 @@
       motion.state=/^(idle|running|paused|finished)$/.test(value.motion.state || '')?value.motion.state:'none';
       gestureTrace[gestureTrace.length-1].motion=motion;
     }
+    if(value.motion && value.phase==='release') {
+      var release={};
+      ['velocity','velocityAge','projected'].forEach(function(key){
+        release[key]=Number.isFinite(value.motion[key]) && Math.abs(value.motion[key])<1000000 ? Math.round(value.motion[key]*1000)/1000 : null;
+      });
+      gestureTrace[gestureTrace.length-1].motion=release;
+    }
     if(gestureTrace.length>32)gestureTrace.shift();
   };
   function describe(node) {

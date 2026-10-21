@@ -92,7 +92,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
 #langform-fullscreen-ui .lf-fs-speed-status { margin:0; padding:4px 12px 12px; font-size:12px; line-height:1.4; color:#ddd; }
 #langform-fullscreen-ui .lf-fs-speed-panel[data-reduced-motion] { animation:none; }
 @keyframes lf-fs-speed-enter { from { opacity:0; transform:translateY(6px) scale(.98); } to { opacity:1; transform:none; } }
-#langform-fullscreen-ui input { position:relative; z-index:1; display:block; -webkit-appearance:none; appearance:none; width:100%; margin:0; padding:0; border:0; height:44px; background:transparent; cursor:pointer; }
+#langform-fullscreen-ui input { position:relative; z-index:1; display:block; -webkit-appearance:none; appearance:none; width:100%; margin:0; padding:0; border:0; height:44px; background:transparent; cursor:pointer; touch-action:none; }
 #langform-fullscreen-ui input::-webkit-slider-runnable-track { height:3px; border-radius:2px; background:linear-gradient(to right,#f03 var(--progress),#ffffff60 var(--progress)); }
 #langform-fullscreen-ui input::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; margin-top:-5.5px; border:0; border-radius:50%; background:#f03; transition:transform 140ms cubic-bezier(.16,1,.3,1); }
 #langform-fullscreen-ui input:active::-webkit-slider-thumb { transform:scale(1.25); }
@@ -102,6 +102,22 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
 #langform-fullscreen-ui [data-lf-fs-segmented] input::-webkit-slider-runnable-track { background:transparent; }
 #langform-fullscreen-ui [data-lf-fs-segmented] input::-moz-range-track, #langform-fullscreen-ui [data-lf-fs-segmented] input::-moz-range-progress { background:transparent; }
 #langform-fullscreen-ui input:disabled { opacity:.5; cursor:default; }
+/* In a short landscape viewport three bottom rows cover the centre playback
+   buttons. Keep chapter/time on one row and the full 44pt timeline below. */
+@media (orientation:landscape) and (max-height:500px) {
+  #langform-fullscreen-ui .lf-fs-top { padding-bottom:16px; }
+  #langform-fullscreen-ui .lf-fs-bottom { display:grid; grid-template-columns:minmax(0,1fr) auto; column-gap:16px; padding-top:10px; padding-bottom:max(6px,env(safe-area-inset-bottom)); }
+  #langform-fullscreen-ui .lf-fs-chapters { min-width:0; align-self:center; }
+  #langform-fullscreen-ui .lf-fs-time { gap:12px; }
+  #langform-fullscreen-ui [data-clock] { white-space:nowrap; }
+  #langform-fullscreen-ui .lf-fs-range-wrap { grid-column:1 / -1; }
+}
+@media (orientation:landscape) and (max-height:300px) {
+  #langform-fullscreen-ui .lf-fs-top { padding-top:6px; padding-bottom:8px; }
+  #langform-fullscreen-ui .lf-fs-center { top:calc(50% - 28px); }
+  #langform-fullscreen-ui .lf-fs-center button { width:44px; height:44px; }
+  #langform-fullscreen-ui .lf-fs-center [data-action=play] { width:52px; height:52px; }
+}
 #langform-fullscreen-ui .lf-fs-feedback { position:absolute; top:50%; left:50%; width:144px; height:144px; transform:translate(-50%,-50%); pointer-events:none; }
 #langform-fullscreen-ui .lf-fs-feedback[data-kind=back] { margin-left:calc(-60px - clamp(24px,8vw,80px)); }
 #langform-fullscreen-ui .lf-fs-feedback[data-kind=forward] { margin-left:calc(60px + clamp(24px,8vw,80px)); }
@@ -1233,7 +1249,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if (s.adObserver) s.adObserver.disconnect();
     if (s.dimensionObserver) s.dimensionObserver.disconnect();
     if (s.ownedObserver) s.ownedObserver.disconnect();
-    s.events.forEach(function (entry) { entry[0].removeEventListener(entry[1],entry[2]); });
+    s.events.forEach(function (entry) { entry[0].removeEventListener(entry[1],entry[2],entry[3]); });
     revealExitContext(s,!reason && s.phase==='exiting');
     // Rejoin the document's flow in the same turn as removing its placeholder.
     // Native has already confirmed the destination viewport on a normal exit.
@@ -1424,7 +1440,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if (s.phase === 'exiting' && !reason) reason = 'interrupted';
     return finishClose(s,reason,reportBeforeRestore);
   }
-  function listen(s,node,event,fn) { node.addEventListener(event,fn); s.events.push([node,event,fn]); }
+  function listen(s,node,event,fn,options) { node.addEventListener(event,fn,options); s.events.push([node,event,fn,options]); }
   function open(nativeLease) {
     if (state || !alive || !id() || !style.isConnected || !nativeBridge()) return false;
     stopGeometryTrace();
@@ -1566,9 +1582,10 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       if (state === s) visible(true);
     }
     function resetSnap(preserveTarget) { if (!preserveTarget) s.pendingScrubTime = null; s.pointerScrub = false; if (s.chapters && s.chapters.resetSnap) s.chapters.resetSnap(); }
-    function finishScrub(commit,release) {
+    function finishScrub(commit,release,abandoned) {
       var target = scrubTime(s), contact = s.scrubContact;
       s.scrubContact = null; s.dragging = false;
+      if (abandoned) s.scrubCancelled = true;
       if (commit && state === s && s.phase === 'open' && !pageInactive() && seekable(s) &&
           (!contact || !contact.cancelled && contact.source === mediaSource(s.video))) {
         target = Math.min(s.video.duration,Math.max(0,target));
@@ -1581,7 +1598,10 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       s.releasedScrubValue = release ? s.range.value : null;
     }
     listen(s,s.range,'input',function () {
-      if (s.scrubContact && s.scrubContact.cancelled) return;
+      // A browser slider can still emit input/change after pointercancel,
+      // capture loss or a second finger. Only a fresh contact or a key can
+      // start another intent; those late events must never jump the video.
+      if (s.scrubCancelled) { update(); return; }
       if (!matching(s) || ad(s)) { close(); return; }
       clearFeedback(s);
       if (s.speedOpen) setSpeedOpen(s,false,false);
@@ -1598,12 +1618,13 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       update();
     });
     listen(s,s.range,'change',function () {
+      if (s.scrubCancelled) { update(); return; }
       if (s.releasedScrubValue !== null && s.releasedScrubValue === s.range.value) { s.releasedScrubValue = null; return; }
       finishScrub(true,false);
     });
     listen(s,win,'pointerdown',function (event) {
       if (s.scrubContact && event.pointerId !== s.scrubContact.pointerId) {
-        var contact = s.scrubContact; finishScrub(false,true); contact.cancelled = true; s.scrubContact = contact;
+        finishScrub(false,true,true);
       }
     },true);
     listen(s,ui,'pointerdown',function (event) {
@@ -1611,7 +1632,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
       var button = event.target.closest && event.target.closest('button');
       s.speedPointer = button ? {button:button,until:win.performance.now() + 800} : null;
       if (event.target === s.range && seekable(s) && event.isPrimary !== false && (event.button === undefined || event.button === 0)) {
-        resetSnap(); s.releasedScrubValue = null; s.scrubContact = {pointerId:event.pointerId,dirty:false,source:mediaSource(s.video)};
+        resetSnap(); s.scrubCancelled = false; s.releasedScrubValue = null; s.scrubContact = {pointerId:event.pointerId,dirty:false,source:mediaSource(s.video)};
         s.pointerScrub = true; s.dragging = true; clearIdle();
       }
     });
@@ -1621,16 +1642,42 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     });
     listen(s,win,'pointercancel',function (event) {
       endControlContact(event); s.speedPointer = null;
-      if ((!s.scrubContact || event.pointerId === s.scrubContact.pointerId) && (s.dragging || s.pendingScrubTime !== null)) finishScrub(false,true);
+      if ((!s.scrubContact || event.pointerId === s.scrubContact.pointerId) && (s.dragging || s.pendingScrubTime !== null)) finishScrub(false,true,true);
     });
-    listen(s,win,'lostpointercapture',endControlContact);
-    listen(s,win,'blur',function () { endControlContact(); if (s.dragging || s.pendingScrubTime !== null) finishScrub(false,true); });
+    listen(s,win,'lostpointercapture',function (event) {
+      endControlContact(event);
+      if (s.scrubContact && event.pointerId === s.scrubContact.pointerId) finishScrub(false,true,true);
+    });
+    listen(s,win,'blur',function () { endControlContact(); if (s.dragging || s.pendingScrubTime !== null) finishScrub(false,true,true); });
     if (typeof win.PointerEvent !== 'function') {
-      listen(s,ui,'touchstart',function (event) { beginControlContact(event,'touch'); });
-      listen(s,win,'touchend',endControlContact);
-      listen(s,win,'touchcancel',endControlContact);
+      listen(s,win,'touchstart',function (event) {
+        if (s.scrubContact && (!event.touches || event.touches.length !== 1 || event.touches[0].identifier !== s.scrubContact.touchID)) finishScrub(false,true,true);
+      },true);
+      listen(s,ui,'touchstart',function (event) {
+        beginControlContact(event,'touch');
+        if (event.target !== s.range || !seekable(s) || !event.touches || event.touches.length !== 1) return;
+        resetSnap(); s.scrubCancelled = false; s.releasedScrubValue = null;
+        s.scrubContact = {touchID:event.touches[0].identifier,dirty:false,source:mediaSource(s.video)};
+        s.pointerScrub = true; s.dragging = true; clearIdle();
+      });
+      function finishTouchScrub(event) {
+        endControlContact(event);
+        var contact = s.scrubContact;
+        if (!contact || contact.touchID === undefined || !Array.from(event.changedTouches || []).some(function(point) { return point.identifier === contact.touchID; })) return;
+        var commit = event.type === 'touchend' && !(event.touches && event.touches.length);
+        finishScrub(commit && contact.dirty,true,!commit);
+      }
+      listen(s,win,'touchend',finishTouchScrub);
+      listen(s,win,'touchcancel',finishTouchScrub);
     }
-    listen(s,s.range,'keydown',function () { s.scrubContact = null; s.releasedScrubValue = null; resetSnap(); });
+    listen(s,s.range,'keydown',function () { s.scrubContact = null; s.scrubCancelled = false; s.releasedScrubValue = null; resetSnap(); });
+    listen(s,s.range,'focus',function (event) {
+      // A newly focused range can receive an accessibility adjustment without
+      // pointer or keyboard events. Actual focus starts that new intent; a
+      // dispatched FocusEvent must not revive the cancelled browser contact.
+      if (!s.scrubCancelled || !event.isTrusted || doc.activeElement !== s.range) return;
+      s.scrubContact = null; s.scrubCancelled = false; s.releasedScrubValue = null; resetSnap();
+    });
     listen(s,s.speedButton,'keydown',function (event) {
       if (state !== s) return;
       if (!matching(s) || ad(s)) { close(s.id); return; }
@@ -1669,7 +1716,7 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     listen(s,video,'error',function () { clearFeedback(s); updateSpeed(s); if (s.speedOpen) setSpeedOpen(s,false,true); });
     listen(s,video,'waiting',function () { if (s.feedback && s.feedback.kind === 'play') clearFeedback(s); });
     listen(s,video,'webkitbeginfullscreen',function () { close(); });
-    ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){listen(s,doc,name,function () { if (pageInactive()) { if (s.dragging || s.pendingScrubTime !== null) finishScrub(false,true); s.scrubContact = null; s.speedPointer = null; endControlContact(); clearIdle(); clearFeedback(s); if (s.phase==='entering') { close(s.id,'inactive',true); return; } if (s.speedOpen) setSpeedOpen(s,false,false); } else if (state === s && s.phase === 'open') { update(); visible(true); } });});
+    ['visibilitychange','langform-real-visibilitychange'].forEach(function(name){listen(s,doc,name,function () { if (pageInactive()) { if (s.dragging || s.pendingScrubTime !== null) finishScrub(false,true,true); s.scrubContact = null; s.speedPointer = null; endControlContact(); clearIdle(); clearFeedback(s); if (s.phase==='entering') { close(s.id,'inactive',true); return; } if (s.speedOpen) setSpeedOpen(s,false,false); } else if (state === s && s.phase === 'open') { update(); visible(true); } });});
     if (reduced && reduced.addEventListener) listen(s,reduced,'change',function () { if (reduced.matches) { clearFeedback(s); if (s.phase==='entering') { freezeEnterHandoff(s); confirmEnterViewport(s); } } s.speedPanel.toggleAttribute('data-reduced-motion',!!reduced.matches); });
     s.adObserver = new win.MutationObserver(route); s.adObserver.observe(root,{attributes:true,attributeFilter:['class']});
     update(); if (state !== s) return false;
@@ -2154,6 +2201,10 @@ html[data-langform-fullscreen] [data-langform-fullscreen-ancestor] > :not([data-
     if(!s || !p || event.defaultPrevented || !target || !target.closest ||
         !s.ui.contains(target) && !s.root.contains(target) ||
         target.closest('button,a,input,textarea,select,[contenteditable],[role=button],[role=slider],.lf-fs-controls,.lf-player-settings-layer,.lf-fs-chapter-panel')){clearDownPreview();return;}
+    // Hidden controls let the browser retarget a timeline touch to the empty
+    // UI. Its real 44pt strip still belongs to seeking, even on a diagonal.
+    var range=s.range.getBoundingClientRect();
+    if(range.width>0 && range.height>0 && p.x>=range.left && p.x<=range.right && p.y>=range.top && p.y<=range.bottom){clearDownPreview();return;}
     downContact={s:s,pointer:p.pointer,x:p.x,y:p.y,lastX:p.x,lastY:p.y,at:win.performance.now(),source:mediaSource(s.video),accepted:false};
   }
   function downMove(event){

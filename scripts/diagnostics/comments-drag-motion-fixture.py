@@ -11,6 +11,7 @@ parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--motion-source', type=Path)
 parser.add_argument('--controlled-timeline', action='store_true', help='Seek real WebKit animations at 120 Hz positions; no wall-clock/FPS claim')
 parser.add_argument('--entrance-only', action='store_true', help='Inspect the actual NF lazy-shell entrance separately from the longer drag sequence')
+parser.add_argument('--gesture-trace', action='store_true', help='Include bounded structural contact phases when diagnosing a failed synthetic sequence')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory() as directory:
@@ -58,7 +59,10 @@ async function sampleSpring(name,surface,ms=620){const frames=[],start=performan
   body.scrollTop=0;
   // Reverse a partially collapsed spring while its presentation is visible.
   pointer(header,'pointerdown',100);await wait(240);pointer(header,'pointermove',220);pointer(header,'pointerup',220);
-  await wait(50);seekSpring(surface,50);const beforeRegrab=pose(surface);pointer(header,'pointerdown',200);pointer(header,'pointermove',225);const afterRegrab=pose(surface);
+  await wait(50);seekSpring(surface,50);const beforeRegrab=pose(surface),interrupted=surface.getAnimations()[0];pointer(header,'pointerdown',200);
+  check('spring-header-contact-holds-immediately',surface.getAnimations().length===0&&Math.abs(pose(surface).top-beforeRegrab.top)<.5&&Math.abs(pose(surface).height-beforeRegrab.height)<.5,{before:beforeRegrab,after:pose(surface),oldRate:interrupted?.playbackRate});
+  await wait(90);check('resting-contact-does-not-drift',Math.abs(pose(surface).top-beforeRegrab.top)<.5,{before:beforeRegrab,after:pose(surface)});
+  pointer(header,'pointermove',225);const afterRegrab=pose(surface);
   check('spring-regrab-follows-contact',Math.abs(afterRegrab.top-beforeRegrab.top-25)<2,{before:beforeRegrab,after:afterRegrab});
   pointer(header,'pointercancel',225);const cancelled=await sampleSpring('regrab-cancel',surface);
   check('cancel-settles-without-gap',cancelled.every(frame=>frame.bottom>=innerHeight-.5));
@@ -89,6 +93,9 @@ async function sampleSpring(name,surface,ms=620){const frames=[],start=performan
 })().catch(error=>report({finished:true,passed:false,error:String(error),stack:error.stack}));
 '''
 args.output.parent.mkdir(parents=True, exist_ok=True)
+if args.gesture_trace:
+    tests = tests.replace('const checks=[],samples=[];', 'const gestureTrace=[];testWindow.__langformCommentsGestureTrace=event=>{if(gestureTrace.length<128)gestureTrace.push({phase:event.phase,reason:event.reason,offset:event.offset,rest:event.rest})};const checks=[],samples=[];')
+    tests = tests.replace('samples,errors});', 'samples,gestureTrace,errors});')
 entrance_start = tests.index('  // Actual public mweb dispatches NF')
 drag_start = tests.index('  const first=await mounted()')
 if args.entrance_only:

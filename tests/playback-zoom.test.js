@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const {JSDOM}=require('jsdom');
-const source=fs.readFileSync(path.join(__dirname,'../ios/Langform/Langform/PlaybackZoom.js'),'utf8');
+const source=fs.readFileSync(process.env.LANGFORM_ZOOM_TEST_SOURCE || path.join(__dirname,'../ios/Langform/Langform/PlaybackZoom.js'),'utf8');
 const fullscreen=fs.readFileSync(path.join(__dirname,'../ios/Langform/Langform/FullscreenMotion.js'),'utf8');
 const hold=fs.readFileSync(path.join(__dirname,'../ios/Langform/Langform/PlaybackHold.js'),'utf8');
 const box=(x,y,width,height)=>({x,y,left:x,top:y,right:x+width,bottom:y+height,width,height});
@@ -222,6 +222,33 @@ test('changing intrinsic aspect on the same source invalidates the old crop',t=>
   const s=setup(t);s.enter();s.pinch(2,437,201);s.video.videoWidth=1080;s.video.videoHeight=1920;s.video.dispatchEvent(new s.win.Event('loadedmetadata'));
   assert.deepEqual(fields(s.state()),[1,0,0]);assert.equal(s.win.__langformPlaybackZoom.getLayoutRect(s.video),null);
 });
+test('same-aspect decoded quality changes preserve the crop, native viewport and a subsequent pan',t=>{
+  const s=setup(t,{diagnostics:true});s.enter();s.pinch(2,350,201);const before=fields(s.state());
+  for(const [width,height] of [[1280,720],[640,360],[3840,2160],[1920,1080]]){
+    s.video.videoWidth=width;s.video.videoHeight=height;
+    assert.deepEqual(fields(s.state()),before,'a quality change without media events retains the crop');
+    assert.deepEqual({...s.win.__langformPlaybackZoom.getLayoutRect(s.video)},box(0,0,874,402));
+    s.video.dispatchEvent(new s.win.Event('loadedmetadata'));
+    assert.deepEqual(fields(s.state()),before,'same-aspect metadata retains the same owner');
+  }
+  s.pointer('pointerdown',1,437,150);s.pointer('pointermove',1,477,165);s.pointer('pointerup',1,477,165);
+  assert.deepEqual(fields(s.state()),[2,before[1]+40,before[2]+15]);assert.equal(s.state().gesturing,false);
+  assert.ok(!s.win.__langformPlaybackZoom.getDiagnostics().some(row=>row.event==='state-mismatch'||row.event.startsWith('reset-')));
+  assert.equal(s.video.currentTime,30);assert.equal(s.video.playbackRate,1);assert.deepEqual(s.calls,[]);
+});
+test('same-aspect quality change during an accepted pinch preserves its content projection and release',t=>{
+  const s=setup(t);s.enter();s.pointer('pointerdown',1,387,201);s.pointer('pointerdown',2,487,201);
+  s.pointer('pointermove',1,337,201);s.pointer('pointermove',2,537,201);assert.deepEqual(fields(s.state()),[2,0,0]);
+  s.video.videoWidth=1280;s.video.videoHeight=720;s.video.dispatchEvent(new s.win.Event('loadedmetadata'));
+  s.pointer('pointermove',1,287,201);s.pointer('pointermove',2,587,201);
+  assert.deepEqual(fields(s.state()),[3,0,0]);s.pointer('pointerup',1,287,201);s.pointer('pointerup',2,587,201);
+  assert.deepEqual(fields(s.state()),[3,0,0]);assert.equal(s.state().gesturing,false);
+});
+test('even a one-pixel aspect change rejects a retained crop without a metadata event',t=>{
+  const s=setup(t);s.enter();s.pinch(2);s.video.videoWidth=1280;s.video.videoHeight=721;
+  assert.equal(s.state(),null);assert.equal(s.win.__langformPlaybackZoom.getLayoutRect(s.video),null);
+  s.pointer('pointerdown',1,437,150);assert.deepEqual(fields(s.state()),[1,0,0]);
+});
 test('accepted touchpan cancels a real zoomed hold after movement and matching release restores the prior rate',t=>{
   const s=setup(t,{touch:true,hold:true});s.enter();s.touch('touchstart',[[10,387,201],[20,487,201]]);s.touch('touchmove',[[10,337,201],[20,537,201]]);s.touch('touchend',[],s.ui(),[[10,337,201],[20,537,201]]);
   s.touch('touchstart',[[10,150,100]]);const entry=[...s.timers.entries()].find(([,item])=>item.delay===350);assert.ok(entry);s.timers.delete(entry[0]);entry[1].fn();assert.equal(s.video.playbackRate,2);
@@ -257,12 +284,12 @@ test('zoom diagnosis retains at most16 finite source-free snapshots and returns 
   s.root.getBoundingClientRect=s.video.getBoundingClientRect=()=>assert.fail('diagnostic getter must not read geometry');s.win.getComputedStyle=()=>assert.fail('diagnostic getter must not read styles');
   assert.equal(s.win.__langformPlaybackZoom.getDiagnostics().length,16);
 });
-test('getter-only intrinsic mismatch is distinguished from subsequent move reset without inferring a source change',t=>{
+test('getter-only intrinsic aspect mismatch is distinguished from subsequent move reset without inferring a source change',t=>{
   const s=setup(t,{diagnostics:true});s.enter();s.pointer('pointerdown',1,387,201);s.pointer('pointerdown',2,487,201);
-  s.video.videoWidth=1280;s.video.videoHeight=720;assert.equal(s.state(),null);
+  s.video.videoWidth=1280;s.video.videoHeight=721;assert.equal(s.state(),null);
   let rows=s.win.__langformPlaybackZoom.getDiagnostics(),last=rows.at(-1);
   assert.equal(last.event,'state-mismatch');assert.equal(last.owner,true);assert.equal(last.context,true);assert.equal(last.sourceSame,true);assert.equal(last.sourceAttributeSame,true);
-  assert.equal(last.intrinsicWidth,1280);assert.equal(last.ownerIntrinsicWidth,1920);assert.equal(last.intrinsicHeight,720);assert.equal(last.ownerIntrinsicHeight,1080);
+  assert.equal(last.intrinsicWidth,1280);assert.equal(last.ownerIntrinsicWidth,1920);assert.equal(last.intrinsicHeight,721);assert.equal(last.ownerIntrinsicHeight,1080);
   assert.ok(!rows.some(row=>row.event==='reset-move'));
   s.pointer('pointermove',1,337,201);rows=s.win.__langformPlaybackZoom.getDiagnostics();assert.ok(rows.some(row=>row.event==='reset-move'&&row.context&&row.intrinsicWidth===1280));
   assert.equal(s.video.hasAttribute('data-langform-playback-zoom-video'),false);assert.equal(s.video.playbackRate,1);
@@ -270,7 +297,7 @@ test('getter-only intrinsic mismatch is distinguished from subsequent move reset
 test('zoom diagnosis uses the existing context read and hard media reset adds none',t=>{
   const s=setup(t,{diagnostics:true});s.enter();s.pinch(2);
   const get=s.win.__langformFullscreen.getZoomContext;let reads=0;s.win.__langformFullscreen.getZoomContext=function(){reads++;return get.apply(this,arguments);};
-  s.video.videoWidth=1280;s.video.videoHeight=720;assert.equal(s.state(),null);assert.equal(reads,1);
+  s.video.videoWidth=1280;s.video.videoHeight=721;assert.equal(s.state(),null);assert.equal(reads,1);
   s.win.__langformPlaybackZoom.getDiagnostics();assert.equal(reads,1);
   reads=0;s.video.dispatchEvent(new s.win.Event('emptied'));assert.equal(reads,0);
   assert.ok(s.win.__langformPlaybackZoom.getDiagnostics().some(row=>row.event==='reset-emptied'));

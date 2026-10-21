@@ -3,8 +3,9 @@ import UIKit
 /// A real UIKit search surface. The retained feed owns results and playback;
 /// neither the keyboard nor suggestions ever live in the miniplayer WebView.
 final class NativeSearchOverlay: UIView, UITextFieldDelegate, UITableViewDataSource, UITableViewDelegate {
-    var onSubmit: ((String, LangformSearchFilter) -> Void)?
+    var onSubmit: ((NativeSearchSubmission, LangformSearchFilter) -> Void)?
     var onClose: (() -> Void)?
+    var onOpenLink: (() -> Void)?
     private let field = UITextField()
     private let table = UITableView(frame: .zero, style: .plain)
     private let header = UIStackView()
@@ -20,6 +21,7 @@ final class NativeSearchOverlay: UIView, UITextFieldDelegate, UITableViewDataSou
     private var pending: DispatchWorkItem?
     private var request: URLSessionDataTask?
     private var keyboardFrame: CGRect = .null
+    private var entrance: UIViewPropertyAnimator?
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false
@@ -38,7 +40,7 @@ final class NativeSearchOverlay: UIView, UITextFieldDelegate, UITableViewDataSou
         backgroundColor = .black
         accessibilityIdentifier = "langform-native-search"
         accessibilityViewIsModal = true
-        let back = UIButton(type: .system)
+        let back = MotionButton(type: .system)
         back.setImage(UIImage(systemName: "arrow.left"), for: .normal)
         back.tintColor = .white
         back.accessibilityLabel = "Suche schließen"
@@ -64,10 +66,20 @@ final class NativeSearchOverlay: UIView, UITextFieldDelegate, UITableViewDataSou
         field.addTarget(self, action: #selector(changed), for: .editingChanged)
         header.axis = .horizontal; header.spacing = 4
         header.addArrangedSubview(back); header.addArrangedSubview(field)
+        let link = MotionButton(type: .system)
+        link.setImage(UIImage(systemName: "link"), for: .normal)
+        link.tintColor = .white
+        link.accessibilityLabel = "YouTube-Link öffnen"
+        link.accessibilityIdentifier = "langform-search-open-link"
+        link.addTarget(self, action: #selector(openLink), for: .touchUpInside)
+        link.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        link.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        header.addArrangedSubview(link)
         addSubview(header)
         chips.axis = .horizontal; chips.spacing = 8; chips.distribution = .fillEqually
         for item in LangformSearchFilter.allCases {
-            let button = UIButton(type: .custom)
+            let button = MotionButton(type: .custom)
+            button.hapticRole = .selection
             button.setTitle(item.title, for: .normal)
             button.titleLabel?.font = .preferredFont(forTextStyle: .subheadline)
             button.titleLabel?.adjustsFontForContentSizeCategory = true
@@ -98,6 +110,29 @@ final class NativeSearchOverlay: UIView, UITextFieldDelegate, UITableViewDataSou
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { pending?.cancel(); request?.cancel(); session.invalidateAndCancel(); NotificationCenter.default.removeObserver(self) }
 
+    /// Search has a short, quiet arrival; the keyboard keeps its own system
+    /// timing. Animate decoration only, leaving the field's hit area stable.
+    func present() {
+        setNeedsLayout(); layoutIfNeeded()
+        let reduced = LangformMotion.reduceSpatialMotion
+        alpha = 0
+        if !reduced {
+            table.transform = CGAffineTransform(translationX: 0, y: 10)
+        }
+        let animation = UIViewPropertyAnimator(duration: reduced ? LangformMotion.Duration.fade : LangformMotion.Duration.surface,
+            controlPoint1: CGPoint(x: 0.16, y: 1), controlPoint2: CGPoint(x: 0.3, y: 1)) {
+                self.alpha = 1
+                self.table.transform = .identity
+        }
+        entrance = animation
+        animation.addCompletion { [weak self, weak animation] _ in
+            guard let self, self.entrance === animation else { return }
+            self.entrance = nil
+        }
+        animation.startAnimation()
+        focus()
+    }
+
     func focus() {
         focusGeneration += 1
         let ticket = focusGeneration
@@ -112,6 +147,8 @@ final class NativeSearchOverlay: UIView, UITextFieldDelegate, UITableViewDataSou
         }
     }
     func cancel() {
+        entrance?.stopAnimation(true); entrance = nil
+        alpha = 1; table.transform = .identity
         focusGeneration += 1
         generation += 1; pending?.cancel(); pending = nil; request?.cancel(); request = nil
         field.resignFirstResponder(); endEditing(true)
@@ -134,7 +171,11 @@ final class NativeSearchOverlay: UIView, UITextFieldDelegate, UITableViewDataSou
     @objc private func keyboard(_ note: Notification) {
         keyboardFrame = note.name == UIResponder.keyboardWillHideNotification ? .null : (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect ?? .null)
         let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
-        UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : duration) { self.setNeedsLayout(); self.layoutIfNeeded() }
+        let curve = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 7
+        UIView.animate(withDuration: LangformMotion.reduceSpatialMotion ? 0 : duration, delay: 0,
+                       options: [UIView.AnimationOptions(rawValue: curve << 16), .beginFromCurrentState, .allowUserInteraction]) {
+            self.setNeedsLayout(); self.layoutIfNeeded()
+        }
     }
     private func updateChips() {
         for (item, button) in chipButtons {
@@ -147,12 +188,21 @@ final class NativeSearchOverlay: UIView, UITextFieldDelegate, UITableViewDataSou
         }
     }
     @objc private func close() { cancel(); onClose?() }
+    @objc private func openLink() { cancel(); onOpenLink?() }
     func textFieldShouldReturn(_ textField: UITextField) -> Bool { submit(textField.text ?? ""); return true }
     private func submit(_ text: String) {
+        // Pasting a shared URL into the search field is also an explicit open
+        // request. Validate the full URL before the ordinary 200-character
+        // search limit; never turn a truncated link into a different target.
+        if let link = try? ExternalYouTubeLink.parse(text) {
+            let selected = filter
+            cancel(); onSubmit?(.youtubeLink(link.url), selected)
+            return
+        }
         let query = LangformSearchPolicy.query(text)
         guard !query.isEmpty else { return }
         let selected = filter
-        cancel(); onSubmit?(query, selected)
+        cancel(); onSubmit?(.query(query), selected)
     }
 
     @objc private func changed() {

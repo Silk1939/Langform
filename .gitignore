@@ -23,6 +23,9 @@ __pycache__/
 *.pyc
 /:-
 
+# Generated, personally signed handoff artifacts are not source code.
+/outputs/
+
 # Local QA recordings, device logs, response captures and source snapshots.
 # Keep only the two public fixtures required by the regression suite.
 /docs/qa/*

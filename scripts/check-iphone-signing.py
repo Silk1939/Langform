@@ -23,6 +23,66 @@ class SigningError(Exception):
     pass
 
 
+# Official LiteRT-LM v0.18.0, ios-arm64 slice. The source archive is pinned by
+# SwiftPM SHA-256 d765b99592d4ec3d0c9e2bd69469454af06c834861340672da1891c0c121c347.
+# Xcode embeds the executable unchanged. codesign --remove-signature normalizes
+# a previously signed copy to the second hash (load-command reservation differs).
+LITERT_DEVICE_BINARY_SHA256 = "02d99220cba485d5a781dcb64d92025211c22aefe55fab6fab4f973fad6e51be"
+LITERT_RESIGNED_UNSIGNED_SHA256 = "471e440db92155eea0d972317265bdd0566329aeedc2b18e899d9d2c9f4cc97d"
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def check_litert_framework(framework):
+    """Approve only the exact official iPhone runtime, including repeat signing."""
+    info = plistlib.loads((framework / "Info.plist").read_bytes())
+    expected = {
+        "CFBundleIdentifier": "com.google.odml.litertlm.CLiteRTLM",
+        "CFBundlePackageType": "FMWK",
+        "CFBundleExecutable": "CLiteRTLM",
+        "CFBundleSupportedPlatforms": ["iPhoneOS"],
+    }
+    if any(info.get(key) != value for key, value in expected.items()):
+        raise SigningError("Das eingebettete Google-Framework hat unerwartete Bundle-Metadaten.")
+    executable = framework / "CLiteRTLM"
+    if not executable.is_file():
+        raise SigningError("Dem eingebetteten Google-Framework fehlt die geprüfte Hauptdatei.")
+    if file_sha256(executable) == LITERT_DEVICE_BINARY_SHA256:
+        return executable
+    # Re-signing must also work after an incremental build. Never modify the
+    # actual bundle to establish provenance: strip only a temporary binary copy.
+    try:
+        subprocess.run(["codesign", "--verify", "--strict", str(framework)], capture_output=True, check=True)
+        with tempfile.TemporaryDirectory(prefix="langform-framework-check-") as directory:
+            unsigned = Path(directory) / "CLiteRTLM"
+            shutil.copyfile(executable, unsigned)
+            subprocess.run(["codesign", "--remove-signature", str(unsigned)], capture_output=True, check=True)
+            if file_sha256(unsigned) == LITERT_RESIGNED_UNSIGNED_SHA256:
+                return executable
+    except subprocess.SubprocessError:
+        pass
+    raise SigningError("Das Google-Framework entspricht nicht der ausdrücklich freigegebenen LiteRT-LM-Version 0.18.0.")
+
+
+def verify_signed_code(code, *, identity, entitlements, directory, name):
+    subprocess.run(["codesign", "--verify", "--strict", str(code)], check=True)
+    signed = subprocess.run(["codesign", "-d", "--entitlements", ":-", str(code)], capture_output=True, check=True)
+    actual = plistlib.loads(signed.stdout) if signed.stdout.strip() else {}
+    if actual != entitlements:
+        raise SigningError(f"Die signierten Berechtigungen von {name} stimmen nicht mit der Prüfung überein.")
+    certificate_prefix = str(Path(directory) / f"signing-cert-{name}-")
+    subprocess.run(["codesign", "-d", f"--extract-certificates={certificate_prefix}", str(code)], capture_output=True, check=True)
+    certificate = Path(certificate_prefix + "0").read_bytes()
+    if hashlib.sha1(certificate).hexdigest().upper() != identity:
+        raise SigningError(f"Das signierte Zertifikat von {name} stimmt nicht mit dem festen Zertifikat überein.")
+
+
 def local_identities():
     result = subprocess.run(
         ["security", "find-identity", "-v", "-p", "codesigning"],
@@ -130,16 +190,23 @@ def sign_app(app, profile_path, profile, *, identity, team, bundle):
     executable = info.get("CFBundleExecutable", "")
     if not executable or Path(executable).name != executable or not (app / executable).is_file():
         raise SigningError("Die App enthält keine gültige Hauptdatei.")
-    # This app currently has one executable and no embedded extensions/frameworks.
-    # Those require their own profiles/signatures and must not be silently skipped.
+    # Only this exact runtime is supported. Extensions, other frameworks and
+    # additional Mach-O files still fail closed before any signing mutation.
+    framework = app / "Frameworks/CLiteRTLM.framework"
+    framework_executable = framework / "CLiteRTLM"
+    has_litert = framework.is_dir()
     macho_magic = {b'\xfe\xed\xfa\xce', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca'}
     for entry in app.rglob("*"):
-        if entry.suffix in {".app", ".appex", ".framework", ".dylib"}:
+        if entry.is_symlink():
+            raise SigningError("Verknüpfter Bundle-Inhalt muss vor lokaler Signierung ausdrücklich unterstützt werden.")
+        if entry.suffix in {".app", ".appex", ".framework", ".dylib"} and not (has_litert and entry == framework):
             raise SigningError("Eingebetteter Code muss vor lokaler Signierung ausdrücklich unterstützt werden.")
-        if entry.is_file() and entry != app / executable:
+        if entry.is_file() and entry not in {app / executable, framework_executable}:
             with entry.open("rb") as handle:
                 if handle.read(4) in macho_magic:
                     raise SigningError(f"Zusätzliche ausführbare Datei muss ausdrücklich signiert werden: {entry.name}.")
+    if has_litert:
+        check_litert_framework(framework)
     embedded = app / "embedded.mobileprovision"
     shutil.copyfile(profile_path, embedded)
     copied = subprocess.run(["security", "cms", "-D", "-i", str(embedded)], capture_output=True, check=True)
@@ -153,16 +220,13 @@ def sign_app(app, profile_path, profile, *, identity, team, bundle):
     with tempfile.TemporaryDirectory(prefix="langform-local-signing-") as directory:
         entitlement_path = Path(directory) / "Entitlements.plist"
         entitlement_path.write_bytes(plistlib.dumps(entitlements))
+        if has_litert:
+            # Frameworks need no provisioning profile and no app entitlements.
+            # Sign explicitly inside-out with the same preflight-pinned key.
+            subprocess.run(["codesign", "--force", "--sign", identity, "--timestamp=none", str(framework)], check=True)
+            verify_signed_code(framework, identity=identity, entitlements={}, directory=directory, name="Google-Laufzeit")
         subprocess.run(["codesign", "--force", "--sign", identity, "--timestamp=none", "--generate-entitlement-der", "--entitlements", str(entitlement_path), str(app)], check=True)
-        subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
-        signed = subprocess.run(["codesign", "-d", "--entitlements", ":-", str(app)], capture_output=True, check=True)
-        if plistlib.loads(signed.stdout) != entitlements:
-            raise SigningError("Die signierten App-Berechtigungen stimmen nicht mit der Prüfung überein.")
-        certificate_prefix = str(Path(directory) / "signing-cert-")
-        subprocess.run(["codesign", "-d", f"--extract-certificates={certificate_prefix}", str(app)], capture_output=True, check=True)
-        certificate = Path(certificate_prefix + "0").read_bytes()
-        if hashlib.sha1(certificate).hexdigest().upper() != identity:
-            raise SigningError("Das signierte Zertifikat stimmt nicht mit dem festen Zertifikat überein.")
+        verify_signed_code(app, identity=identity, entitlements=entitlements, directory=directory, name="App")
     print(f"App lokal signiert und geprüft: {app}", file=sys.stderr)
 
 

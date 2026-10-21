@@ -1,17 +1,37 @@
 import Foundation
+import CryptoKit
 
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
 
 enum OnDeviceSummary {
+    struct Progress: Sendable {
+        var phase: String
+        var processedSections: Int
+        var totalSections: Int
+        var sourceIncomplete: Bool
+        var coverageIncomplete: Bool
+        var tldr: String?
+
+        var payload: [String: Any] {
+            var fields: [String: Any] = ["phase": phase, "processedSections": processedSections,
+                "totalSections": totalSections, "sourceIncomplete": sourceIncomplete,
+                "coverageIncomplete": coverageIncomplete]
+            if let tldr { fields["tldr"] = tldr }
+            return ["progress": fields]
+        }
+    }
+
     static let unavailableMessage = "Die Kurzfassung geht nur mit dem Modell auf dem Gerät, und das ist gerade nicht verfügbar."
     static let missingCaptionsMessage = "Für dieses Video fehlen die Untertitel."
     static let unusableCaptionsMessage = "Die verfügbaren Untertitel enthalten keinen verständlichen Text."
     static let insufficientContentMessage = "Die Untertitel enthalten zu wenig verständlichen Inhalt für eine verlässliche Kurzfassung."
     static let generationFailedMessage = "Die Kurzfassung konnte gerade nicht erstellt werden. Bitte versuche es noch einmal."
 
-    static func reply(for captions: String, sourceIncomplete: Bool = false) async -> [String: Any] {
+    static func reply(for captions: String, sourceIncomplete: Bool = false,
+                      cache: SummaryReuseCache = .shared,
+                      onProgress: ((Progress) async -> Void)? = nil) async -> [String: Any] {
         guard !captions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return failure("MISSING_CAPTIONS", missingCaptionsMessage)
         }
@@ -19,11 +39,26 @@ enum OnDeviceSummary {
         guard source.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) else {
             return failure("UNUSABLE_CAPTIONS", unusableCaptionsMessage)
         }
+        #if os(iOS) && !targetEnvironment(simulator) && !targetEnvironment(macCatalyst)
+        return await GemmaSummary.reply(source: source, sourceIncomplete: sourceIncomplete,
+                                        cache: cache, onProgress: onProgress)
+        #else
         #if canImport(FoundationModels)
         if #available(iOS 26.0, macOS 26.0, *) {
             do {
                 try Task.checkCancellation()
-                return try await generate(source, sourceIncomplete: sourceIncomplete)
+                let key = reuseKey(source, scope: "summary")
+                if let result = await cachedReply(for: source, sourceIncomplete: sourceIncomplete, cache: cache) {
+                    try Task.checkCancellation()
+                    return result
+                }
+                let result = try await generate(source, sourceIncomplete: sourceIncomplete, cache: cache, onProgress: onProgress)
+                try Task.checkCancellation()
+                if !sourceIncomplete, reusableResult(result),
+                   let data = try? JSONSerialization.data(withJSONObject: result) {
+                    await cache.store(data, for: key)
+                }
+                return result
             } catch is CancellationError {
                 return failure("CANCELLED", "Die Kurzfassung wurde abgebrochen.")
             } catch GenerationDeadline.reached {
@@ -36,6 +71,7 @@ enum OnDeviceSummary {
         var result = failure("MODEL_UNAVAILABLE", "Die lokale Kurzfassung benötigt iOS 26 oder macOS 26 und Apple Intelligence.")
         result["reason"] = "systemUnsupported"
         return result
+        #endif
     }
 
     enum GenerationDeadline: Error { case reached }
@@ -43,6 +79,40 @@ enum OnDeviceSummary {
 
     static func failure(_ code: String, _ message: String) -> [String: Any] {
         ["code": code, "message": message]
+    }
+
+    /// Source identity includes every character, the complete prompt/schema contract,
+    /// and the OS model version. It never uses just a video ID or an input prefix.
+    static func reuseKey(_ source: String, scope: String) -> String {
+        var contract = "langform-local-summary-reuse-v1\n" + scope + "\n"
+            + ProcessInfo.processInfo.operatingSystemVersionString + "\n"
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, macOS 26.0, *) {
+            contract += summaryInstructions + "\n" + analysisInstructions
+                + "\nsections:3400;edges:350;analysis:650;writer:1000;schema:EvidencePoint/SectionDraft-v1\n"
+        }
+        #endif
+        return SHA256.hash(data: Data((contract + source).utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func reusableResult(_ result: [String: Any]) -> Bool {
+        guard result["code"] == nil, let summary = result["summary"] as? [String: Any],
+              let coverage = summary["coverage"] as? [String: Any], coverage["complete"] as? Bool == true,
+              let processed = coverage["processedSections"] as? Int, processed > 0,
+              coverage["totalSections"] as? Int == processed,
+              let tldr = summary["tldr"] as? String, !tldr.isEmpty,
+              let takeaway = summary["takeaway"] as? String, !takeaway.isEmpty,
+              let points = summary["points"] as? [String], !points.isEmpty, points.count <= 8,
+              points.allSatisfy({ !$0.isEmpty }) else { return false }
+        return true
+    }
+
+    static func cachedReply(for source: String, sourceIncomplete: Bool,
+                            cache: SummaryReuseCache) async -> [String: Any]? {
+        guard !sourceIncomplete, let data = await cache.data(for: reuseKey(source, scope: "summary")),
+              let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              reusableResult(result) else { return nil }
+        return result
     }
 
     /// Clean noise markers and explicit offer breaks; retain editorial source sections and quantities.
@@ -202,7 +272,8 @@ enum OnDeviceSummary {
     }
 
     @available(iOS 26.0, macOS 26.0, *)
-    private static func generate(_ source: String, sourceIncomplete: Bool) async throws -> [String: Any] {
+    private static func generate(_ source: String, sourceIncomplete: Bool, cache: SummaryReuseCache,
+                                 onProgress: ((Progress) async -> Void)?) async throws -> [String: Any] {
         let model = SystemLanguageModel.default
         if let unavailable = availabilityFailure(model.availability) { return unavailable }
         let deadline = Date().addingTimeInterval(9 * 60)
@@ -211,6 +282,14 @@ enum OnDeviceSummary {
         var processedSections = 0
         var sourceForSummary = source
         var failedSections = 0
+        var progress = Progress(phase: "reading", processedSections: 0, totalSections: chunks.count,
+                                sourceIncomplete: sourceIncomplete, coverageIncomplete: false)
+        await onProgress?(progress)
+        try Task.checkCancellation()
+        // Keep and consume this exact session. The long-source analysis gives
+        // prewarming time to load the writer and prefill its unchanged prefix.
+        let session = LanguageModelSession(model: model, instructions: summaryInstructions)
+        if source.utf8.count > 4200 { session.prewarm(promptPrefix: Prompt("Quelle:\n")) }
 
         if source.utf8.count > 4200 {
             var notes: [EvidencePoint] = []
@@ -222,13 +301,16 @@ enum OnDeviceSummary {
                 let context = previous + chunks[index] + next
                 do {
                     // Small neighboring context preserves a condition crossing a chunk boundary.
-                    notes.append(contentsOf: try await analyze(context, model: model))
+                    notes.append(contentsOf: try await reusableAnalysis(context, model: model, cache: cache))
                     processedSections += 1
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
                     failedSections += 1
                 }
+                progress.processedSections = processedSections
+                progress.coverageIncomplete = failedSections > 0
+                await onProgress?(progress)
             }
             guard !notes.isEmpty else {
                 return failure(failedSections > 0 || processedSections < chunks.count ? "GENERATION_FAILED" : "INSUFFICIENT_CONTENT",
@@ -239,11 +321,13 @@ enum OnDeviceSummary {
             notes = grounded(notes, in: source)
             while notesText(notes).utf8.count > 4200 {
                 try checkDeadline(deadline)
+                progress.phase = "reducing"
+                await onProgress?(progress)
                 let groups = noteGroups(notes)
                 var reduced: [EvidencePoint] = []
                 for group in groups {
                     try checkDeadline(deadline)
-                    reduced.append(contentsOf: try await analyze(notesText(group), model: model))
+                    reduced.append(contentsOf: try await reusableAnalysis(notesText(group), model: model, cache: cache))
                 }
                 reduced = grounded(reduced, in: source)
                 guard !reduced.isEmpty, notesText(reduced).utf8.count < notesText(notes).utf8.count else {
@@ -257,17 +341,31 @@ enum OnDeviceSummary {
         }
 
         try checkDeadline(deadline)
-        let session = LanguageModelSession(model: model, instructions: summaryInstructions)
-        let response = try await session.respond(
+        progress.phase = "writing"
+        progress.processedSections = processedSections
+        progress.coverageIncomplete = processedSections != chunks.count || failedSections > 0
+        await onProgress?(progress)
+        try Task.checkCancellation()
+        let stream = session.streamResponse(
             to: "Quelle:\n" + sourceForSummary,
             options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 1000)
         )
+        var output = ""
+        for try await snapshot in stream {
+            try checkDeadline(deadline)
+            output = snapshot.content
+            if !sourceIncomplete, !progress.coverageIncomplete,
+               let tldr = completedTLDR(output), progress.tldr != tldr {
+                progress.tldr = tldr
+                await onProgress?(progress)
+            }
+        }
         try Task.checkCancellation()
         try checkDeadline(deadline)
-        if response.content.trimmingCharacters(in: .whitespacesAndNewlines) == "[ZU_WENIG_INHALT]" {
+        if output.trimmingCharacters(in: .whitespacesAndNewlines) == "[ZU_WENIG_INHALT]" {
             return failure("INSUFFICIENT_CONTENT", insufficientContentMessage)
         }
-        guard let draft = parseSummary(response.content) else {
+        guard let draft = parseSummary(output) else {
             return failure("GENERATION_FAILED", generationFailedMessage)
         }
         let tldr = cleanOutput(draft.tldr)
@@ -310,6 +408,30 @@ enum OnDeviceSummary {
     }
 
     @available(iOS 26.0, macOS 26.0, *)
+    private static func reusableAnalysis(_ source: String, model: SystemLanguageModel,
+                                         cache: SummaryReuseCache) async throws -> [EvidencePoint] {
+        try Task.checkCancellation()
+        let key = reuseKey(source, scope: "analysis")
+        if let data = await cache.data(for: key),
+           let saved = try? JSONDecoder().decode([SavedEvidence].self, from: data) {
+            let points = saved.map { EvidencePoint(statement: $0.statement, quote: $0.quote) }
+            let verified = grounded(points, in: source)
+            if verified.count == points.count { return verified }
+        }
+        let points = try await analyze(source, model: model)
+        try Task.checkCancellation()
+        if let data = try? JSONEncoder().encode(points.map { SavedEvidence(statement: $0.statement, quote: $0.quote) }) {
+            await cache.store(data, for: key)
+        }
+        return points
+    }
+
+    private struct SavedEvidence: Codable {
+        let statement: String
+        let quote: String
+    }
+
+    @available(iOS 26.0, macOS 26.0, *)
     static func grounded(_ points: [EvidencePoint], in source: String) -> [EvidencePoint] {
         var seen = Set<String>()
         return points.filter {
@@ -347,6 +469,33 @@ enum OnDeviceSummary {
             return String(clean[..<ending.upperBound]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return clean
+    }
+
+    /// Only reveal a complete first field once the following heading has
+    /// arrived. A half-generated sentence is never presented as a result.
+    static func completedTLDR(_ text: String) -> String? {
+        let lines = text.components(separatedBy: .newlines)
+        var started = false
+        var parts: [String] = []
+        for raw in lines {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty { continue }
+            let heading = line.replacingOccurrences(of: "^[#\\s]+", with: "", options: .regularExpression)
+                .replacingOccurrences(of: "**", with: "")
+                .trimmingCharacters(in: CharacterSet(charactersIn: ": ")).lowercased()
+            if !started {
+                guard ["tldr", "tl;dr"].contains(heading) else { return nil }
+                started = true
+            } else if ["die wichtigsten punkte", "wichtigste punkte"].contains(heading) {
+                let value = cleanOutput(parts.joined(separator: " "))
+                return !value.isEmpty && value.count <= 2000 && !value.contains("[ZU_WENIG_INHALT]") ? value : nil
+            } else if line.hasPrefix("#") {
+                return nil
+            } else {
+                parts.append(line)
+            }
+        }
+        return nil
     }
 
     static func cleanOutput(_ value: String) -> String {
@@ -424,4 +573,84 @@ enum OnDeviceSummary {
         var insights: [EvidencePoint]
     }
     #endif
+}
+
+/// A bounded local cache lets an interrupted request reuse completed, grounded
+/// sections and makes a completed summary survive a WebView/app restart.
+/// Only derived answers and their short evidence quotes are saved, never whole
+/// transcripts. Cache failure only loses the speedup.
+actor SummaryReuseCache {
+    static let shared = SummaryReuseCache(directory: defaultDirectory)
+    private struct Entry: Codable {
+        let data: Data
+        let savedAt: Date
+    }
+    private var entries: [String: Entry] = [:]
+    private var loaded = false
+    private let directory: URL?
+    private let maximumEntries: Int
+    private let lifetime: TimeInterval
+
+    init(directory: URL? = nil, maximumEntries: Int = 128, lifetime: TimeInterval = 7 * 24 * 60 * 60) {
+        self.directory = directory
+        self.maximumEntries = max(1, maximumEntries)
+        self.lifetime = lifetime
+    }
+
+    private static var defaultDirectory: URL? {
+        #if os(iOS)
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("LocalSummaries", isDirectory: true)
+        #else
+        nil
+        #endif
+    }
+
+    func data(for key: String, now: Date = Date()) -> Data? {
+        load()
+        guard let entry = entries[key] else { return nil }
+        guard now.timeIntervalSince(entry.savedAt) < lifetime,
+              now.timeIntervalSince(entry.savedAt) >= 0 else {
+            entries.removeValue(forKey: key)
+            return nil
+        }
+        return entry.data
+    }
+
+    func store(_ data: Data, for key: String, now: Date = Date()) {
+        guard data.count <= 16_384 else { return }
+        load()
+        entries = entries.filter { now.timeIntervalSince($0.value.savedAt) < lifetime }
+        entries[key] = Entry(data: data, savedAt: now)
+        if entries.count > maximumEntries {
+            let newest = entries.sorted { $0.value.savedAt > $1.value.savedAt }.prefix(maximumEntries)
+            entries = Dictionary(uniqueKeysWithValues: newest.map { ($0.key, $0.value) })
+        }
+        persist()
+    }
+
+    private func load() {
+        guard !loaded else { return }
+        loaded = true
+        guard let url = directory?.appendingPathComponent("reuse-v1.json"),
+              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 4_000_000,
+              let data = try? Data(contentsOf: url),
+              let saved = try? JSONDecoder().decode([String: Entry].self, from: data),
+              saved.count <= maximumEntries,
+              saved.values.allSatisfy({ $0.data.count <= 16_384 }) else { return }
+        entries = saved
+    }
+
+    private func persist() {
+        guard let directory, let data = try? JSONEncoder().encode(entries) else { return }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            #if os(iOS)
+            try data.write(to: directory.appendingPathComponent("reuse-v1.json"),
+                           options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            #else
+            try data.write(to: directory.appendingPathComponent("reuse-v1.json"), options: .atomic)
+            #endif
+        } catch { /* A cache write is optional; the generated answer stays usable. */ }
+    }
 }

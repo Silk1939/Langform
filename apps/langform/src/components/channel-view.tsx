@@ -18,7 +18,8 @@ export function ChannelView({ id }: { id: string }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetchJson(`/api/channel/${id}`, controller.signal, isChannelDetails)
+    const matchesChannel = (body: unknown): body is { channel: ChannelInfo; videos: Video[] } => isChannelDetails(body, id);
+    void fetchJson(`/api/channel/${id}`, controller.signal, matchesChannel)
       .then((body) => {
         if (controller.signal.aborted) return;
         setChannel(body.channel);

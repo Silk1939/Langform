@@ -9,6 +9,7 @@ struct DownloadsView: View {
     @ObservedObject var store: DownloadStore = .shared
     var currentSource: DownloadSource?
     var sourceMessage: String?
+    var offline = false
     var onOfflinePlayback: (() -> Void)?
     var onOfflinePlaybackEnded: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
@@ -17,48 +18,93 @@ struct DownloadsView: View {
     @State private var errorMessage: String?
     @State private var playback: OfflineDownload?
 
+    private var readyItems: [OfflineDownload] { store.items.filter { store.fileURL(for: $0) != nil } }
+    private var pendingItems: [OfflineDownload] { store.items.filter { $0.status != .ready } }
+
     var body: some View {
         NavigationStack {
             List {
-                Section("Aktuelles Video") {
-                    if let source = currentSource {
-                        Text(source.title).lineLimit(3)
-                        Button {
-                            do { _ = try store.start(source) }
-                            catch { errorMessage = error.localizedDescription }
-                        } label: { Label("Video herunterladen", systemImage: "arrow.down.circle") }
-                    } else {
-                        Text(sourceMessage ?? "Öffne ein Video, um seine Downloadquelle zu prüfen.")
-                            .font(.callout).foregroundStyle(.secondary)
+                Section {
+                    HStack(spacing: 12) {
+                        Image(systemName: "play.rectangle.on.rectangle.fill")
+                            .font(.title2).foregroundStyle(.tint)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(readyItems.isEmpty ? "Deine Offlinebibliothek" : "\(readyItems.count) \(readyItems.count == 1 ? "Video" : "Videos") für unterwegs")
+                                .font(.headline)
+                            Text(offline ? "Deine Mediathek funktioniert auch ohne Internet." : "Gespeicherte Videos brauchen kein Internet.")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
                     }
+                    .padding(.vertical, 6)
                 }
                 Section {
-                    Toggle("Mobile Daten für neue Downloads", isOn: $store.allowCellular)
-                    Text(store.allowCellular ? "Neue Downloads können mobile Daten verwenden. Der Datensparmodus wird berücksichtigt." : "Neue Downloads warten auf WLAN. Bereits gestartete Downloads behalten ihre gewählte Einstellung.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    LabeledContent("Gespeichert", value: Self.bytes(store.usedBytes))
-                    if store.activeCount > 0 { Text("\(store.activeCount) Download(s) aktiv").font(.caption).foregroundStyle(.secondary) }
-                }
-                Section("Offlinebibliothek") {
-                    if store.items.isEmpty {
-                        Text("Deine gespeicherten Videos erscheinen hier und lassen sich auch ohne Internet abspielen.")
-                            .font(.callout).foregroundStyle(.secondary)
+                    if readyItems.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Noch keine Videos gespeichert", systemImage: "tray")
+                                .font(.headline)
+                            Text("Importiere eine Videodatei aus der Dateien-App. Bereits auf deinem iPhone liegende Dateien kannst du auch offline hinzufügen.")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 8)
+                        .accessibilityIdentifier("langform.library.empty")
                     }
-                    ForEach(store.items) { item in
-                        downloadRow(item)
+                    ForEach(readyItems) { item in
+                        readyRow(item)
                             .swipeActions { Button("Löschen", role: .destructive) { store.remove(item) } }
                     }
+                } header: {
+                    Text("Offline verfügbar")
+                } footer: {
+                    if !readyItems.isEmpty { Text("\(Self.bytes(store.usedBytes)) auf diesem iPhone · Zum Löschen nach links wischen.") }
                 }
                 Section {
                     Button { importing = true } label: { Label("Videodatei importieren", systemImage: "folder.badge.plus") }
-                    Button { showingURL = true } label: { Label("Videodatei über Link laden", systemImage: "link") }
+                        .accessibilityIdentifier("langform.library.import")
                 } footer: {
-                    Text("Downloads benötigen eine vollständige Videodatei mit Bild und Ton. YouTube-Streams sind nicht immer als solche Datei verfügbar. Importierte oder vollständig geladene Videos bleiben bis zum Löschen auf diesem Gerät.")
+                    Text("Importierte und vollständig geladene Videos bleiben bis zum Löschen auf diesem Gerät. Dateien, die nur in iCloud liegen, benötigen zuerst eine Verbindung.")
                 }
                 if let message = store.libraryError { Section { Text(message).foregroundStyle(.red) } }
+                if !pendingItems.isEmpty {
+                    Section("Downloads und Importe") {
+                        ForEach(pendingItems) { item in
+                            downloadRow(item)
+                                .swipeActions { Button("Löschen", role: .destructive) { store.remove(item) } }
+                        }
+                    }
+                }
+                if currentSource != nil || sourceMessage != nil {
+                    Section("Aktuelles Video") {
+                        if let source = currentSource {
+                            Text(source.title).lineLimit(3)
+                            Button {
+                                do { _ = try store.start(source) }
+                                catch { errorMessage = error.localizedDescription }
+                            } label: { Label("Video herunterladen", systemImage: "arrow.down.circle") }
+                                .disabled(offline)
+                        } else if let sourceMessage {
+                            Text(sourceMessage).font(.callout).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Section {
+                    Button { showingURL = true } label: { Label("Videodatei über Link laden", systemImage: "link") }
+                        .disabled(offline)
+                    Toggle("Mobile Daten für neue Downloads", isOn: $store.allowCellular)
+                    Text(offline ? "Neue Downloads sind mit einer Internetverbindung möglich. Deine gespeicherten Videos und lokale Importe funktionieren weiterhin."
+                         : store.allowCellular ? "Neue Downloads können mobile Daten verwenden. Der Datensparmodus wird berücksichtigt."
+                         : "Neue Downloads warten auf WLAN. Bereits gestartete Downloads behalten ihre gewählte Einstellung.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } header: {
+                    Text("Neue Videos speichern")
+                } footer: {
+                    Text("Downloads benötigen eine vollständige Videodatei mit Bild und Ton. YouTube-Streams sind nicht immer als solche Datei verfügbar.")
+                }
             }
-            .navigationTitle("Downloads")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
+            .accessibilityIdentifier("langform.library.screen")
+            .navigationTitle("Mediathek")
+            .toolbar { ToolbarItem(placement: .confirmationAction) {
+                Button("Fertig") { dismiss() }.accessibilityIdentifier("langform.library.close")
+            } }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.mpeg4Movie, .quickTimeMovie], allowsMultipleSelection: true) { result in
             switch result {
@@ -76,23 +122,42 @@ struct DownloadsView: View {
         } message: { Text(errorMessage ?? "") }
     }
 
+    private func readyRow(_ item: OfflineDownload) -> some View {
+        Button {
+            guard store.fileURL(for: item) != nil else {
+                errorMessage = "Die lokale Videodatei fehlt. Importiere sie erneut oder lade das Video erneut herunter."
+                return
+            }
+            onOfflinePlayback?()
+            playback = item
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "film")
+                    .font(.title2).foregroundStyle(.secondary)
+                    .frame(width: 36)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item.title).font(.headline).foregroundStyle(.primary).lineLimit(3)
+                    Label("\(Self.bytes(item.receivedBytes)) · Offline verfügbar", systemImage: "checkmark.circle.fill")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "play.circle.fill").font(.title).foregroundStyle(.tint)
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(item.title), abspielen")
+        .accessibilityHint("Spielt die gespeicherte Datei ohne Internet ab")
+        .accessibilityIdentifier("langform.library.play.\(item.id.uuidString)")
+    }
+
     @ViewBuilder private func downloadRow(_ item: OfflineDownload) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(item.title).font(.headline).lineLimit(3)
             switch item.status {
             case .ready:
-                HStack {
-                    Text(Self.bytes(item.receivedBytes)).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button {
-                        guard store.fileURL(for: item) != nil else {
-                            errorMessage = "Die lokale Videodatei fehlt. Lade das Video erneut herunter."
-                            return
-                        }
-                        onOfflinePlayback?(); playback = item
-                    } label: { Label("Abspielen", systemImage: "play.fill") }
-                        .buttonStyle(.borderless)
-                }
+                EmptyView()
             case .downloading:
                 if let progress = item.progress { ProgressView(value: progress) } else { ProgressView() }
                 HStack {
@@ -106,7 +171,7 @@ struct DownloadsView: View {
                 Button("Abbrechen") { store.cancel(item) }.buttonStyle(.borderless)
             case .failed, .cancelled:
                 Text(item.errorMessage ?? "Download abgebrochen.").font(.caption).foregroundStyle(.secondary)
-                if item.source != nil {
+                if item.source != nil && !offline {
                     Button("Erneut versuchen") {
                         do { try store.retry(item) } catch { errorMessage = error.localizedDescription }
                     }.buttonStyle(.borderless)
@@ -155,13 +220,100 @@ private struct OfflineVideoPlayer: View {
     var onPlaybackEnded: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
+    @State private var itemObservation: NSKeyValueObservation?
+    @State private var timeObserver: Any?
+    @State private var ready = false
+    @State private var elapsed = 0.0
+    @State private var playbackError: String?
+
     var body: some View {
         NavigationStack {
-            VideoPlayer(player: player).background(.black)
+            VStack(spacing: 0) {
+                ZStack {
+                    VideoPlayer(player: player)
+                        .accessibilityIdentifier("langform.offline.player")
+                    if let playbackError {
+                        VStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle").font(.largeTitle)
+                            Text("Video konnte nicht abgespielt werden").font(.headline)
+                            Text(playbackError).font(.callout).foregroundStyle(.secondary)
+                        }
+                        .multilineTextAlignment(.center)
+                        .padding(24)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color(.systemBackground))
+                    } else if !ready {
+                        ProgressView("Lokales Video wird geöffnet …")
+                            .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                HStack {
+                    Label("Offline", systemImage: "wifi.slash")
+                    Spacer()
+                    Text(playbackError != nil ? "Wiedergabe fehlgeschlagen" : ready ? Self.timestamp(elapsed) : "Wird geladen …")
+                        .monospacedDigit()
+                        .accessibilityLabel("Offline-Wiedergabe")
+                        .accessibilityValue(playbackError != nil ? "Wiedergabe fehlgeschlagen" : ready ? "Bereit, \(Int(elapsed)) Sekunden abgespielt" : "Wird geladen")
+                        .accessibilityIdentifier("langform.offline.player.status")
+                }
+                .font(.caption).foregroundStyle(.white.opacity(0.75))
+                .padding(.horizontal, 16).padding(.vertical, 10)
+            }
+                .background(.black)
                 .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
-                .onAppear { player = AVPlayer(url: url); player?.play() }
-                .onDisappear { player?.pause(); player?.replaceCurrentItem(with: nil); player = nil; onPlaybackEnded?() }
+                .toolbar { ToolbarItem(placement: .confirmationAction) {
+                    Button("Fertig") { dismiss() }.accessibilityIdentifier("langform.offline.player.close")
+                } }
+                .onAppear(perform: startPlayback)
+                .onDisappear(perform: stopPlayback)
+                .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemFailedToPlayToEndTime)) { notification in
+                    guard let item = notification.object as? AVPlayerItem, item === player?.currentItem else { return }
+                    playbackError = (notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription
+                        ?? "Die gespeicherte Datei konnte nicht vollständig gelesen werden. Importiere sie erneut."
+                }
         }
+    }
+
+    private func startPlayback() {
+        guard player == nil else { return }
+        ready = false
+        elapsed = 0
+        playbackError = nil
+        let item = AVPlayerItem(url: url)
+        let next = AVPlayer(playerItem: item)
+        player = next
+        itemObservation = item.observe(\.status, options: [.initial, .new]) { item, _ in
+            DispatchQueue.main.async {
+                guard player === next else { return }
+                switch item.status {
+                case .readyToPlay: ready = true
+                case .failed:
+                    playbackError = item.error?.localizedDescription ?? "Die gespeicherte Datei lässt sich nicht öffnen. Importiere sie erneut."
+                default: break
+                }
+            }
+        }
+        timeObserver = next.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { time in
+            guard player === next, time.seconds.isFinite else { return }
+            elapsed = max(0, time.seconds)
+        }
+        next.play()
+    }
+
+    private func stopPlayback() {
+        itemObservation?.invalidate()
+        itemObservation = nil
+        if let timeObserver { player?.removeTimeObserver(timeObserver) }
+        timeObserver = nil
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        player = nil
+        onPlaybackEnded?()
+    }
+
+    private static func timestamp(_ seconds: Double) -> String {
+        let value = max(0, Int(seconds))
+        return value >= 3600 ? String(format: "%d:%02d:%02d", value / 3600, value / 60 % 60, value % 60)
+            : String(format: "%d:%02d", value / 60, value % 60)
     }
 }

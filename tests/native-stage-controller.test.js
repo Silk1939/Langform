@@ -33,12 +33,18 @@ import SwiftUI
 import UIKit
 import WebKit
 struct DownloadSource {}
+struct ExternalLinkInbox { struct Request {} }
 struct YouTubeWebView: UIViewControllerRepresentable {
     @Binding var unreachable: Bool
     var reloadToken: Int
     var onFullscreen: ((Bool) -> Void)?
     var onDownloads: ((DownloadSource?, String?, @escaping (Bool) -> Void) -> Void)?
     var downloadRequestToken = 0
+    var offlinePlaybackActive = false
+    var externalLinkRequest: ExternalLinkInbox.Request?
+    var onOpenLink: (() -> Void)?
+    var onSummarySetup: (() -> Void)?
+    var onOfflinePlaybackControl: ((@escaping (Bool) -> Void) -> Void)?
     static func videoID(_ url: URL?) -> String? {
         URLComponents(url: url ?? URL(string: "about:blank")!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "v" }?.value
     }
@@ -47,9 +53,13 @@ struct YouTubeWebView: UIViewControllerRepresentable {
 ${controller}
 final class PlayerStage: UIView {
     var onUnreachable: ((Bool) -> Void)?, onFullscreen: ((Bool) -> Void)?
+    var onOpenLink: (() -> Void)?
+    var onSummarySetup: (() -> Void)?
+    func acceptExternalLink(_ request: ExternalLinkInbox.Request?) {}
     var onDownloads: ((DownloadSource?, String?, @escaping (Bool) -> Void) -> Void)?
     var downloadRequestToken = 0
     func requestDownloads() {}
+    func setOfflinePlaybackActive(_ active: Bool) {}
     var reloadToken = 0, loadTicket = 1, nativeRotationGeneration = 0
     enum Mode { case closed, expanded }; var mode = Mode.expanded
     var player: WKWebView? = WKWebView(), card = UIView()

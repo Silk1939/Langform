@@ -22,7 +22,7 @@ function ui(t) {
   const realSet = win.setTimeout.bind(win), realClear = win.clearTimeout.bind(win);
   let serial = 100000;
   win.setTimeout = (fn, delay) => {
-    if (delay === 30000 || delay === 180000) { const id = ++serial; timers.set(id, { fn, delay }); return id; }
+    if (delay === 30000 || delay === 240000) { const id = ++serial; timers.set(id, { fn, delay }); return id; }
     return realSet(fn, delay);
   };
   win.clearTimeout = id => { if (!timers.delete(id)) realClear(id); };
@@ -80,15 +80,19 @@ test("iPhone Host-Frist entfernt den Waiter, gibt Retry frei und ignoriert alte 
   env.win.webkit.messageHandlers.langformSummary.postMessage = request => env.hostRequests.push(request);
   env.open(); await tick();
   const oldId = env.hostRequests[0].id;
-  env.expire(180000); await tick();
+  env.expire(240000); await tick();
   assert.equal(env.sheet().getAttribute("data-summary-state"), "error");
   assert.equal(Object.keys(env.win.__langformKurzWait).length, 0);
   assert.equal(Object.keys(env.win.__langformKurzRequests.pending).length, 0);
+  assert.equal(env.hostRequests.length, 2, "Die Frist sendet nur den gezielten Abbruch des ersten Auftrags");
+  assert.equal(env.hostRequests[1].id, oldId);
+  assert.equal(env.hostRequests[1].cancel, true);
   env.sheet().querySelector(".langform-kurz-retry").click(); await tick();
-  assert.equal(env.hostRequests.length, 2);
+  assert.equal(env.hostRequests.length, 3);
+  assert.equal(env.hostRequests.filter(request => request.cancel !== true).length, 2, "Nur der Nutzertipp startet einen zweiten Modellauftrag");
   env.win.__langformKurzFinish(oldId, result); await tick();
   assert.equal(env.sheet().getAttribute("data-summary-state"), "pending");
-  env.win.__langformKurzFinish(env.hostRequests[1].id, result); await tick();
+  env.win.__langformKurzFinish(env.hostRequests[2].id, result); await tick();
   assert.equal(env.sheet().getAttribute("data-summary-state"), "ready");
   assert.equal(env.timers.size, 0);
 });

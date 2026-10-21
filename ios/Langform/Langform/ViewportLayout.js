@@ -27,7 +27,11 @@ html[data-langform-feed-header]:not([data-langform-fullscreen]) ytm-header-bar,
 html[data-langform-feed-header]:not([data-langform-fullscreen]) ytm-mobile-topbar-renderer,
 html[data-langform-feed-header]:not([data-langform-fullscreen]) .ytTopBarViewModelHost {
   position:fixed!important; top:var(--lf-safe-top)!important; left:0!important; right:0!important;
-  transform:none!important; background-color:#000!important; z-index:50!important;
+  /* Individual transforms compose independently of transform. They also
+     establish a containing block for a nested fixed header, multiplying the
+     safe inset. A persistent feed head has one stationary native origin. */
+  transform:none!important; translate:none!important; rotate:none!important; scale:none!important;
+  transition:none!important; background-color:#000!important; z-index:50!important;
   color:#fff!important;
   --yt-spec-text-primary:#fff; --yt-spec-text-secondary:#aaa;
   --yt-spec-icon-active-other:#fff; --yt-spec-icon-inactive:#fff; --yt-spec-wordmark-text:#fff;
@@ -312,7 +316,9 @@ html[data-langform-edge-to-edge]:not([data-langform-mini-video]):not([data-langf
     if (!previous || previous.top !== next.top || previous.nativeMini !== next.nativeMini) coverExpired = false;
     win.__langformStageInsets = next;
     if (doc.documentElement) {
-      doc.documentElement.style.setProperty('--lf-native-safe-top', next.top + 'px');
+      for (var side of ['top', 'right', 'bottom', 'left']) {
+        doc.documentElement.style.setProperty('--lf-native-safe-' + side, next[side] + 'px');
+      }
       doc.documentElement.toggleAttribute('data-langform-mini-video', next.nativeMini);
     }
     updateSafeTopCover();

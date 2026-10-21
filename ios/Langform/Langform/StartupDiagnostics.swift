@@ -1,5 +1,10 @@
 import Foundation
 import CoreFoundation
+#if os(iOS) && !targetEnvironment(simulator)
+import UIKit
+import os
+import Darwin
+#endif
 
 /// Opt-in local timing only. Never logs account data, URLs or search queries.
 /// Launch with LANGFORM_DIAGNOSTICS=1 and collect Library/Caches/langform-startup.jsonl.
@@ -8,6 +13,13 @@ enum StartupDiagnostics {
     static let playerEventsEnabled = enabled && ProcessInfo.processInfo.environment["LANGFORM_PLAYER_TRACE"] == "1"
     static let audioRouteProbeEnabled = enabled && ProcessInfo.processInfo.environment["LANGFORM_AUDIO_ROUTE_PROBE"] == "1"
     static let playerObserverEnabled = playerEventsEnabled || audioRouteProbeEnabled
+    #if os(iOS) && !targetEnvironment(simulator)
+    private static let deviceMemoryProbeEnabled = enabled && ProcessInfo.processInfo.environment["LANGFORM_DEVICE_MEMORY_PROBE"] == "1"
+    private static var memoryProbeStarted = false
+    private static var memoryProbeEpoch = 0
+    private static var memoryProbeObservers: [NSObjectProtocol] = []
+    private static var memoryProbeWork: [DispatchWorkItem] = []
+    #endif
     private static let runID = UUID().uuidString
     private static var playerRows = 0
     private static let origin = ProcessInfo.processInfo.systemUptime
@@ -27,7 +39,74 @@ enum StartupDiagnostics {
         }
         writer.async { try? Data().write(to: fileURL, options: .atomic) }
         mark("app-init")
+        #if os(iOS) && !targetEnvironment(simulator)
+        installDeviceMemoryProbe()
+        #endif
     }
+
+    #if os(iOS) && !targetEnvironment(simulator)
+    private static func installDeviceMemoryProbe() {
+        guard deviceMemoryProbeEnabled, memoryProbeObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        memoryProbeObservers = [
+            center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                startDeviceMemoryProbe()
+            },
+            center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+                stopDeviceMemoryProbe()
+            }
+        ]
+        if UIApplication.shared.applicationState == .active { startDeviceMemoryProbe() }
+    }
+
+    private static func startDeviceMemoryProbe() {
+        guard deviceMemoryProbeEnabled, !memoryProbeStarted,
+              UIApplication.shared.applicationState == .active else { return }
+        memoryProbeStarted = true
+        memoryProbeEpoch += 1
+        let epoch = memoryProbeEpoch
+        let activeOrigin = ProcessInfo.processInfo.systemUptime
+        for (index, delay) in [0.0, 5.0, 15.0, 30.0].enumerated() {
+            let work = DispatchWorkItem {
+                guard deviceMemoryProbeEnabled, memoryProbeEpoch == epoch,
+                      UIApplication.shared.applicationState == .active else { return }
+                var row: [String: Any] = [
+                    "event": "device-memory-probe", "index": index, "scheduledSeconds": delay,
+                    "elapsedMilliseconds": max(0, (ProcessInfo.processInfo.systemUptime - activeOrigin) * 1000),
+                    "availableMemoryBytes": UInt64(os_proc_available_memory()),
+                    "physicalMemoryBytes": ProcessInfo.processInfo.physicalMemory,
+                    "osVersion": ProcessInfo.processInfo.operatingSystemVersionString
+                ]
+                if let footprint = currentPhysicalFootprint() { row["physicalFootprintBytes"] = footprint }
+                append(row)
+                if index == 3 { stopDeviceMemoryProbe() }
+            }
+            memoryProbeWork.append(work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+    }
+
+    private static func stopDeviceMemoryProbe() {
+        memoryProbeEpoch += 1
+        memoryProbeWork.forEach { $0.cancel() }
+        memoryProbeWork.removeAll()
+        memoryProbeObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        memoryProbeObservers.removeAll()
+    }
+
+    /// Public self-task accounting only; failure omits this optional metric.
+    private static func currentPhysicalFootprint() -> UInt64? {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        return info.phys_footprint
+    }
+    #endif
 
     static func mark(_ event: String, once: Bool = false, documentMilliseconds: Double? = nil) {
         guard enabled, !once || seen.insert(event).inserted else { return }

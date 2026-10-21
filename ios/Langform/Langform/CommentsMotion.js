@@ -106,10 +106,12 @@
     return parts.length > 1 ? parseFloat(parts[1]) || 0 : 0;
   }
   function cancelDrag(entry, restore) {
+    var held = !restore && entry.drag && entry.drag.holding ? entry.drag : null;
     entry.drag = null;
     entry.contact = null;
     entry.node.removeAttribute("data-langform-comments-dragging");
     if (restore) { restorePresentation(entry); entry.springTarget = null; }
+    else if (held) settleDrag(entry, held.offset, held.resumeTarget, 0, false);
   }
   function preparePresentation(entry, offset) {
     if (entry.presentation) return;
@@ -129,7 +131,7 @@
     // Current mweb adds a second overflow:auto wrapper above the background.
     // Expanding only the child draws its header outside that clip while AX
     // still reports its offscreen frame. Lift both clips for this lease only.
-    entry.interactiveRenderer = entry.renderer;
+    entry.interactiveRenderer = presentationRenderer(entry);
     if (entry.interactiveRenderer) entry.interactiveRenderer.setAttribute("data-langform-comments-interactive", "");
   }
   // Closed-form damped oscillator: x'' + 2*zeta*w*x' + w*w*x = 0.
@@ -171,7 +173,8 @@
     stopAnimation(entry);
     entry.springTarget = target;
     if (dismiss) {
-      var button = entry.renderer && entry.renderer.querySelector(closeSelector);
+      var renderer = presentationRenderer(entry);
+      var button = renderer && renderer.querySelector(closeSelector);
       if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") { dismiss = false; target = 0; entry.springTarget = 0; }
       else { entry.closing = true; finishOriginalClose(entry, button); }
     }
@@ -260,12 +263,64 @@
     if (!header && (!body || scrollingAncestor(event.target, entry.surface))) { traceGesture(entry,event,"begin-reject",body ? "body-scroll" : "outside"); return; }
     var active = win.document.activeElement;
     if (active && active.closest && active.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) { traceGesture(entry,event,"begin-reject","active-input"); return; }
+    var beganAt = win.performance.now();
     entry.drag = { kind: kind, id: kind === "touch" ? point.identifier : event.pointerId, pointerId: kind === "pointer" ? event.pointerId : undefined, touchId: kind === "touch" ? point.identifier : undefined, x: point.clientX, y: point.clientY,
-      lastX: point.clientX, lastY: point.clientY, lastTime: win.performance.now(), velocity: 0, offset: entry.restOffset || 0, startOffset: null, header: !!header, claimed: false };
+      lastX: point.clientX, lastY: point.clientY, lastTime: beganAt, lastMotionAt: beganAt,
+      velocityAt: beganAt, velocitySamples: [{ at: beganAt, y: point.clientY }], velocityDirection: 0, turn: null,
+      velocity: 0, offset: entry.restOffset || 0, startOffset: null, header: !!header, claimed: false };
     entry.contact = null;
-    if (header) ownContact(entry, entry.drag);
+    if (header) {
+      ownContact(entry, entry.drag);
+      // This contact already owns the header. Hold a moving release spring
+      // at the pose under the finger immediately, before the drag threshold.
+      // Waiting until the first 8px move lets the sheet drift under a resting
+      // finger, then adds the whole contact path to that later spring sample.
+      // Ordinary entrances and undecided list touches keep their own clock.
+      if (entry.animation && entry.presentation && entry.springTarget !== null && entry.springTarget !== undefined) {
+        var heldOffset = currentOffset(entry);
+        entry.drag.holding = true;
+        entry.drag.resumeTarget = entry.springTarget;
+        entry.drag.startOffset = entry.drag.offset = heldOffset;
+        stopAnimation(entry);
+        // Retain the existing spring's height reserve as well: trimming it
+        // at contact could resize a scrolled list before any drag is claimed.
+        entry.surface.style.setProperty("translate", "0px " + heldOffset + "px");
+        entry.springTarget = null;
+      }
+    }
     traceGesture(entry,event,"begin");
     if (header) event.stopImmediatePropagation();
+  }
+  function sampleVelocity(drag, y, now, finalPoint) {
+    var direction = y > drag.lastY ? 1 : -1, reversed = false;
+    if (!drag.velocityDirection) drag.velocityDirection = direction;
+    if (direction !== drag.velocityDirection) {
+      if (!drag.turn || drag.turn.direction !== direction) drag.turn = { direction: direction, at: drag.lastTime, y: drag.lastY };
+      // One quantized terminal pixel is not a new gesture. Once an opposing
+      // path covers the same8px used for drag admission, its own trajectory
+      // takes over immediately, including a substantial coalesced last point.
+      if (Math.abs(y - drag.turn.y) >= 8) {
+        drag.velocitySamples = [{ at: drag.turn.at, y: drag.turn.y }];
+        drag.velocityAt = drag.turn.at;
+        drag.velocityDirection = direction;
+        drag.turn = null;
+        reversed = true;
+      }
+    } else drag.turn = null;
+    var sampleDt = now - drag.velocityAt;
+    if (!(sampleDt >= 8 || ((finalPoint || reversed) && sampleDt > 0))) return;
+    var samples = drag.velocitySamples, cutoff = now - 80;
+    samples.push({ at: now, y: y });
+    while (samples.length > 2 && samples[1].at <= cutoff) samples.shift();
+    if (samples.length > 16) samples.splice(0, samples.length - 16);
+    var first = samples[0], baseAt = first.at, baseY = first.y;
+    if (baseAt < cutoff && samples.length > 1) {
+      var next = samples[1];
+      baseY += (next.y - baseY) * (cutoff - baseAt) / (next.at - baseAt);
+      baseAt = cutoff;
+    }
+    if (now > baseAt) drag.velocity = Math.max(-2200, Math.min(2200, (y - baseY) / (now - baseAt) * 1000));
+    drag.velocityAt = now;
   }
   function moveDrag(entry, event, point, kind, finalPoint) {
     var drag = entry.drag;
@@ -273,8 +328,12 @@
     var dx = point.clientX - drag.x, dy = point.clientY - drag.y;
     if (!drag.claimed) {
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
-      if (Math.abs(dx) > Math.abs(dy) * .8 || (!drag.header && (dy <= 0 || scrollingAncestor(event.target, entry.surface)))) { entry.drag = null; return; }
-      drag.startOffset = currentOffset(entry);
+      if (Math.abs(dx) > Math.abs(dy) * .8 || (!drag.header && (dy <= 0 || scrollingAncestor(event.target, entry.surface)))) {
+        if (drag.holding) settleDrag(entry, drag.offset, drag.resumeTarget, 0, false);
+        else entry.drag = null;
+        return;
+      }
+      if (drag.startOffset === null) drag.startOffset = currentOffset(entry);
       preparePresentation(entry, drag.startOffset);
       if (!(entry.baseHeight > 0 && isFinite(entry.closeDistance) && entry.closeDistance > 2)) { cancelDrag(entry, true); return; }
       stopAnimation(entry);
@@ -283,10 +342,18 @@
       entry.node.setAttribute("data-langform-comments-dragging", "");
       traceGesture(entry,event,"claim");
     }
-    var now = win.performance.now(), dt = now - drag.lastTime;
-    if (dt >= 8 || (finalPoint && dt > 0 && point.clientY !== drag.lastY)) {
-      drag.velocity = Math.max(-2200, Math.min(2200, (point.clientY - drag.lastY) / dt * 1000));
-    }
+    var now = win.performance.now();
+    // Fractional CSS coordinates can differ only by floating-point residue
+    // at an otherwise identical final endpoint; that is not a reversal.
+    var changedY = Math.abs(point.clientY - drag.lastY) > .01;
+    // A high-rate contact can deliver every move less than 8ms apart. Keep
+    // a separate sampling anchor so those real displacements accumulate;
+    // advancing the anchor on every event starves the velocity estimate.
+    // Estimate the last80ms trajectory, so a final one-device-pixel/17ms
+    // endpoint cannot replace a real fast path with19.6px/s. Duplicate events
+    // are not a stop; a deliberate >100ms hold still removes momentum.
+    if (changedY) sampleVelocity(drag, point.clientY, now, finalPoint);
+    if (changedY) drag.lastMotionAt = now;
     drag.lastTime = now; drag.lastX = point.clientX; drag.lastY = point.clientY;
     var offset = drag.startOffset + dy;
     if (offset < -entry.expandDistance) offset = -entry.expandDistance + (offset + entry.expandDistance) * .18;
@@ -306,12 +373,18 @@
       if (entry.drag !== drag) return;
     }
     entry.node.removeAttribute("data-langform-comments-dragging");
-    if (!drag.claimed) { entry.drag = null; return; }
-    var velocity = win.performance.now() - drag.lastTime > 100 ? 0 : drag.velocity;
+    if (!drag.claimed) {
+      if (drag.holding) settleDrag(entry, drag.offset, drag.resumeTarget, 0, false);
+      else entry.drag = null;
+      return;
+    }
+    var velocityAge = win.performance.now() - drag.lastMotionAt;
+    var velocity = velocityAge > 100 ? 0 : drag.velocity;
     var projected = drag.offset + velocity * .12;
     var dismiss = !cancelled && projected > Math.min(180, entry.closeDistance * .3);
     var target = cancelled ? entry.restOffset || 0 : dismiss ? entry.closeDistance : projected < -entry.expandDistance * .35 ? -entry.expandDistance : 0;
-    traceGesture(entry,event,"release",cancelled ? "cancel" : dismiss ? "dismiss" : target ? "expanded" : "rest");
+    traceGesture(entry,event,"release",cancelled ? "cancel" : dismiss ? "dismiss" : target ? "expanded" : "rest",
+      { velocity: velocity, velocityAge: velocityAge, projected: projected });
     entry.suppressClickUntil = win.performance.now() + 450;
     if (event.cancelable) event.preventDefault();
     event.stopImmediatePropagation();
@@ -494,6 +567,15 @@
         renderer.querySelector("ytm-comments-header-renderer")) return renderer;
     return null;
   }
+  function presentationRenderer(entry) {
+    if (entry.renderer && entry.renderer.isConnected) return entry.renderer;
+    var shell = entry.node.querySelector("ytm-engagement-panel-section-list-renderer");
+    // A typed comments panel can keep its real header/X over an empty loading
+    // body indefinitely. Its controls must not depend on network hydration.
+    // This is presentation permission only: renderer verification and the
+    // deep hydration observer remain independent until real content arrives.
+    return entry.commentIntent && shell && shell.classList.contains("engagement-panel-comments-section") ? shell : null;
+  }
   function inspect(entry) {
     if (!visible(entry.node)) { reset(entry); stopWaiting(entry); return; }
     if (entry.shown && entry.renderer && entry.renderer.isConnected) return;
@@ -509,6 +591,14 @@
   }
   function waitForRenderer(entry) {
     if (!visible(entry.node)) { reset(entry); return; }
+    var shell = entry.node.querySelector("ytm-engagement-panel-section-list-renderer");
+    if (entry.commentIntent && shell && !shell.classList.contains("engagement-panel-comments-section") &&
+        Array.prototype.some.call(shell.classList, function (name) { return /^engagement-panel-.+-section$/.test(name); })) {
+      // A retained outer node can be reused for a different identified panel.
+      // Its previous comments intent must not lend that panel our controls.
+      reset(entry);
+      entry.commentIntent = false;
+    }
     if (entry.shown && entry.renderer && entry.renderer.isConnected) return;
     syncSurface(entry);
     if (entry.renderer && !entry.renderer.isConnected) {
@@ -519,6 +609,7 @@
       entry.renderer = null;
       entry.shown = false;
     }
+    if (!entry.renderer && presentationRenderer(entry)) entry.shown = true;
     // A slow network may leave the lazy module's skeleton mounted for seconds.
     // Observe only this still-unclassified panel until its comments arrive;
     // once recognized, deep mutations/scrolling produce no decoration work.
@@ -567,7 +658,7 @@
       // Keep the displayed pose continuous. Accelerate the remaining entrance
       // while list/control touches still reach YouTube. A header candidate
       // takes its own drag lease without cancelling the visible pose here.
-      if (!entry.closing && entry.animation && entry.acceleratedAnimation !== entry.animation && entry.animation.playbackRate !== 2 && typeof entry.animation.updatePlaybackRate === "function") {
+      if (!entry.closing && !entry.presentation && entry.animation && entry.acceleratedAnimation !== entry.animation && entry.animation.playbackRate !== 2 && typeof entry.animation.updatePlaybackRate === "function") {
         // WebKit may apply the new rate on its next timeline sample. Remember
         // this request so the matching pointer/touch pair cannot reschedule it.
         entry.acceleratedAnimation = entry.animation;
@@ -607,7 +698,8 @@
           event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       var target = event.target;
       var button = target && target.closest && target.closest(closeSelector);
-      if (!button || !entry.renderer.contains(button) || button.disabled || button.getAttribute("aria-disabled") === "true") return;
+      var renderer = presentationRenderer(entry);
+      if (!button || !renderer || !renderer.contains(button) || button.disabled || button.getAttribute("aria-disabled") === "true") return;
       if (!canDecorate(entry.surface)) return;
       if (entry.closing) {
         event.preventDefault();
@@ -655,15 +747,37 @@
       entry.closing = false;
     });
   }
+  function panelPayload(detail) {
+    if (!detail || typeof detail !== "object") return null;
+    function own(object, key) {
+      return object && typeof object === "object" && Object.prototype.hasOwnProperty.call(object, key) ? object[key] : null;
+    }
+    function renderer(slot) {
+      var value = own(slot, "engagementPanelSectionListRenderer");
+      return value && typeof value === "object" && typeof own(value, "panelIdentifier") === "string" ? value : null;
+    }
+    // The dispatcher renames its wrapper slot between public mweb builds.
+    // Keep the verified slots first, then accept the same exact typed schema
+    // directly or under at most16 own first-level slots. Never recurse into
+    // arbitrary payloads, infer from text, or inspect comment/account content.
+    var known = renderer(own(detail, "NF")) || renderer(own(detail, "wF")) || renderer(detail);
+    if (known) return known;
+    var inspected = 0;
+    for (var key in detail) {
+      if (!Object.prototype.hasOwnProperty.call(detail, key)) continue;
+      if (++inspected > 16) break;
+      var candidate = renderer(detail[key]);
+      if (candidate) return candidate;
+    }
+    return null;
+  }
   // YouTube announces the data before mounting zrb's stable outer panel. The
   // first open can show Ebb's loading shell while g8NBcb is fetched. Classify
   // that shell from the actual push payload, so it and hydrated comments share
   // one entrance. Record other panel types too to preserve the stack's order.
   win.addEventListener("engagement-panel-push", function (event) {
     var detail = event.detail;
-    // The current public mweb dispatcher/consumer uses NF; older versions
-    // used wF. Read only these verified payload slots, never arbitrary data.
-    var renderer = detail && ((detail.NF && detail.NF.engagementPanelSectionListRenderer) || (detail.wF && detail.wF.engagementPanelSectionListRenderer));
+    var renderer = panelPayload(detail);
     // The payload identifies the outer comments panel, not its inner item
     // section. Current Watch responses use engagement-panel-comments-section.
     var comments = renderer && (renderer.panelIdentifier === "engagement-panel-comments-section" || renderer.panelIdentifier === "comment-item-section");

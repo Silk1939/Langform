@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000020 /* LiteRTLM in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000021 /* LiteRTLM */; };
 		A10000000000000000000013 /* logic.js in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000010 /* logic.js */; };
 		A10000000000000000000014 /* hide.js in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* hide.js */; };
 		A10000000000000000000015 /* controller.js in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* controller.js */; };
@@ -36,6 +37,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000020 /* LiteRTLM in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -84,6 +86,9 @@
 				A10000000000000000000002 /* Langform */,
 			);
 			name = Langform;
+			packageProductDependencies = (
+				A10000000000000000000021 /* LiteRTLM */,
+			);
 			productName = Langform;
 			productReference = A10000000000000000000001 /* Langform.app */;
 			productType = "com.apple.product-type.application";
@@ -113,6 +118,9 @@
 				Base,
 			);
 			mainGroup = A10000000000000000000003;
+			packageReferences = (
+				A10000000000000000000022 /* XCRemoteSwiftPackageReference "LiteRT-LM" */,
+			);
 			productRefGroup = A10000000000000000000004 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -198,7 +206,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = E94E8C9CC2FF184832B68E4C02A332867D66F560;
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 72;
+                CURRENT_PROJECT_VERSION = 93;
 				DEVELOPMENT_TEAM = RFN59MUTQ3;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_TESTABILITY = YES;
@@ -236,7 +244,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = E94E8C9CC2FF184832B68E4C02A332867D66F560;
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 72;
+                CURRENT_PROJECT_VERSION = 93;
 				DEVELOPMENT_TEAM = RFN59MUTQ3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -288,6 +296,24 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+/* Begin XCRemoteSwiftPackageReference section */
+		A10000000000000000000022 /* XCRemoteSwiftPackageReference "LiteRT-LM" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google-ai-edge/LiteRT-LM.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.18.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A10000000000000000000021 /* LiteRTLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000022 /* XCRemoteSwiftPackageReference "LiteRT-LM" */;
+			productName = LiteRTLM;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A10000000000000000000009 /* Project object */;
 }

@@ -225,10 +225,222 @@ final class DeviceAccessibilityTests: XCTestCase {
         downloads.tap()
         let done = app.buttons["Fertig"]
         XCTAssertTrue(done.waitForExistence(timeout: 45), "Downloadbibliothek öffnet nicht nach Quellenprüfung.")
-        XCTAssertTrue(app.navigationBars["Downloads"].exists)
+        XCTAssertTrue(app.navigationBars["Mediathek"].exists)
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "langform.library.screen").firstMatch.exists)
         record(app, name: "05-download-library")
         done.tap()
         XCTAssertTrue(waitUntil(15, { collapse.exists && collapse.isHittable }))
+    }
+
+    @MainActor func test54SummaryButtonRepeatedOpenCloseRemainsResponsive() {
+        executionTimeAllowance = 180
+        let app = launchInstalledApp(videoID: "aqz-KE-bpKQ")
+        let collapse = app.buttons["Verkleinern"]
+        XCTAssertTrue(waitUntil(30, { collapse.exists && collapse.isHittable }))
+        let title = "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film"
+        let watch = app.webViews.containing(.staticText, identifier: title).firstMatch
+        XCTAssertTrue(waitUntil(25) { watch.exists }, "Die tatsächliche Big-Buck-Bunny-Watchseite fehlt.")
+        let tools = watch.otherElements.matching(NSPredicate(format: "label == %@", "Langform Videoaktionen, Bereich")).firstMatch
+        let summaryButtons = watch.buttons.matching(NSPredicate(format: "label == %@", "Kurzfassung"))
+        func mainSummary() -> XCUIElement? {
+            let comments = watch.buttons.matching(NSPredicate(format: "label MATCHES[c] %@", "^(Kommentare|Comments)(,.*| [0-9].*)?$"))
+                .allElementsBoundByIndex.first { $0.exists && $0.frame.width > app.frame.width * 0.6 && $0.frame.height > 40 }
+            guard tools.exists, let comments else { return nil }
+            // Actual Watch AX: the main video's action lies after its Langform
+            // toolbar and before its comments card. Recommendation actions are
+            // nested inside their own links farther down the same document.
+            let candidates = summaryButtons.allElementsBoundByIndex.filter {
+                $0.exists && $0.frame.height >= 44 &&
+                $0.frame.minY >= tools.frame.maxY - 2 && $0.frame.maxY <= comments.frame.minY + 2
+            }
+            return candidates.count == 1 ? candidates[0] : nil
+        }
+        func dismissVisibleHistoryPrompt() {
+            let heading = watch.staticTexts["Die Empfehlungen passen nicht ganz?"]
+            let keepDisabled = watch.buttons["Verlauf deaktiviert lassen"]
+            guard heading.exists, heading.isHittable, keepDisabled.exists, keepDisabled.isHittable else { return }
+            record(app, name: "54-history-prompt-before", detail: "Visible YouTube prompt in the exact current Watch; preserve disabled history.")
+            keepDisabled.tap()
+            XCTAssertTrue(waitUntil(5) { !keepDisabled.exists || !keepDisabled.isHittable }, "Die sichtbare YouTube-Verlaufsabfrage blockiert weiterhin den Watch.")
+            record(app, name: "54-history-prompt-dismissed")
+        }
+        XCTAssertTrue(waitUntil(25) { mainSummary() != nil }, "Die eindeutige Kurzfassung des Hauptvideos fehlt zwischen Werkzeugen und Kommentaren.")
+        for cycle in 1...2 {
+            dismissVisibleHistoryPrompt()
+            for _ in 0..<4 {
+                guard let action = mainSummary(), !action.isHittable else { break }
+                let pictureBottom = sponsorPlayer(app)?.frame.maxY ?? collapse.frame.maxY
+                let libraryTop = app.buttons["langform.library.open"].frame.minY
+                let moveDown = action.frame.minY < pictureBottom + 8
+                guard moveDown || action.frame.maxY > libraryTop - 8 else { break }
+                // Scroll only to reveal the already identified main action;
+                // do not select the first recommendation that becomes visible.
+                let origin = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: moveDown ? 0.62 : 0.80))
+                let target = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: moveDown ? 0.80 : 0.62))
+                origin.press(forDuration: 0.05, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0)
+                dismissVisibleHistoryPrompt()
+            }
+            guard let summary = mainSummary(), summary.isHittable else {
+                record(app, name: "54-main-summary-unreachable-\(cycle)")
+                XCTFail("Kurzfassung des bestätigten Hauptvideos ist vor Zyklus \(cycle) nicht erreichbar.")
+                return
+            }
+            record(app, name: "54-main-summary-before-\(cycle)", detail: "source=aqz-KE-bpKQ; exact Watch title=\(title); main summary frame=\(summary.frame); toolbar frame=\(tools.frame)")
+            summary.tap()
+            // WebKit exposes the actual role=dialog/aria-labelledby node with
+            // this title. Scope the action to that dialog: Watch can expose
+            // other buttons named Schließen after the summary has disappeared.
+            let dialog = app.otherElements.matching(NSPredicate(format: "label == %@", "Das Wichtigste, Webdialog")).firstMatch
+            let heading = app.staticTexts["Das Wichtigste"]
+            let close = dialog.buttons["Schließen"]
+            XCTAssertTrue(waitUntil(15, { dialog.exists && heading.exists && close.exists && close.isHittable }), "Kurzfassungsfenster öffnet nach echtem Knopfdruck nicht.")
+            let retry = dialog.buttons["Erneut versuchen"]
+            let ready = dialog.staticTexts["Die wichtigsten Punkte"]
+            // The ordinary network/caption path may legitimately return an
+            // error. Both terminal states must preserve a usable app. This
+            // does not claim native inference or model availability on iOS.
+            XCTAssertTrue(waitUntil(cycle == 1 ? 70 : 45, {
+                app.state == .runningForeground && (retry.exists || ready.exists)
+            }), "Kurzfassung endet nicht mit einem bedienbaren Ergebnis oder Fehler.")
+            record(app, name: "54-summary-terminal-\(cycle)", detail: "terminal=\(retry.exists ? "error" : "ready"); exact main Watch aqz-KE-bpKQ + real Kurzfassung tap; no injected summary source; terminal error does not prove model inference")
+            XCTAssertEqual(app.state, .runningForeground)
+            XCTAssertTrue(close.isHittable)
+            close.tap()
+            let closed = waitUntil(10, { !dialog.exists && !heading.exists && collapse.exists && collapse.isHittable })
+            record(app, name: "54-summary-closed-\(cycle)",
+                   detail: "summary dialog absent=\(!dialog.exists); summary heading absent=\(!heading.exists); native collapse hittable=\(collapse.exists && collapse.isHittable)")
+            XCTAssertTrue(closed, "Kurzfassung lässt sich nicht schließen; Player bleibt blockiert.")
+        }
+        record(app, name: "54-summary-two-cycles-closed")
+    }
+
+    @MainActor func test57ExplicitGemmaDiagnosticReturnsToNativeLibraryOnSimulator() throws {
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("Die explizite Gemma-Diagnose ohne Modelllauf wird ausschließlich im Simulator geprüft.")
+        #endif
+        let app = XCUIApplication(bundleIdentifier: bundleID)
+        app.launchArguments = ["--langform-gemma-diagnostic"]
+        app.launchEnvironment = ["LANGFORM_GEMMA_PROBE": "1", "LANGFORM_GEMMA_PROBE_MODE": "smoke",
+                                 "LANGFORM_OFFLINE_LIBRARY_PROBE": "1"]
+        app.terminate()
+        app.launch()
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertTrue(app.buttons["langform.library.open"].waitForExistence(timeout: 15),
+                      "Die beendete Diagnose kehrt nicht zur normalen nativen Mediathek zurück.")
+        XCTAssertFalse(app.staticTexts["Lokaler Gemma-Test"].exists, "Die beendete Diagnose hält ihre Testansicht weiter offen.")
+        XCTAssertEqual(app.webViews.count, 0, "Der bestehende Simulator-Offlinepfad benötigt keine entfernte WebView.")
+        openNativeLibrary(app)
+        record(app, name: "57-explicit-diagnostic-completed", detail: "Both explicit diagnostic launch markers; Simulator probe returns without a native model. Normal root/library opens afterward; existing offline boundary omits remote WebViews. No inference, quality, heat or physical-device screen-lease claim.")
+        app.buttons["langform.library.close"].tap()
+        XCTAssertTrue(waitUntil(10) {
+            !app.buttons["langform.library.close"].exists &&
+                app.buttons["langform.library.open"].exists && app.buttons["langform.library.open"].isHittable
+        }, "Die Mediathek schließt nicht vollständig zum bedienbaren normalen Einstieg.")
+        XCTAssertFalse(app.staticTexts["Lokaler Gemma-Test"].exists)
+        record(app, name: "57-explicit-diagnostic-library-closed", detail: "The native library sheet is absent and the normal library entry is hittable after dismissal. Simulator-only lifecycle check; no native model inference.")
+    }
+
+    /// The Simulator-only root hook omits the remote WebView entirely. This is
+    /// a deterministic dependency-boundary check, not an airplane-mode test.
+    @MainActor private func launchSimulatedOfflineApp() -> XCUIApplication {
+        let app = XCUIApplication(bundleIdentifier: bundleID)
+        app.launchEnvironment = ["LANGFORM_OFFLINE_LIBRARY_PROBE": "1"]
+        app.terminate()
+        app.launch()
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertTrue(app.buttons["langform.library.open"].waitForExistence(timeout: 15),
+                      "Der native Mediathek-Einstieg fehlt beim simulierten Offline-Kaltstart.")
+        XCTAssertEqual(app.webViews.count, 0, "Der simulierte Offline-Pfad darf keinen entfernten Feed erzeugen.")
+        return app
+    }
+
+    @MainActor private func openNativeLibrary(_ app: XCUIApplication) {
+        let open = app.buttons["langform.library.open"]
+        XCTAssertTrue(waitUntil(10) { open.exists && open.isHittable }, "Die native Mediathek ist nicht erreichbar.")
+        open.tap()
+        let screen = app.descendants(matching: .any).matching(identifier: "langform.library.screen").firstMatch
+        XCTAssertTrue(screen.waitForExistence(timeout: 10), "Der native Mediathek-Inhalt öffnet nicht.")
+        XCTAssertTrue(app.buttons["langform.library.close"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor func test55NativeLibraryRemainsReachableAcrossSimulatedOfflineColdLaunch() throws {
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("Die native Offline-Abhängigkeitsprobe ist ausschließlich im Simulator verfügbar.")
+        #endif
+        executionTimeAllowance = 120
+        let app = launchSimulatedOfflineApp()
+        for cycle in 1...2 {
+            openNativeLibrary(app)
+            let localImport = app.buttons["langform.library.import"]
+            for _ in 0..<4 where !localImport.exists {
+                app.descendants(matching: .any).matching(identifier: "langform.library.screen").firstMatch.swipeUp()
+            }
+            XCTAssertTrue(localImport.exists, "Lokaler Videoimport fehlt in der Mediathek.")
+            record(app, name: "55-native-library-open-\(cycle)",
+                   detail: "Simulator-only native offline branch; remote WebView construction is absent. No actual network-interface outage claimed.")
+            app.buttons["langform.library.close"].tap()
+            XCTAssertTrue(waitUntil(10) { app.buttons["langform.library.open"].isHittable })
+            XCTAssertEqual(app.webViews.count, 0)
+            if cycle == 1 {
+                app.terminate()
+                app.launch()
+                XCTAssertEqual(app.state, .runningForeground)
+                XCTAssertTrue(app.buttons["langform.library.open"].waitForExistence(timeout: 15))
+                XCTAssertEqual(app.webViews.count, 0)
+            }
+        }
+    }
+
+    /// Prepare a real local MP4 and its ready manifest entry externally using
+    /// simctl. Absence is an explicit skip, never a fabricated playable asset.
+    @MainActor func test56ReadyLocalVideoOpensAfterSimulatedOfflineRelaunch() throws {
+        #if !targetEnvironment(simulator)
+        throw XCTSkip("Die native Offline-Abhängigkeitsprobe ist ausschließlich im Simulator verfügbar.")
+        #endif
+        executionTimeAllowance = 120
+        let app = launchSimulatedOfflineApp()
+        let fixtureID = "4B1CF246-338D-407B-9A83-6ADE9E544F55"
+        for cycle in 1...2 {
+            openNativeLibrary(app)
+            let play = app.buttons["langform.library.play." + fixtureID]
+            for _ in 0..<4 where !play.exists {
+                app.descendants(matching: .any).matching(identifier: "langform.library.screen").firstMatch.swipeUp()
+            }
+            if cycle == 1 && !play.waitForExistence(timeout: 5) {
+                app.buttons["langform.library.close"].tap()
+                throw XCTSkip("Die externe lokale MP4-Fixture Langform Offline QA fehlt. Native Offline-Erreichbarkeit wird separat in Fall55 geprüft.")
+            }
+            XCTAssertTrue(play.waitForExistence(timeout: 10), "Die fertige lokale Videodatei fehlt nach dem Appneustart.")
+            for _ in 0..<4 where !play.isHittable {
+                app.descendants(matching: .any).matching(identifier: "langform.library.screen").firstMatch.swipeUp()
+            }
+            XCTAssertTrue(play.isHittable, "Das gespeicherte Video ist nicht abspielbar erreichbar.")
+            play.tap()
+            let player = app.descendants(matching: .any).matching(identifier: "langform.offline.player").firstMatch
+            XCTAssertTrue(player.waitForExistence(timeout: 10), "Der lokale Videoplayer öffnet nicht.")
+            let close = app.buttons["langform.offline.player.close"]
+            XCTAssertTrue(waitUntil(10) { close.exists && close.isHittable })
+            let status = app.descendants(matching: .any).matching(identifier: "langform.offline.player.status").firstMatch
+            func elapsed() -> Int? {
+                guard let value = status.value as? String, value.hasPrefix("Bereit, ") else { return nil }
+                return value.split(separator: " ").dropFirst().first.flatMap { Int($0) }
+            }
+            XCTAssertTrue(waitUntil(15) { elapsed() != nil }, "Die lokale MP4 wird vom Player nicht als bereit bestätigt.")
+            let initialSeconds = try XCTUnwrap(elapsed())
+            XCTAssertTrue(waitUntil(10) { (elapsed() ?? -1) > initialSeconds }, "Die tatsächliche lokale Wiedergabezeit schreitet nicht fort.")
+            XCTAssertEqual(app.webViews.count, 0)
+            record(app, name: "56-local-video-player-\(cycle)",
+                   detail: "Externally seeded real local MP4, ready UUID \(fixtureID); AVPlayerItem ready, actual elapsed time \(initialSeconds)→\(elapsed() ?? -1)s. No remote WebView; no audible output claimed.")
+            close.tap()
+            XCTAssertTrue(app.buttons["langform.library.close"].waitForExistence(timeout: 10))
+            app.buttons["langform.library.close"].tap()
+            if cycle == 1 {
+                app.terminate()
+                app.launch()
+                XCTAssertTrue(app.buttons["langform.library.open"].waitForExistence(timeout: 15))
+                XCTAssertEqual(app.webViews.count, 0)
+            }
+        }
     }
 
     @MainActor func test06RepeatedPlayerActionsRemainResponsive() {
@@ -2473,10 +2685,14 @@ final class DeviceAccessibilityTests: XCTestCase {
         func header() -> XCUIElement? {
             app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH[c] %@","Kommentare")).allElementsBoundByIndex.first { $0.exists && $0.isHittable && $0.frame.minY > 10 }
         }
-        func contentScroll() -> Double? {
+        func commentsSnapshot() -> [String: Any]? {
             let structure=app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH %@","Commentsprobe ")).firstMatch
             guard structure.exists,let data=String(structure.label.dropFirst("Commentsprobe ".count)).data(using:.utf8),
-                  let snapshot=try? JSONSerialization.jsonObject(with:data) as? [String:Any],let rows=snapshot["rows"] as? [[String:Any]],
+                  let snapshot=try? JSONSerialization.jsonObject(with:data) as? [String:Any] else { return nil }
+            return snapshot
+        }
+        func contentScroll() -> Double? {
+            guard let rows=commentsSnapshot()?["rows"] as? [[String:Any]],
                   let content=rows.first(where:{ ($0["classes"] as? [String])?.contains("engagement-panel-content-wrapper") == true }),
                   let scroll=content["scroll"] as? [Double] else { return nil }
             return scroll.first
@@ -2521,6 +2737,7 @@ final class DeviceAccessibilityTests: XCTestCase {
                 XCTAssertEqual(try XCTUnwrap(header()).frame.minY,expanded,accuracy:3,"Listen-Scroll darf das erweiterte Blatt nicht verschieben.")
                 record(app,name:"44-content-scroll-before-header-dismiss",detail:"Content scroll=\(contentScroll() ?? -1)")
             }
+            let beforeDismissSample = try XCTUnwrap(commentsSnapshot()?["sample"] as? Int)
             if cycle == 1 {
                 XCTAssertLessThanOrEqual(try XCTUnwrap(contentScroll()),1,"Wiedergeöffnete Liste muss am Anfang stehen.")
                 let origin=app.coordinate(withNormalizedOffset:.zero)
@@ -2529,7 +2746,16 @@ final class DeviceAccessibilityTests: XCTestCase {
             } else {
                 try drag(app.frame.height,velocity:.fast,hold:0)
             }
-            XCTAssertTrue(waitUntil(8) { header() == nil && opener() != nil },"Schließen muss die unveränderte Watchkarte wieder erreichbar machen.")
+            // Querying hittability on an AX node while WebKit removes it can
+            // raise an XCTest activation-point error instead of returning false.
+            // Require a newer real DOM observation with no panel/owned sheet,
+            // together with the actual reachable original Watch card.
+            XCTAssertTrue(waitUntil(8) {
+                guard let snapshot = commentsSnapshot(),
+                      let sample = snapshot["sample"] as? Int, sample > beforeDismissSample,
+                      snapshot["panels"] as? Int == 0, snapshot["ownSheets"] as? Int == 0 else { return false }
+                return opener() != nil
+            },"Schließen muss die unveränderte Watchkarte wieder erreichbar machen.")
         }
         record(app,name:"44-comments-reopen-complete")
     }
@@ -2724,6 +2950,296 @@ final class DeviceAccessibilityTests: XCTestCase {
 
     /// Actual slow drags distinguish preview cancellation from release commit.
     /// Recorded pixels separately establish whether the held image follows.
+    @MainActor func test49ExternalYouTubeLinkColdLaunchWarmTimestampAndRejection() throws {
+        executionTimeAllowance = 600
+        XCUIDevice.shared.orientation = .portrait
+        // Consent preparation only. XCUIApplication.open cold creation does
+        // not apply launchEnvironment, so this phase uses real AX controls and
+        // the original public title/time rather than requiring a missing probe.
+        let app = launchInstalledApp(holdProbe: true)
+        app.terminate()
+        func entry(_ target: String) -> URL {
+            var parts = URLComponents()
+            parts.scheme = "langform"; parts.host = "open"
+            parts.queryItems = [URLQueryItem(name: "url", value: target)]
+            return parts.url!
+        }
+        func probe() -> XCUIElement {
+            app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Holdprobe ready=")).firstMatch
+        }
+        // Bound the original time readback by measured URL-delivery time.
+        // Even 2× playback from zero cannot reach 300s within 140 real seconds.
+        let coldTarget = 300.0
+        let coldStarted = ProcessInfo.processInfo.systemUptime
+        app.open(entry("https://youtu.be/aqz-KE-bpKQ?t=300&si=discarded"))
+        XCTAssertEqual(app.state, .runningForeground)
+        let title = "Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film"
+        XCTAssertTrue(waitUntil(40) {
+            app.buttons["Verkleinern"].isHittable && self.sponsorPlayer(app) != nil &&
+                app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", title))
+                    .allElementsBoundByIndex.contains { $0.exists && $0.isHittable && $0.frame.intersects(app.frame) }
+        }, "Der echte Kaltstartlink zeigt keine Watchansicht mit dem zugehörigen öffentlichen Videotitel.")
+        XCTAssertTrue(sponsorRevealControls(app), "Die kalt per Systemlink geöffnete Watchansicht hat keine erreichbare Wiedergabebedienung.")
+        if let play = sponsorPlayButton(app) { play.tap() }
+        XCTAssertTrue(waitUntil(12) {
+            guard let elapsed = self.sponsorElapsed(app) else { return false }
+            let wallElapsed = ProcessInfo.processInfo.systemUptime - coldStarted
+            return wallElapsed < 140 && elapsed >= coldTarget - 0.5 &&
+                elapsed <= coldTarget + wallElapsed * 2 + 5
+        }, "Die reale Playerzeitanzeige bestätigt die angeforderte300-s-Zeitmarke nicht innerhalb von140s. Auch ein natürlicher Start bei0s mit2× kann die Zielmarke dann nicht erreichen.")
+        record(app, name: "49-cold-system-url", detail: "Public title: \(title). Requested timestamp: \(coldTarget). Wall seconds since actual URL delivery: \(ProcessInfo.processInfo.systemUptime - coldStarted). Actual original player elapsed seconds: \(sponsorElapsed(app).map { String($0) } ?? "unavailable"). No probe was expected on this cold-created process.")
+
+        // Create a separate observed process normally, without a video-route
+        // probe. Real system URL delivery must now reach that existing process.
+        app.terminate()
+        _ = launchInstalledApp(holdProbe: true)
+        XCUIDevice.shared.press(.home)
+        app.open(entry("https://youtu.be/M7lc1UVf-VE?t=3"))
+        XCTAssertTrue(waitUntil(60) {
+            let p = probe()
+            return app.buttons["Verkleinern"].isHittable && p.exists &&
+                p.label.contains("data=M7lc1UVf-VE") && p.label.contains("ready=true") &&
+                p.label.contains("ad=false") && (self.zoomNumber(p, "time") ?? 0) >= 2.5
+        }, "Die echte URL-Auslieferung an den bestehenden Appprozess öffnet keine bestätigte Watchquelle mit Zeitmarke.")
+        record(app, name: "49-warm-system-url-instrumented", detail: probe().label)
+        let media = zoomNumber(probe(), "audioMedia")
+        let source = zoomNumber(probe(), "audioSource")
+        let sample = zoomNumber(probe(), "sample") ?? -1
+        XCUIDevice.shared.press(.home)
+        app.open(entry("https://www.youtube.com/watch?v=M7lc1UVf-VE&t=12"))
+        XCTAssertTrue(waitUntil(15) {
+            let p = probe()
+            let time = self.zoomNumber(p, "time") ?? -1
+            return p.exists && p.label.contains("data=M7lc1UVf-VE") &&
+                p.label.contains("seeking=false") && time >= 11.5 && time < 28 &&
+                self.zoomNumber(p, "audioMedia") == media && self.zoomNumber(p, "audioSource") == source &&
+                (self.zoomNumber(p, "sample") ?? -1) > sample
+        }, "Der Link zur bereits geöffneten Quelle übernimmt die neue Zeitmarke nicht im bestehenden Medienknoten.")
+        record(app, name: "49-warm-system-timestamp", detail: probe().label)
+        app.open(entry("https://youtube.com.attacker.invalid/watch?v=aqz-KE-bpKQ"))
+        let alert = app.alerts["Link konnte nicht geöffnet werden"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "Ein fremder Host wird nicht als ungültiger YouTube-Link zurückgewiesen.")
+        alert.buttons["OK"].tap()
+        XCTAssertTrue(probe().label.contains("data=M7lc1UVf-VE"), "Der abgelehnte Link verdrängt die aktuelle Quelle.")
+        record(app, name: "49-rejected-origin-preserves-source", detail: probe().label)
+        let scope = XCTAttachment(string: "Real XCUIApplication.open(URL) delivery creates a terminated process and is verified by the exact public Big Buck Bunny title, real player controls and original elapsed-time AX at300s. The readback is bounded by140 monotonic seconds since delivery and up to2× playback, so natural playback from zero cannot satisfy it. That cold process has no diagnostic environment. A separate normal observed launch, with no LANGFORM_VIDEO_PROBE, receives two actual warm URLs; the read-only Hold probe checks exact video/time and preservation of media/source identity across the second timestamp request. Muted diagnostics do not establish audible sound. WhatsApp and a configured Shortcuts Share-Sheet workflow remain separate device acceptance.")
+        scope.name = "49-external-link-scope"; scope.lifetime = .keepAlways; add(scope)
+    }
+
+    @MainActor func test51TimelineDiagonalDragsKeepPlayerOwnershipInPortraitAndLandscape() throws {
+        executionTimeAllowance = 240
+        XCUIDevice.shared.orientation = .portrait
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let videoID = "aqz-KE-bpKQ"
+        let app = launchInstalledApp(videoID: videoID, holdProbe: true, mutedPlayback: true)
+        func label() -> String {
+            app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Holdprobe ready="))
+                .allElementsBoundByIndex.first?.label ?? ""
+        }
+        func state() -> [String: String] {
+            Dictionary(label().split(separator: " ").compactMap { part -> (String, String)? in
+                let pair = part.split(separator: "=", maxSplits: 1)
+                return pair.count == 2 ? (String(pair[0]), String(pair[1])) : nil
+            }, uniquingKeysWith: { _, last in last })
+        }
+        func number(_ key: String) -> Double? { state()[key].flatMap(Double.init) }
+        XCTAssertTrue(waitUntil(40) {
+            let current = state()
+            return current["ready"] == "true" && current["data"] == videoID &&
+                current["ad"] == "false" && self.sponsorPlayer(app) != nil
+        })
+        XCTAssertTrue(sponsorRevealControls(app))
+        let pause = app.buttons["Video anhalten"]
+        if pause.exists && pause.isHittable { pause.tap() }
+        XCTAssertTrue(waitUntil(6) { state()["paused"] == "true" })
+        let source = state()
+        XCTAssertNotNil(source["audioMedia"]); XCTAssertNotNil(source["audioSource"])
+        func sameSource(_ current: [String: String]) -> Bool {
+            current["data"] == videoID && current["audioMedia"] == source["audioMedia"] &&
+                current["audioSource"] == source["audioSource"]
+        }
+        let original = try XCTUnwrap(sponsorPlayer(app)).frame
+        let inlineSlider = app.sliders["Schieberegler für Suche"]
+        XCTAssertTrue(waitUntil(6) { inlineSlider.exists && inlineSlider.isHittable })
+        let duration = try XCTUnwrap(number("duration"))
+        XCTAssertGreaterThan(duration, 300)
+        let current = try XCTUnwrap(number("time"))
+        let fraction = min(0.95, max(0.005, CGFloat(current / duration)))
+        inlineSlider.coordinate(withNormalizedOffset: CGVector(dx: fraction, dy: 0.5)).press(forDuration: 0.08,
+            thenDragTo: inlineSlider.coordinate(withNormalizedOffset: CGVector(dx: 0.27, dy: 0.5)).withOffset(CGVector(dx: 0, dy: 22)),
+            withVelocity: .slow, thenHoldForDuration: 0)
+        record(app, name: "51-portrait-timeline-release", detail: "Original visible player frame: \(original). " + label())
+        XCTAssertTrue(waitUntil(10) {
+            let current = state()
+            guard let time = current["time"].flatMap(Double.init), let picture = self.sponsorPlayer(app)?.frame else { return false }
+            return abs(time - duration * 0.27) <= 4 && sameSource(current) && current["paused"] == "true" && current["seeking"] == "false" &&
+                app.buttons["Verkleinern"].isHittable && current["mini"] == "false" && current["dragging"] == "false" &&
+                abs(picture.minY - original.minY) < 4 && abs(picture.height - original.height) < 4
+        }, "Ein diagonaler Zug der echten Inline-Zeitleiste verschiebt/minimiert den Player oder verliert die pausierte Quelle.")
+        record(app, name: "51-portrait-diagonal-timeline", detail: label())
+
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(waitUntil(15) { self.zoomRegion(app) != nil && app.frame.width > app.frame.height })
+        let fullscreen = try XCTUnwrap(zoomRegion(app))
+        let drags: [(Int, Double, CGFloat)] = [(0, 0.22, 22), (1, 0.46, -24), (2, 0.31, 60)]
+        for (index, target, drift) in drags {
+            XCTAssertTrue(showZoomControls(fullscreen))
+            let slider = fullscreen.sliders["Videoposition"]
+            XCTAssertTrue(waitUntil(5) { slider.exists && slider.isHittable })
+            let width = slider.frame.width
+            XCTAssertGreaterThan(width, 100)
+            let time = try XCTUnwrap(number("time"))
+            let startX = (7 + (width - 14) * CGFloat(time / duration)) / width
+            let targetX = (7 + (width - 14) * CGFloat(target)) / width
+            let sample = number("sample") ?? -1
+            slider.coordinate(withNormalizedOffset: CGVector(dx: startX, dy: 0.5)).press(forDuration: 0.08,
+                thenDragTo: slider.coordinate(withNormalizedOffset: CGVector(dx: targetX, dy: 0.5)).withOffset(CGVector(dx: 0, dy: drift)),
+                withVelocity: .slow, thenHoldForDuration: 0)
+            XCTAssertTrue(waitUntil(10) {
+                let current = state()
+                guard let reached = current["time"].flatMap(Double.init) else { return false }
+                return abs(reached - duration * target) <= 4 && current["paused"] == "true" &&
+                    current["seeking"] == "false" && sameSource(current) &&
+                    (current["sample"].flatMap(Double.init) ?? -1) > sample && self.zoomRegion(app) != nil &&
+                    app.frame.width > app.frame.height
+            }, "Der echte Vollbild-Slider verliert bei vertikaler Fingerabweichung \(drift)pt seinen Kontakt oder löst eine andere Playergeste aus.")
+            record(app, name: "51-landscape-diagonal-timeline-\(index)", detail: "target=\(target);drift=\(drift);" + label())
+        }
+        XCTAssertTrue(showZoomControls(fullscreen))
+        fullscreen.buttons["Vollbild schließen"].tap()
+        XCTAssertTrue(waitUntil(15) { self.zoomRegion(app) == nil && app.buttons["Verkleinern"].isHittable && state()["paused"] == "true" })
+        record(app, name: "51-timeline-return-to-paused-watch", detail: label())
+    }
+
+    @MainActor func test53LiveCommunityImageOpensAndReturnsToFeed() throws {
+        executionTimeAllowance = 120
+        XCUIDevice.shared.orientation = .portrait
+        func capture(_ name: String) {
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = name; shot.lifetime = .keepAlways; add(shot)
+        }
+        let app = launchInstalledApp()
+        var parts = URLComponents()
+        parts.scheme = "langform"; parts.host = "open"
+        parts.queryItems = [URLQueryItem(name: "url", value: "https://www.youtube.com/@kurzgesagt/posts")]
+        app.open(try XCTUnwrap(parts.url))
+        XCTAssertFalse(app.alerts["Link konnte nicht geöffnet werden"].exists)
+        let images = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Beitragsbild vergrößern"))
+        var image: XCUIElement?
+        var available = false
+        for attempt in 0..<4 {
+            available = waitUntil(attempt == 0 ? 20 : 6) {
+                image = images.allElementsBoundByIndex.first { $0.exists && $0.isHittable && $0.frame.intersects(app.frame) }
+                return image != nil
+            }
+            if available { break }
+            if attempt < 3 { app.swipeUp() }
+        }
+        if !available {
+            record(app, name: "53-live-provider-has-no-accessible-image")
+            throw XCTSkip("Die aktuelle öffentliche Kanalantwort liefert im Simulator kein erreichbares Beitragsbild; kein Livegalerie-Erfolg behauptet.")
+        }
+        let imageLabel = try XCTUnwrap(image).label
+        try XCTUnwrap(image).tap()
+        let close = app.buttons["Beitragsbilder schließen"]
+        XCTAssertTrue(waitUntil(6) { close.exists && close.isHittable }, "Der echte Beitragsbildtipp öffnet keine schließbare Galerie.")
+        let back = app.buttons["langform-feed-back"]
+        XCTAssertTrue(waitUntil(5) { !back.exists },
+                      "Die native Zurück-Schaltfläche liegt über der Galerie und könnte die Seite dahinter verlassen.")
+        // This portrait iPhone Simulator has a 62pt native top safe area.
+        // WebKit can report env(safe-area-inset-top)=0 for the same page.
+        XCTAssertGreaterThanOrEqual(close.frame.minY, 60,
+                                    "Die Schließen-Fläche liegt unter der nativen Statusleiste.")
+        XCTAssertGreaterThanOrEqual(close.frame.height, 44)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "^Bild [1-9][0-9]* von [1-9][0-9]*$")).firstMatch.exists)
+        record(app, name: "53-live-image-gallery", detail: imageLabel)
+        capture("53-live-image-gallery-screen")
+        close.tap()
+        XCTAssertTrue(waitUntil(5) {
+            !close.exists && images.allElementsBoundByIndex.contains { $0.label == imageLabel && $0.isHittable }
+        }, "Die Galerie kehrt nach Schließen nicht zum selben erreichbaren Beitragsbild im Feed zurück.")
+        XCTAssertFalse(app.buttons["Verkleinern"].exists)
+        XCTAssertTrue(waitUntil(5) { back.exists && back.isHittable },
+                      "Nach Schließen der Galerie fehlt die normale native Seitennavigation.")
+        record(app, name: "53-live-image-return-to-feed", detail: imageLabel)
+        capture("53-live-image-return-to-feed-screen")
+    }
+
+    @MainActor func test52PastedURLInNativeSearchOpensVideoInsteadOfSearchResults() throws {
+        executionTimeAllowance = 140
+        XCUIDevice.shared.orientation = .portrait
+        let app = launchInstalledApp(holdProbe: true)
+        var search: XCUIElement?
+        XCTAssertTrue(waitUntil(25) {
+            search = app.buttons.matching(self.searchLabel).allElementsBoundByIndex.first {
+                guard $0.exists else { return false }
+                let frame = $0.frame
+                return frame.width >= 24 && frame.height >= 24 &&
+                    frame.minY >= 0 && frame.maxY < 150 &&
+                    frame.intersects(app.frame) && $0.isHittable
+            }
+            return search != nil
+        })
+        try XCTUnwrap(search).tap()
+        let field = app.textFields["langform-search-field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 8) && field.isHittable)
+        field.tap()
+        field.typeText("https://youtu.be/aqz-KE-bpKQ?t=23\n")
+        let probe = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Holdprobe ready=")).firstMatch
+        XCTAssertTrue(waitUntil(60) {
+            !field.exists && app.buttons["Verkleinern"].isHittable && probe.exists &&
+                probe.label.contains("ready=true") && probe.label.contains("data=aqz-KE-bpKQ") &&
+                probe.label.contains("ad=false") && (self.zoomNumber(probe, "time") ?? -1) >= 22.5
+        }, "Ein in die normale Suche eingegebener YouTube-Link öffnet keine passende Watchquelle mit Zeitmarke.")
+        record(app, name: "52-pasted-url-search-to-watch", detail: probe.label)
+    }
+
+    @MainActor func test50ExternalYouTubeLinkEntryFromNativeSearch() throws {
+        executionTimeAllowance = 140
+        XCUIDevice.shared.orientation = .portrait
+        let app = launchInstalledApp(holdProbe: true)
+        var search: XCUIElement?
+        XCTAssertTrue(waitUntil(25) {
+            search = app.buttons.matching(self.searchLabel).allElementsBoundByIndex.first {
+                guard $0.exists else { return false }
+                let frame = $0.frame
+                return frame.width >= 24 && frame.height >= 24 &&
+                    frame.minY >= 0 && frame.maxY < 150 &&
+                    frame.intersects(app.frame) && $0.isHittable
+            }
+            return search != nil
+        }, "Die normale Headerlupe ist nicht erreichbar.")
+        try XCTUnwrap(search).tap()
+        XCTAssertTrue(app.textFields["langform-search-field"].waitForExistence(timeout: 8),
+                      "Die Headerlupe öffnet keine native Suche.")
+        let openEntry = app.buttons["langform-search-open-link"]
+        XCTAssertTrue(openEntry.waitForExistence(timeout: 8) && openEntry.isHittable)
+        openEntry.tap()
+        let field = app.descendants(matching: .any).matching(identifier: "langform-external-link-field").firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 8) && field.isHittable,
+                      "Die native Suche öffnet keine erreichbare native Linkeingabe.")
+        XCTAssertTrue(app.links["Kurzbefehle öffnen"].exists || app.buttons["Kurzbefehle öffnen"].exists,
+                      "Die Einrichtung des Teilen-Kurzbefehls ist nicht erreichbar.")
+        record(app, name: "50-native-link-input")
+        field.tap()
+        field.typeText("Schau dir das an: https://youtu.be/aqz-KE-bpKQ?t=8")
+        let submit = app.buttons["langform-open-external-link"]
+        // A vertical text field may keep the keyboard above the action. The
+        // ordinary Form scroll must reveal it, with no coordinate injection.
+        if !submit.isHittable { app.swipeUp() }
+        XCTAssertTrue(submit.isHittable)
+        submit.tap()
+        let probe = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Holdprobe ready=")).firstMatch
+        XCTAssertTrue(waitUntil(60) {
+            !field.exists && app.buttons["Verkleinern"].isHittable && probe.exists &&
+                probe.label.contains("data=aqz-KE-bpKQ") && probe.label.contains("ready=true") &&
+                probe.label.contains("ad=false") && (self.zoomNumber(probe, "time") ?? 0) >= 7.5
+        }, "Die tatsächliche native Linkeingabe öffnet keine passende Watchquelle mit Zeitmarke.")
+        record(app, name: "50-link-input-watch", detail: probe.label)
+        let scope = XCTAttachment(string: "Actual header search button → native search trailing link button → native YouTube-Link öffnen sheet → typed WhatsApp-style message containing one public URL → native open action → normal Watch route and observed timestamp. This verifies deliberate shared-message parsing without reading or overwriting the user's clipboard. Physical PasteButton permission and WhatsApp/Shortcuts handoff remain separate device acceptance.")
+        scope.name = "50-link-input-scope"; scope.lifetime = .keepAlways; add(scope)
+    }
+
     @MainActor func test48FullscreenShortDragCancelsAndLongDragCommits() throws {
         executionTimeAllowance = 240
         XCUIDevice.shared.orientation = .portrait

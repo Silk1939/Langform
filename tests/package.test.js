@@ -71,8 +71,11 @@ test("Feed und Player sind zwei Webansichten, der Player fährt als Karte über 
   assert.equal(fs.existsSync(path.join(root, "ios/Langform/Langform/PlayerFrame.js")), false);
   const app = fs.readFileSync(path.join(root, "ios/Langform/Langform/LangformApp.swift"), "utf8");
   assert.match(app, /Color\.black\.ignoresSafeArea/);
-  assert.match(app, /ignoresSafeArea\(\.container, edges: \.all\)/, "Inline und Vollbild teilen eine bildschirmfüllende Stage");
-  assert.doesNotMatch(app, /edges: fullscreen \?/, "Fullscreen darf keine zweite native Viewport-Ausdehnung auslösen");
+  // The permanent library reserves the bottom edge inline; fullscreen removes
+  // that entry and restores the original all-edge player viewport (LF-32).
+  assert.match(app, /ignoresSafeArea\(\.container, edges: fullscreen \? \.all : \[\.top, \.leading, \.trailing\]\)/,
+    "Inline hält den unteren Mediathekrand frei; Vollbild nutzt alle Kanten");
+  assert.match(app, /if !fullscreen \{\s*libraryEntry\s*\}/, "Die feste Mediathek bleibt außerhalb des Vollbilds erreichbar");
   assert.doesNotMatch(app, /AVRoutePickerView|AVPlayer/);
   const web = fs.readFileSync(path.join(root, "ios/Langform/Langform/YouTubeWebView.swift"), "utf8");
   assert.match(web, /allowsBackForwardNavigationGestures = isFeed/, "Feed-Unterseiten behalten WebKit-Zurück, der Player seine Karten-Randgeste");

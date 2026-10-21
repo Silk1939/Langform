@@ -13,6 +13,11 @@ struct YouTubeWebView: UIViewControllerRepresentable {
     var reloadToken: Int
     var onFullscreen: ((Bool) -> Void)? = nil
     var downloadRequestToken = 0
+    var offlinePlaybackActive = false
+    var externalLinkRequest: ExternalLinkInbox.Request? = nil
+    var onOpenLink: (() -> Void)? = nil
+    var onSummarySetup: (() -> Void)? = nil
+    var onOfflinePlaybackControl: ((@escaping (Bool) -> Void) -> Void)? = nil
     var onDownloads: ((DownloadSource?, String?, @escaping (Bool) -> Void) -> Void)? = nil
 
     static let startURL = URL(string: "https://m.youtube.com/")!
@@ -99,9 +104,18 @@ struct YouTubeWebView: UIViewControllerRepresentable {
         stage.onUnreachable = { unreachable = $0 }
         stage.onFullscreen = onFullscreen
         stage.onDownloads = onDownloads
+        stage.onOpenLink = onOpenLink
+        stage.onSummarySetup = onSummarySetup
         stage.downloadRequestToken = downloadRequestToken
         stage.reloadToken = reloadToken
         stage.start()
+        stage.setOfflinePlaybackActive(offlinePlaybackActive)
+        stage.acceptExternalLink(externalLinkRequest)
+        // Native library access must not wait for a page or download-source
+        // lookup. Deliver after creation so SwiftUI can retain the control.
+        DispatchQueue.main.async { [weak stage] in
+            onOfflinePlaybackControl?({ [weak stage] active in stage?.setOfflinePlaybackActive(active) })
+        }
         return controller
     }
 
@@ -110,6 +124,10 @@ struct YouTubeWebView: UIViewControllerRepresentable {
         stage.onUnreachable = { unreachable = $0 }
         stage.onFullscreen = onFullscreen
         stage.onDownloads = onDownloads
+        stage.onOpenLink = onOpenLink
+        stage.onSummarySetup = onSummarySetup
+        stage.setOfflinePlaybackActive(offlinePlaybackActive)
+        stage.acceptExternalLink(externalLinkRequest)
         if stage.downloadRequestToken != downloadRequestToken {
             stage.downloadRequestToken = downloadRequestToken
             stage.requestDownloads()
@@ -145,6 +163,9 @@ struct YouTubeWebView: UIViewControllerRepresentable {
         }
         for name in messages {
             configuration.userContentController.add(relay, contentWorld: .page, name: name)
+        }
+        if GemmaSummaryHostProbe.enabled {
+            configuration.userContentController.add(relay, contentWorld: .page, name: "langformSummaryHostProbe")
         }
         if StartupDiagnostics.enabled,
            let probe = ProcessInfo.processInfo.environment["LANGFORM_OPENING_PROBE"],
@@ -424,6 +445,9 @@ final class LangformWebView: WKWebView {
 }
 
 final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIGestureRecognizerDelegate {
+    var onOpenLink: (() -> Void)?
+    var onSummarySetup: (() -> Void)?
+    private var acceptedExternalLinkID: UUID?
     private enum FeedTab: Hashable {
         case home, subscriptions, you
 
@@ -686,13 +710,19 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private var playerNavigation: WKNavigation?
     private var loadingTimeout: DispatchWorkItem?
     private var pendingTimestampURL: URL?
-    private struct SummaryRequestTask {
+    @MainActor private struct SummaryRequestTask {
         let id: String
         let lease: UUID
         let task: Task<Void, Never>
-        func cancel() { task.cancel() }
+        let finishCancelled: () -> Void
+        func cancel(reply: Bool = false) {
+            task.cancel()
+            GemmaSummaryHostProbe.cancelled(id: id, lease: lease, reason: "request_cancelled", host: [:])
+            if reply { finishCancelled() }
+        }
     }
     private var summaryTasks: [ObjectIdentifier: SummaryRequestTask] = [:]
+    private var summaryHostHolds = Set<UUID>()
     private let downloadSourceResolver = DownloadSourceResolver()
     private var downloadSourceRequestGeneration = 0
     private var downloadSourceLoading = false
@@ -792,6 +822,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         backButton.setImage(Self.symbol("chevron.backward", size: 15), for: .normal)
         Self.styleRound(backButton, diameter: 44)
         backButton.accessibilityLabel = "Zurück"
+        backButton.accessibilityIdentifier = "langform-feed-back"
         backButton.isHidden = true
         backButton.addTarget(self, action: #selector(feedBack), for: .touchUpInside)
         addSubview(backButton)
@@ -939,20 +970,23 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         player.evaluateJavaScript(script)
     }
 
+    func setOfflinePlaybackActive(_ active: Bool) {
+        guard systemMediaSuspendedForOffline != active else { return }
+        systemMediaSuspendedForOffline = active
+        if active {
+            watchBackgroundCategoryTransition("cancel")
+            systemMedia.clear()
+            player?.pauseAllMediaPlayback(completionHandler: nil)
+            feed?.pauseAllMediaPlayback(completionHandler: nil)
+        } else if mode == .expanded || mode == .mini {
+            player?.evaluateJavaScript("window.__langformPublishSystemMedia && window.__langformPublishSystemMedia()")
+        }
+    }
+
     @objc func requestDownloads() {
         cancelDownloadSourceRequest()
         let generation = downloadSourceRequestGeneration
-        let offlinePlayback: (Bool) -> Void = { [weak self] active in
-            guard let self else { return }
-            self.systemMediaSuspendedForOffline = active
-            if active {
-                self.watchBackgroundCategoryTransition("cancel")
-                self.systemMedia.clear()
-                self.player?.pauseAllMediaPlayback(completionHandler: nil)
-            } else if self.mode == .expanded || self.mode == .mini {
-                self.player?.evaluateJavaScript("window.__langformPublishSystemMedia && window.__langformPublishSystemMedia()")
-            }
-        }
+        let offlinePlayback: (Bool) -> Void = { [weak self] active in self?.setOfflinePlaybackActive(active) }
         guard mode == .expanded || mode == .mini, let player,
               let id = YouTubeWebView.videoID(player.url) else {
             onDownloads?(nil, "Öffne ein Video, um seine Downloadquelle zu prüfen.", offlinePlayback)
@@ -1149,7 +1183,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private func makeFeedTab(_ tab: FeedTab, origin: URL?) -> FeedState {
         let webView = YouTubeWebView.makeWebView(
             relay: ScriptRelay(self),
-            messages: ["langformSummary", "langformOpenWatch", "langformNavigateFeed", "langformOverlayState", "langformFeedReady", "langformFeedSearch", "langformNativeSearch", "langformOpening", "langformDownloads"],
+            messages: ["langformSummary", "langformOpenWatch", "langformNavigateFeed", "langformOverlayState", "langformFeedReady", "langformFeedSearch", "langformNativeSearch", "langformOpening", "langformDownloads", "langformOpenExternalLink"],
             scripts: YouTubeWebView.scriptNames,
             isFeed: true
         )
@@ -1290,6 +1324,9 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     }
 
     @objc private func releaseInactiveFeeds() {
+        // Revoke the whole request before unloading; a task still awaiting
+        // its model-file check must not restart inference after this warning.
+        cancelInactiveSummaryRequests()
         backgroundPreparationDisabled = true
         if dismisser != nil { finishClose() }
         cancelFeedPrewarm(discardLoading: true)
@@ -1338,7 +1375,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     /// a video. User input postpones construction, but never throws away a tab
     /// download just because the user scrolls. Explicit video loads take priority.
     private func scheduleFeedPrewarm() {
-        guard feedPrewarm == nil, prewarmingTab == nil, !backgroundPreparationDisabled, let feed,
+        guard summaryHostHolds.isEmpty, feedPrewarm == nil, prewarmingTab == nil, !backgroundPreparationDisabled, let feed,
               mode != .loading, (mode == .closed || videoPlaying), !cardMoving,
               !keyboardVisible, !feedFailed,
               feedTabs[activeFeedTab]?.overlayOpen == false,
@@ -1347,7 +1384,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.feedPrewarm = nil
-            guard self.prewarmingTab == nil, !self.backgroundPreparationDisabled, let feed = self.feed,
+            guard self.summaryHostHolds.isEmpty, self.prewarmingTab == nil, !self.backgroundPreparationDisabled, let feed = self.feed,
                   self.mode != .loading, (self.mode == .closed || self.videoPlaying), !self.cardMoving,
                   !self.keyboardVisible, !self.feedFailed,
                   !feed.isLoading || self.feedTabs[self.activeFeedTab]?.contentReady == true,
@@ -1456,6 +1493,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     }
 
     @objc private func cancelVideoProbeForInactivity() {
+        cancelInactiveSummaryRequests()
         revokeFullscreenEntryAdmission()
         watchBackgroundCategoryTransition("will-resign-active")
         recordBackgroundPlaybackTransition("will-resign-active")
@@ -2140,6 +2178,36 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         case .verifyBlank: break
         }
         scheduleInteractionObservation(after: 0.1)
+    }
+
+    func acceptExternalLink(_ request: ExternalLinkInbox.Request?) {
+        guard let request, request.id != acceptedExternalLinkID, feed != nil,
+              let link = try? ExternalYouTubeLink.parse(request.link.url.absoluteString) else { return }
+        acceptedExternalLinkID = request.id
+        // Same-video links can return before openWatch cancels preparation.
+        // Retire it here so a late source cannot reopen the dismissed sheet.
+        cancelDownloadSourceRequest()
+        // The existing route owns cancellation, loading, playback and timestamp
+        // seeking. A link never manufactures a thumbnail or bypasses readiness.
+        cancelPendingFeedSearch()
+        if link.destination == .video {
+            let playlist = URLComponents(url: link.url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "list" }?.value
+            let currentURL = mode == .loading ? lastWatchURL : player?.url
+            let currentPlaylist = currentURL.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems?.first { $0.name == "list" }?.value
+            let currentID = mode == .loading ? loadingVideoID : YouTubeWebView.videoID(player?.url)
+            if playlist != nil, playlist != currentPlaylist,
+               currentID == YouTubeWebView.videoID(link.url) {
+                discardFeedOpening()
+                closePlayer()
+            }
+            openWatch(link.url, userInitiated: true)
+        } else {
+            // A browse link has no player identity. Retire any opening before
+            // closing, so an asynchronous source reversal cannot reclaim it.
+            discardFeedOpening()
+            closePlayer()
+            showInFeed(link.url)
+        }
     }
 
     private func openWatch(_ url: URL, userInitiated: Bool = false, sourceRect: [String: Any]? = nil,
@@ -2932,6 +3000,8 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     }
 
     @objc private func feedBack() {
+        guard let feed, feedState(for: feed)?.overlayOpen == false,
+              nativeSearchOverlay == nil else { return }
         cancelVideoProbe()
         if feed.canGoBack {
             feed.goBack()
@@ -2943,6 +3013,12 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     private var feedHasBackDestination: Bool {
         guard let url = feed?.url else { return false }
         return FeedTab(url: url) == nil && !YouTubeWebView.isWatchPage(url)
+    }
+
+    private func updateFeedBackButton() {
+        guard let feed else { backButton.isHidden = true; return }
+        backButton.isHidden = !(mode != .expanded && feedHasBackDestination &&
+                               feedState(for: feed)?.overlayOpen == false)
     }
 
     @objc private func edgeBackDragged(_ pan: UIPanGestureRecognizer) {
@@ -3102,7 +3178,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         updatePlaybackControls()
         setFeedActivity(feed, active: true)
         activatePendingFeedSearch()
-        backButton.isHidden = !(mode != .expanded && feedHasBackDestination)
+        updateFeedBackButton()
         // Only the view on top answers a tap on the status bar. Two candidates
         // and iOS scrolls neither.
         let playerOnTop = mode == .expanded
@@ -3584,14 +3660,35 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             guard let self, let overlay, self.nativeSearchOverlay === overlay else { return }
             self.dismissNativeSearch()
         }
-        overlay.onSubmit = { [weak self, weak overlay, weak webView] query, filter in
+        overlay.onOpenLink = { [weak self, weak overlay, weak webView] in
             guard let self, let overlay, let webView, self.nativeSearchOverlay === overlay,
                   self.feed === webView, webView.url == sourceURL,
                   self.feedState(for: webView)?.navigation === sourceNavigation,
                   self.feedState(for: webView)?.active == true, !self.cardMoving,
                   UIApplication.shared.applicationState == .active,
-                  self.mode == .closed || self.mode == .mini,
-                  let url = LangformSearchPolicy.resultsURL(query: query, filter: filter) else { return }
+                  self.mode == .closed || self.mode == .mini else { return }
+            self.dismissNativeSearch()
+            self.onOpenLink?()
+        }
+        overlay.onSubmit = { [weak self, weak overlay, weak webView] submission, filter in
+            guard let self, let overlay, let webView, self.nativeSearchOverlay === overlay,
+                  self.feed === webView, webView.url == sourceURL,
+                  self.feedState(for: webView)?.navigation === sourceNavigation,
+                  self.feedState(for: webView)?.active == true, !self.cardMoving,
+                  UIApplication.shared.applicationState == .active,
+                  self.mode == .closed || self.mode == .mini else { return }
+            let query: String
+            switch submission {
+            case .youtubeLink(let url):
+                // Use the same inbox as system links so sheets and stale
+                // download requests are retired by the normal ownership path.
+                self.dismissNativeSearch()
+                try? ExternalLinkInbox.shared.submit(url.absoluteString)
+                return
+            case .query(let value):
+                query = value
+            }
+            guard let url = LangformSearchPolicy.resultsURL(query: query, filter: filter) else { return }
             self.nativeSearchRecent.removeAll { $0.caseInsensitiveCompare(query) == .orderedSame }
             self.nativeSearchRecent.insert(query, at: 0)
             self.nativeSearchRecent = Array(self.nativeSearchRecent.prefix(20))
@@ -3603,7 +3700,7 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         }
         nativeSearchOverlay = overlay
         addSubview(overlay)
-        overlay.focus()
+        overlay.present()
         UIAccessibility.post(notification: .screenChanged, argument: overlay)
     }
 
@@ -3814,6 +3911,18 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             recordBackgroundPlaybackTransition("watch-ready")
         }
         finishPhysicalRotationIntent()
+        if mode == .expanded, !cardMoving, hasVideo, dict["mediaReady"] as? Bool == true, let player {
+            _ = GemmaSummaryHostProbe.startIfEligible(in: player, videoID: id,
+                host: summaryHostSnapshot(for: player), cancelRequest: { [weak self, weak player] ticket in
+                    guard let self, let player else { return }
+                    let key = ObjectIdentifier(player)
+                    guard let request = self.summaryTasks[key], request.id == ticket,
+                          GemmaSummaryHostProbe.ownsRequest(id: ticket) else { return }
+                    self.summaryTasks.removeValue(forKey: key)
+                    request.cancel(reply: true)
+                    self.scheduleFeedPrewarm()
+                })
+        }
     }
 
     /// Separate exact opt-in; no background task, polling or playback changes.
@@ -5220,11 +5329,26 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                 state.overlayOpen = open
                 webView.allowsBackForwardNavigationGestures = !open
                 if webView === feed {
+                    updateFeedBackButton()
                     if open { cancelFeedPrewarm() } else { scheduleFeedPrewarm() }
                 }
             }
+        case "langformSummaryHostProbe":
+            guard GemmaSummaryHostProbe.enabled, message.webView === player,
+                  message.frameInfo.isMainFrame,
+                  message.frameInfo.securityOrigin.protocol == "https",
+                  ["m.youtube.com", "www.youtube.com", "youtube.com"].contains(message.frameInfo.securityOrigin.host),
+                  let webView = message.webView else { return }
+            GemmaSummaryHostProbe.receive(message.body, from: webView)
         case "langformSummary":
-            guard message.webView === feed || message.webView === player else { return }
+            guard message.webView === feed || message.webView === player,
+                  message.frameInfo.isMainFrame,
+                  message.frameInfo.securityOrigin.protocol == "https",
+                  ["m.youtube.com", "www.youtube.com", "youtube.com"].contains(message.frameInfo.securityOrigin.host) else { return }
+            if let body = message.body as? [String: Any], body["action"] as? String == "configureGemma" {
+                onSummarySetup?()
+                return
+            }
             cancelFeedPrewarm()
             answerSummary(message)
         case "langformOpenWatch":
@@ -5284,6 +5408,12 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
                   YouTubeWebView.isWatchPage(url), YouTubeWebView.videoID(url) != nil else { return }
             openWatch(url, userInitiated: true, sourceRect: body["sourceRect"] as? [String: Any],
                       sourceThumbnail: body["sourceThumbnail"] as? [String: Any], sourceView: message.webView)
+        case "langformOpenExternalLink":
+            guard message.webView === feed, message.frameInfo.isMainFrame,
+                  message.frameInfo.securityOrigin.protocol == "https",
+                  message.frameInfo.securityOrigin.host == "m.youtube.com",
+                  feedTabs[activeFeedTab]?.active == true else { return }
+            onOpenLink?()
         case "langformNavigateFeed":
             let fromPlayer = message.webView === player && (mode == .expanded || mode == .mini)
             guard message.webView === feed || fromPlayer,
@@ -5336,13 +5466,53 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
         }
     }
 
+    private func cancelInactiveSummaryRequests() {
+        summaryTasks.values.forEach { $0.cancel(reply: true) }
+        summaryTasks.removeAll()
+    }
+
+    private func summaryHostSnapshot(for source: WKWebView) -> [String: Any] {
+        ["hostKind": "normal_webview", "webViewCount": feedTabs.count + (player == nil ? 0 : 1),
+         "feedCount": feedTabs.count, "sourceIsPlayer": source === player,
+         "sourceIsActiveFeed": source === feed, "mode": String(describing: mode),
+         "summaryRequestCount": summaryTasks.count, "summaryHostHoldCount": summaryHostHolds.count,
+         "prewarming": prewarmingTab != nil,
+         "playerMounted": player?.superview != nil, "activeFeedMounted": feed?.superview != nil]
+    }
+
+    /// Make room for the model without replacing the visible feed, the source
+    /// document or the active player. A separate UUID hold keeps background
+    /// prewarming off until a cancelled native task has actually drained.
+    private func prepareSummaryHost(for source: WKWebView) -> Bool {
+        let previousCount = feedTabs.count
+        let sourceTab = feedTabs.first { $0.value.webView === source }?.key
+        cancelFeedPrewarm(keeping: sourceTab, discardLoading: true)
+        for tab in Array(feedTabs.keys) where tab != activeFeedTab {
+            guard feedTabs[tab]?.webView !== source else { continue }
+            evictFeedTab(tab)
+        }
+        return feedTabs.count < previousCount
+    }
+
+    private func releaseSummaryHost(_ lease: UUID) {
+        summaryHostHolds.remove(lease)
+        scheduleFeedPrewarm()
+    }
+
     private func answerSummary(_ message: WKScriptMessage) {
         guard let body = message.body as? [String: Any],
               let id = body["id"] as? String,
               let webView = message.webView else { return }
+        let key = ObjectIdentifier(webView)
+        if body["cancel"] as? Bool == true {
+            guard let request = summaryTasks[key], request.id == id else { return }
+            summaryTasks.removeValue(forKey: key)
+            request.cancel()
+            scheduleFeedPrewarm()
+            return
+        }
         let text = body["text"] as? String ?? ""
         let sourceIncomplete = body["sourceIncomplete"] as? Bool ?? false
-        let key = ObjectIdentifier(webView)
         let reply: (WKWebView, String, [String: Any]) -> Void = { webView, ticket, payload in
             guard let data = try? JSONSerialization.data(withJSONObject: payload),
                   let json = String(data: data, encoding: .utf8),
@@ -5351,21 +5521,50 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
             let script = "window.__langformKurzFinish && window.__langformKurzFinish(\(idLiteral), \(json))"
             webView.evaluateJavaScript(script, in: nil, in: .page)
         }
-        if let previous = summaryTasks.removeValue(forKey: key) {
-            previous.cancel()
-            // Closing the sheet keeps JS work pending. Complete the displaced
-            // ticket immediately so reopening it offers an explicit retry.
-            reply(webView, previous.id, OnDeviceSummary.failure("CANCELLED", "Die Kurzfassung wurde abgebrochen."))
-        }
+        // Feed and player share one model. A newer request owns the entire
+        // selection/writing pipeline, including the gap between conversations.
+        cancelInactiveSummaryRequests()
+        let reclaimed = prepareSummaryHost(for: webView)
         let lease = UUID()
+        summaryHostHolds.insert(lease)
         let task = Task { @MainActor [weak self, weak webView] in
-            let payload = await OnDeviceSummary.reply(for: text, sourceIncomplete: sourceIncomplete)
+            defer { self?.releaseSummaryHost(lease) }
+            if reclaimed { try? await Task.sleep(nanoseconds: 100_000_000) }
+            guard !Task.isCancelled, webView != nil,
+                  self?.summaryTasks[key]?.lease == lease else { return }
+            if let webView, GemmaSummaryHostProbe.claimRequest(id: id, text: text, in: webView) {
+                GemmaSummaryHostProbe.requestStarted(id: id, lease: lease,
+                    host: self?.summaryHostSnapshot(for: webView) ?? [:])
+            }
+            let payload = await OnDeviceSummary.reply(for: text, sourceIncomplete: sourceIncomplete) { [weak self, weak webView] progress in
+                await MainActor.run {
+                    guard !Task.isCancelled, let self, let webView,
+                          self.summaryTasks[key]?.lease == lease,
+                          let data = try? JSONSerialization.data(withJSONObject: progress.payload),
+                          let json = String(data: data, encoding: .utf8),
+                          let idData = try? JSONEncoder().encode(id),
+                          let idLiteral = String(data: idData, encoding: .utf8) else { return }
+                    GemmaSummaryHostProbe.progress(id: id, lease: lease, update: progress,
+                        host: self.summaryHostSnapshot(for: webView))
+                    webView.evaluateJavaScript("window.__langformKurzUpdate && window.__langformKurzUpdate(\(idLiteral), \(json))", in: nil, in: .page)
+                }
+            }
             guard !Task.isCancelled, let self, let webView,
                   self.summaryTasks[key]?.lease == lease else { return }
+            if GemmaSummaryHostProbe.ownsRequest(id: id) {
+                // The external diagnostic runner returns to a normal process.
+                // A global unload here could interrupt a newer normal request.
+                GemmaSummaryHostProbe.nativeFinished(id: id, lease: lease, payload: payload,
+                    host: self.summaryHostSnapshot(for: webView))
+            }
             self.summaryTasks.removeValue(forKey: key)
             reply(webView, id, payload)
+            self.scheduleFeedPrewarm()
         }
-        summaryTasks[key] = SummaryRequestTask(id: id, lease: lease, task: task)
+        summaryTasks[key] = SummaryRequestTask(id: id, lease: lease, task: task, finishCancelled: { [weak webView] in
+            guard let webView else { return }
+            reply(webView, id, OnDeviceSummary.failure("CANCELLED", "Die Kurzfassung wurde abgebrochen. Bitte versuche es erneut."))
+        })
     }
 
     // MARK: Navigation
@@ -5571,6 +5770,9 @@ final class PlayerStage: UIView, WKNavigationDelegate, WKUIDelegate, WKScriptMes
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // The old document cannot receive replies. Stop its inference too,
+        // before recovering the player/feed or reusing this WebView object.
+        summaryTasks.removeValue(forKey: ObjectIdentifier(webView))?.cancel()
         if webView === player {
             resetCustomFullscreen()
             playerWarmupNavigation = nil

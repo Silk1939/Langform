@@ -805,6 +805,9 @@
     // This script is installed before PlayerRect. Give its native-drag guard
     // first refusal before a trailing player click can navigate another page.
     if (typeof win.__langformHandlePlayerClick === "function" && win.__langformHandlePlayerClick(event)) return;
+    // Community images can sit inside a /post/ anchor. Their image viewer owns
+    // that tap before the generic feed router can turn it into a detail page.
+    if (typeof win.__langformHandleCommunityClick === "function" && win.__langformHandleCommunityClick(event)) return;
     var search = event.target && event.target.closest && event.target.closest(searchControl);
     var nativeField = event.target && event.target.closest && event.target.closest(searchInput);
     if ((search || nativeField) && !onWatchPage() && nativeSearch(event)) return;

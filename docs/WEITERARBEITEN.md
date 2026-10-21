@@ -1,6 +1,6 @@
 # Langform weiterentwickeln
 
-Stand: 17.10.2026. Zuerst [AGENTS.md](../AGENTS.md) und das [gemeinsame Backlog](VERBESSERUNGS_BACKLOG.md) lesen. Das Backlog ist die einzige Aufgaben- und Statusliste: vor einer Änderung den vorhandenen Eintrag suchen und danach Änderung, tatsächliche Prüfung, offene Abnahme und nächsten Schritt dort ergänzen. Diese Datei erklärt den Einstieg; die [Übergabe](../UEBERGABE.md) bewahrt historische Nachweise.
+Stand: 22.10.2026. Zuerst [AGENTS.md](../AGENTS.md) und das [gemeinsame Backlog](VERBESSERUNGS_BACKLOG.md) lesen. Das Backlog ist die einzige Aufgaben- und Statusliste: vor einer Änderung den vorhandenen Eintrag suchen und danach Änderung, tatsächliche Prüfung, offene Abnahme und nächsten Schritt dort ergänzen. Diese Datei erklärt den Einstieg; die [Übergabe](../UEBERGABE.md) bewahrt historische Nachweise.
 
 ## Projektteile und Startdateien
 
@@ -29,7 +29,7 @@ npm run lint --prefix apps/langform
 npm run build --prefix apps/langform
 ```
 
-`npm test` führt zuerst die gemeinsamen Regressionen und danach die Web-App-Tests aus. Swift-/WebKit-Fälle benötigen macOS und vollständiges Xcode; bestimmte Medienfälle zusätzlich `ffmpeg`. Fehlgeschlagene und übersprungene Fälle getrennt festhalten. Die zweite, mit Astra geprüfte Exportkopie vom17.10. besteht2.270 Root-/108 Webtests, Web-Lint, Produktionsbuild und zwei separate Simulatorfälle37/32. [Aktueller Prüfstand](ASTRA_BUGCHECK_2026-10-17.json). Drei weitere bestätigte Fehler sind korrigiert; Transkript zusätzlich im echten WebKit geprüft. Der transitive Abhängigkeitsbefund LF-74 bleibt offen; Details und nächste Schritte stehen ausschließlich im Backlog. Historische Zahlen gelten nur für den jeweils dokumentierten Stand.
+`npm test` führt zuerst die gemeinsamen Regressionen und danach die Web-App-Tests aus. Swift-/WebKit-Fälle benötigen macOS und vollständiges Xcode; bestimmte Medienfälle zusätzlich `ffmpeg`. Fehlgeschlagene und übersprungene Fälle getrennt festhalten. Die historische zweite, mit Astra geprüfte Exportkopie vom17.10. besteht2.270 Root-/108 Webtests, Web-Lint, Produktionsbuild und zwei separate Simulatorfälle37/32. [Aktueller Prüfstand](ASTRA_BUGCHECK_2026-10-17.json). Drei weitere bestätigte Fehler sind korrigiert; Transkript zusätzlich im echten WebKit geprüft. Der transitive Abhängigkeitsbefund LF-74 bleibt offen; Details und nächste Schritte stehen ausschließlich im Backlog. Historische Zahlen gelten nur für den jeweils dokumentierten Stand.
 
 Für die iPhone-App Xcode 27 und eine installierte iOS-Simulatorlaufzeit verwenden. Ohne Geräte-/Apple-Signierung bauen und anschließend den passenden Simulatorlauf ausführen:
 
@@ -42,11 +42,15 @@ bash scripts/test-simulator.sh --device SIMULATOR_UDID
 
 `SIMULATOR_UDID` durch die Kennung einer eigenen verfügbaren Simulatorinstanz ersetzen. Der Runner installiert den gebauten Stand dort; bei paralleler Arbeit eine eigene Instanz verwenden. Ohne `--device` wählt er selbst einen verfügbaren iPhone-Simulator. Wiederholungen: `--iterations N`; gezielte Fälle: `--only-testing TEST_ID`. Ergebnisse liegen unter `docs/qa/simulator-runs/` oder dem mit `--output` gewählten lokalen Ordner. Ein positiver Watch-Diagnoseeinstieg belegt keinen Feed-Fingertap und keinen gehörten Videoton.
 
+Die neue iPhone-Laufzeit kommt aus dem gepinnten Swift-Paket `https://github.com/google-ai-edge/LiteRT-LM.git`, Version0.18.0, Revision `b2f686e2ed4718fb84ec398a61dd59ca0f0aff27`; die zugehörige `Package.resolved` ist enthalten. Für einen frischen Paketcheckout Git LFS bereitstellen, falls Xcode die Artefakte damit auflöst. Ein vorhandener vollständiger Paketcache kann mit `LANGFORM_SOURCE_PACKAGES_DIRECTORY` an beide Runner übergeben werden. Einen Pfad auf dem eigenen Mac verwenden; keine fremden DerivedData-Verzeichnisse voraussetzen. Builds mit niedriger Priorität und höchstens zwei Xcode-Jobs ausführen; keine überlappenden Modell-, Simulator- und Buildläufe.
+
+`GemmaModelStore.swift` enthält den gepinnten Download-/SHA-Vertrag. Modellgewichte, Laufzeitcaches und persönliche Daten gehören nicht zum Repository. Die normale native iPhone-Route verwendet Gemma; Simulator/macOS nutzen den getrennten Apple-Pfad. Ein Simulatorpass beweist deshalb keine echte Gemma-Inferenz. Historische alternative Modell-Evaluatoren unter `scripts/diagnostics/evaluate-*` benötigen teilweise bewusst ausgeschlossene lokale QA-Manifeste/-Quellen; sie gehören nicht zum standardmäßigen `npm test` und starten nicht automatisch.
+
 Die vorhandene manuelle Signierung erhalten. `scripts/deploy-iphone.sh` ist auf das ursprüngliche Gerät und vorhandene lokale Signierungsmittel festgelegt. Für ein eigenes physisches Gerät Bundle-ID, Team, Zertifikat und Profile in einer separaten Arbeitskopie bewusst konfigurieren; keine automatische Signierungsreparatur einschalten. Details: [iPhone-README](../ios/Langform/README.md), [UI-Runner](../ios/DeviceTests/README.md).
 
 ## Welchen Stand übernimmt man?
 
-Build **72** ist der aktuelle native Quellstand und bisher nur im Simulator gebaut und gezielt geprüft. Auf dem ursprünglichen echten iPhone ist zuletzt Build **71 vom 16.10.2026** bestätigt. Die offenen Befunde stehen unter **LF-33** (sichtbarer früher Größenschritt beim Vollbildrückweg), **LF-56** (Zoom/Reset), **LF-70** (unter anderem Caption-Befund) und **LF-67** (Audioverlust nach Gestenmischung, Bluetoothursache offen) im [Backlog](VERBESSERUNGS_BACKLOG.md). Dort stehen die Details, Abnahmekriterien und nächsten Schritte; diese Datei führt keine eigene Aufgabenliste. Persönliche Finger-, Motion-, Ton-, Bluetooth- und Systemmedienabnahmen bleiben getrennt. **LF-31 und LF-32 bleiben zurückgestellt.**
+Den aktuellen Quell-, Prüf-, Installations- und Abnahmestand ausschließlich aus dem [Backlog](VERBESSERUNGS_BACKLOG.md) übernehmen. Die veröffentlichte Übergabe und ihre tatsächlich wiederholten bzw. übernommenen Nachweise beschreibt [GITHUB_UPDATE_2026-10-22.json](GITHUB_UPDATE_2026-10-22.json). Historische Buildberichte gelten nur für ihren datierten Umfang; weder ein signierter Kandidat noch Simulatorerfolg bestätigt persönliche Finger-, Ton-, Bluetooth-, Offline- oder Modellqualität.
 
 Lokale QA-Rohdaten, Aufnahmen, Netzantworten und Buildprodukte sind absichtlich nicht im öffentlichen Repository. Historische Links darauf können im Klon fehlen. Die zwei öffentlichen JSON-Fixtures unter `docs/qa/`, beide npm-Lockdateien und die Testfixtures werden für die Regressionen mitgeliefert. Schlüssel, Zertifikate und Provisionierungsprofile gehören nicht in GitHub.
 

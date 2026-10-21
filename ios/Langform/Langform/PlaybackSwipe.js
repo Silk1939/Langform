@@ -19,7 +19,7 @@
     try { var visibility=win.__langformRealVisibility; if (visibility && typeof visibility.inactive==='function') return !!visibility.inactive(); } catch (_) {}
     return !!doc.hidden;
   }
-  var controls='button,a,input,select,textarea,[role=button],[role=slider],[role=menuitem],[contenteditable],.ytp-progress-bar-container,.ytp-progress-bar,.ytp-scrubber-container,.lf-fs-speed-panel,.lf-fs-chapters';
+  var controls='button,a,input,select,textarea,[role=button],[role=slider],[role=menuitem],[contenteditable],.ytp-progress-bar-container,.ytp-progress-bar,.ytp-scrubber-container,.player-controls-progress-bar,.ytmProgressBarViewModelHost,.ytmProgressBarViewModelProgressBar,.ytmScrubberViewModelHost,.lf-fs-controls,.lf-fs-speed-panel,.lf-fs-chapters';
   var style=doc.createElement('style');style.id='langform-playback-swipe-style';
   style.textContent='[data-langform-playback-swipe-surface]:not([data-langform-fullscreen-player]){touch-action:pan-y!important} #langform-playback-swipe-status{position:fixed;z-index:2147483647;pointer-events:none;background:#000b;color:#fff;border-radius:18px;padding:7px 14px;font:600 14px -apple-system,BlinkMacSystemFont,sans-serif;transform:translateX(-50%)}';
   (doc.head || doc.documentElement).appendChild(style);
@@ -91,7 +91,15 @@
   }
   function element(event){return event.target && (event.target.nodeType===1 ? event.target : event.target.parentElement);}
   function freeTarget(owner,target){return !!(target && target.closest && !target.closest(controls) && !target.closest('[inert],[hidden]') && (owner.shared.contains(target) || owner.ui && owner.ui.contains(target)));}
-  function onPicture(owner,point){var r=owner.rect;return Number.isFinite(point.x) && Number.isFinite(point.y) && point.x>=r.left && point.x<=r.right && point.y>=r.top && point.y<=r.bottom;}
+  function onPicture(owner,point){
+    var r=owner.rect;
+    if(!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x<r.left || point.x>r.right || point.y<r.top || point.y>r.bottom)return false;
+    // Opacity/pointer-events hide the controls without moving their intended
+    // touch strip away. WebKit then targets the empty UI instead of the input;
+    // keep that physical timeline contact out of picture seek/double-tap.
+    var range=owner.ui && owner.ui.querySelector('input[type=range]'),timeline=range && range.getBoundingClientRect();
+    return !(timeline && timeline.width>0 && timeline.height>0 && point.x>=timeline.left && point.x<=timeline.right && point.y>=timeline.top && point.y<=timeline.bottom);
+  }
   function consume(event){
     if(/^(pointerdown|pointerup|pointercancel|touchstart|touchend|touchcancel)$/.test(event.type)){
       var fullscreen=win.__langformFullscreen;

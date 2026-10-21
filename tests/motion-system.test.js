@@ -165,11 +165,11 @@ test('native semantic touch haptics, global cooldown and stable press layers exe
 
 test('native-generated bootstrap works without head, freezes shared roles and is idempotent', { skip: process.platform !== 'darwin', timeout: 60000 }, () => {
   const s = runtime();
-  assert.equal(s.motion.durations.sheetEnter, 280);
+  assert.equal(s.motion.durations.sheetEnter, 360);
   assert.equal(s.motion.durations.hero, s.motion.springs.hero.duration);
   assert.equal(s.motion.scales.icon, .94);
   for (const value of [s.motion, s.motion.durations, s.motion.easings, s.motion.scales, s.motion.springs, s.motion.springs.hero]) assert.equal(Object.isFrozen(value), true);
-  assert.equal(s.variables.get('--lf-duration-sheetEnter'), '280ms');
+  assert.equal(s.variables.get('--lf-duration-sheetEnter'), '360ms');
   assert.equal(s.variables.get('--lf-scale-icon'), '0.94');
   const original = s.motion; vm.runInContext(compileFixture().source, s.context);
   assert.equal(s.window.__langformMotion, original); assert.equal(s.queryListeners.length, 1);

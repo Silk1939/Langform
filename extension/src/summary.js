@@ -14,6 +14,7 @@
     UNUSABLE_CAPTIONS: INSUFFICIENT_CONTENT,
     INSUFFICIENT_CONTENT: INSUFFICIENT_CONTENT,
     MODEL_UNAVAILABLE: UNAVAILABLE,
+    GEMMA_MODEL_NOT_READY: "Das Google-Modell ist noch nicht bereit. Öffne die Modelleinstellungen.",
     UNTRUSTED_SENDER: "Die Kurzfassung konnte auf dieser Seite nicht angefordert werden.",
     INVALID_CAPTIONS: "Die Untertitel konnten nicht an die Kurzfassung übergeben werden.",
     CAPTIONS_TOO_LARGE: "Die Untertitel sind für die lokale Kurzfassung gerade zu groß.",
@@ -31,7 +32,9 @@
   var CACHE_VERSION = "structured-tldr-3";
   var CACHE_LIMIT = 12;
   var HOST_TIMEOUT_MS = 10 * 60 * 1000;
-  var WEBVIEW_HOST_TIMEOUT_MS = 3 * 60 * 1000;
+  // A full local read, writer and at most one bounded correction share this
+  // deadline. Expiry revokes the native request before dropping its channel.
+  var WEBVIEW_HOST_TIMEOUT_MS = 4 * 60 * 1000;
   var CAPTIONS_TIMEOUT_MS = 30 * 1000;
   var HEARTBEAT_MS = 20 * 1000;
   var PROGRESS_POLL_MS = 1000;
@@ -123,6 +126,100 @@
     return parts.join("").replace(/\s+/g, " ").trim();
   }
 
+  // Validate the complete caption document before the tolerant text extractor
+  // runs. A closed first caption does not prove the response body is complete.
+  // This small XML tokenizer also works in the extension worker and Node, where
+  // DOMParser is absent. Entity decoding stays in the existing decoder.
+  function completeCaptionXML(source) {
+    var stack = [];
+    var output = [];
+    var literals = [];
+    var marker = "\uE000LF_CAPTION_LITERAL_";
+    while (source.indexOf(marker) !== -1) marker += "_";
+    var cursor = 0;
+    var documentElement = "";
+    while (cursor < source.length) {
+      var start = source.indexOf("<", cursor);
+      if (start === -1) start = source.length;
+      var text = source.slice(cursor, start);
+      if ((!stack.length && text.trim()) || text.indexOf("]]>") !== -1) return null;
+      output.push(text);
+      if (start === source.length) { cursor = start; break; }
+      if (source.slice(start, start + 4) === "<!--") {
+        var commentEnd = source.indexOf("-->", start + 4);
+        var comment = source.slice(start + 4, commentEnd);
+        if (commentEnd === -1 || comment.indexOf("--") !== -1 || /-$/.test(comment)) return null;
+        cursor = commentEnd + 3;
+        continue;
+      }
+      if (source.slice(start, start + 9) === "<![CDATA[") {
+        var literalEnd = source.indexOf("]]>", start + 9);
+        if (!stack.length || literalEnd === -1) return null;
+        // Keep literal angle brackets and entity-looking text out of the tag
+        // extractor and its two-pass entity decoder, then restore them below.
+        output.push(marker + literals.length + "\uE001");
+        literals.push(source.slice(start + 9, literalEnd));
+        cursor = literalEnd + 3;
+        continue;
+      }
+      if (source.slice(start, start + 2) === "<?") {
+        var instructionEnd = source.indexOf("?>", start + 2);
+        if (instructionEnd === -1) return null;
+        var instruction = source.slice(start + 2, instructionEnd);
+        if (!/^[A-Za-z_][A-Za-z0-9_.:-]*(?:\s[\s\S]*)?$/.test(instruction)) return null;
+        if (/^xml(?:\s|$)/i.test(instruction) && (start !== 0 || !/^xml\s/.test(instruction))) return null;
+        cursor = instructionEnd + 2;
+        continue;
+      }
+      if (source.slice(start, start + 2) === "<!") return null;
+      var quote = "";
+      var end = start + 1;
+      for (; end < source.length; end++) {
+        var character = source.charAt(end);
+        if (quote) {
+          if (character === quote) quote = "";
+          else if (character === "<") return null;
+        } else if (character === '"' || character === "'") quote = character;
+        else if (character === ">") break;
+        else if (character === "<") return null;
+      }
+      if (quote || end === source.length) return null;
+      var token = source.slice(start + 1, end);
+      var closing = /^\/([A-Za-z_][A-Za-z0-9_.:-]*)\s*$/.exec(token);
+      if (closing) {
+        if (!stack.length || stack.pop() !== closing[1]) return null;
+        output.push("</" + closing[1] + ">");
+      } else {
+        var opening = /^([A-Za-z_][A-Za-z0-9_.:-]*)([\s\S]*)$/.exec(token);
+        if (!opening) return null;
+        var name = opening[1];
+        var attributes = opening[2];
+        var selfClosing = /\/$/.test(attributes);
+        if (selfClosing) attributes = attributes.slice(0, -1);
+        var names = Object.create(null);
+        while (attributes.trim()) {
+          var attribute = /^\s+([A-Za-z_][A-Za-z0-9_.:-]*)\s*=\s*("[^"<]*"|'[^'<]*')/.exec(attributes);
+          if (!attribute || names[attribute[1]]) return null;
+          names[attribute[1]] = true;
+          attributes = attributes.slice(attribute[0].length);
+        }
+        if (!stack.length) {
+          if (documentElement || (name !== "transcript" && name !== "timedtext")) return null;
+          documentElement = name;
+        }
+        var captionTag = documentElement === "transcript" ? "text" : "p";
+        if (name === captionTag && stack.indexOf(captionTag) !== -1) return null;
+        if (!selfClosing) stack.push(name);
+        if (stack.length > 128) return null;
+        // Attributes are irrelevant to caption text. Removing them here also
+        // keeps a valid quoted '>' from confusing the text extractor.
+        output.push("<" + name + (selfClosing ? "/" : "") + ">");
+      }
+      cursor = end + 1;
+    }
+    return documentElement && !stack.length ? { xml: output.join(""), tag: documentElement === "transcript" ? "text" : "p", marker: marker, literals: literals } : null;
+  }
+
   function textFromCaptions(raw) {
     var source = String(raw || "")
       .replace(/^\uFEFF/, "")
@@ -139,10 +236,13 @@
       if (fromJson) return fromJson;
     }
     if (source.indexOf("<") !== -1) {
-      var classic = textFromTags(source, "text");
-      if (classic) return classic;
-      var srv3 = textFromTags(source, "p");
-      if (srv3) return srv3;
+      var complete = completeCaptionXML(source);
+      if (!complete) return "";
+      var extracted = textFromTags(complete.xml, complete.tag);
+      for (var index = 0; index < complete.literals.length; index++) {
+        extracted = extracted.split(complete.marker + index + "\uE001").join(complete.literals[index]);
+      }
+      return extracted.replace(/\s+/g, " ").trim();
     }
     return fromJson || "";
   }
@@ -269,7 +369,11 @@
     if (!summary) {
       var code = typeof payload.code === "string" && payload.code.trim() ? payload.code : null;
       var message = modelText(payload.message);
-      if (code) return { code: code, message: message || ERROR_MESSAGES[code] || ERROR_MESSAGES.GENERATION_FAILED };
+      if (code) {
+        var failure = { code: code, message: message || ERROR_MESSAGES[code] || ERROR_MESSAGES.GENERATION_FAILED };
+        if (code === "GEMMA_MODEL_NOT_READY" && payload.modelSetup === true) failure.modelSetup = true;
+        return failure;
+      }
       if (message) return { message: message };
       return summaryFailure("INVALID_NATIVE_RESPONSE");
     }
@@ -283,6 +387,7 @@
       var text = modelText(summary[key]);
       if (text) normalized[key] = text;
     });
+    if (["Gemma 4 E2B", "Gemma 4 E4B"].indexOf(summary.model) !== -1) normalized.model = summary.model;
     var coverage = summary.coverage;
     if (coverage && typeof coverage.complete === "boolean") {
       normalized.coverage = { complete: coverage.complete };
@@ -359,7 +464,7 @@
   function normalizeProgress(payload) {
     var progress = payload && payload.progress;
     if (!progress || typeof progress !== "object" || Array.isArray(progress)) return null;
-    if (["preparing", "reading", "reducing", "writing"].indexOf(progress.phase) === -1) return null;
+    if (["preparing", "reading", "reducing", "checking", "writing"].indexOf(progress.phase) === -1) return null;
     var processed = progress.processedSections;
     var total = progress.totalSections;
     if (!Number.isInteger(processed) || !Number.isInteger(total) || processed < 0 || total < processed || total > 10000) return null;
@@ -378,7 +483,7 @@
     return normalized;
   }
 
-  function askHost(text, host, onProgress) {
+  function askHost(text, host, onProgress, sourceIncomplete) {
     return new Promise(function (resolve) {
       var settled = false;
       var port = null;
@@ -402,6 +507,7 @@
         if (hostTimer) timers.clearTimeout(hostTimer);
         heartbeatTimer = progressTimer = hostTimer = 0;
         if (hostTicket && page && page.__langformKurzWait) delete page.__langformKurzWait[hostTicket];
+        if (hostTicket && page && page.__langformKurzProgressWait) delete page.__langformKurzProgressWait[hostTicket];
         hostTicket = null;
         if (!port) return;
         try {
@@ -425,20 +531,39 @@
           var id = String(Date.now()) + "-" + Math.random();
           hostTicket = id;
           timers = page && typeof page.setTimeout === "function" ? page : ownGlobal();
-          hostTimer = timers.setTimeout(function () { finish(summaryFailure("NATIVE_TIMEOUT")); }, WEBVIEW_HOST_TIMEOUT_MS);
+          hostTimer = timers.setTimeout(function () {
+            if (settled || hostTicket !== id) return;
+            // Revoke only this ticket before dropping its reply channel. A
+            // newer request in this WebView keeps its own native lease.
+            try { handlers.langformSummary.postMessage({ id: id, cancel: true }); }
+            catch (error) { /* The timeout still completes if the host is gone. */ }
+            finish(summaryFailure("NATIVE_TIMEOUT"));
+          }, WEBVIEW_HOST_TIMEOUT_MS);
           page.__langformKurzWait = page.__langformKurzWait || {};
           page.__langformKurzWait[id] = finish;
+          page.__langformKurzProgressWait = page.__langformKurzProgressWait || {};
+          page.__langformKurzProgressWait[id] = function (payload) {
+            if (settled) return;
+            var progress = normalizeProgress(payload);
+            if (progress && typeof onProgress === "function") onProgress(progress);
+          };
+          page.__langformKurzUpdate = function (ticket, payload) {
+            var update = page.__langformKurzProgressWait && page.__langformKurzProgressWait[ticket];
+            if (update) update(payload);
+          };
           page.__langformKurzFinish = function (ticket, payload) {
             var wait = page.__langformKurzWait && page.__langformKurzWait[ticket];
             if (!wait) return;
             delete page.__langformKurzWait[ticket];
             wait(payload);
           };
-          handlers.langformSummary.postMessage({ id: id, text: String(text || "") });
+          handlers.langformSummary.postMessage({ id: id, text: String(text || ""), sourceIncomplete: sourceIncomplete === true });
           return;
         }
       } catch (err) {
-        if (id && page && page.__langformKurzWait) delete page.__langformKurzWait[id];
+        // Release the abandoned transport before a fallback installs its own
+        // deadline. Its already queued timeout must not finish the new route.
+        cleanup();
         bridgeError = err;
       }
       var binding = nativeRuntime(page);
@@ -480,8 +605,8 @@
           var method = relay ? "sendMessage" : "sendNativeMessage";
           var requestId = "summary-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
           var args = relay
-            ? [{ type: "langform:summarize", text: String(text || ""), requestId: requestId }]
-            : ["de.ipekkaya.shorts-ausblenden", { text: String(text || "") }];
+            ? [{ type: "langform:summarize", text: String(text || ""), sourceIncomplete: sourceIncomplete === true, requestId: requestId }]
+            : ["de.ipekkaya.shorts-ausblenden", { text: String(text || ""), sourceIncomplete: sourceIncomplete === true }];
           if (!binding.promiseApi) args.push(callback);
           var pending = runtime[method].apply(runtime, args);
           if (pending && typeof pending.then === "function") {
@@ -532,7 +657,7 @@
       if (env && typeof env.summarize === "function") {
         return normalizeModelSummary(await env.summarize(text));
       }
-      return await askHost(text, env && env.host, env && env.onProgress);
+      return await askHost(text, env && env.host, env && env.onProgress, env && env.sourceIncomplete);
     } catch (err) {
       return transportFailure(err, "GENERATION_FAILED");
     }
@@ -1002,6 +1127,7 @@
       ".langform-kurz h3 { margin: 20px 0 8px; font-size: 1rem; font-weight: 500; }",
       ".langform-kurz-body h3:first-child { margin-top: 0; }",
       ".langform-kurz p, .langform-kurz li { margin: 0 0 12px; line-height: 1.5; }",
+      ".langform-kurz p.langform-kurz-model { color: #c4bfb6; font-size: 12px; margin-bottom: 8px; }",
       ".langform-kurz ul { margin: 0; padding-left: 1.1rem; }",
       ".langform-kurz button, .langform-kurz-open { transition: transform var(--lf-duration-pressOut,100ms) ease-out, background-color 100ms ease-out; -webkit-tap-highlight-color: transparent; }",
       ".langform-kurz button:active, .langform-kurz-open:active { transition-duration:var(--lf-duration-pressIn,100ms); transform: scale(calc(1 - (1 - var(--lf-scale-icon,.97)) * (1 - var(--lf-reduce-spatial-motion,0)))); }",
@@ -1021,6 +1147,21 @@
       var note = doc.createElement("p");
       note.textContent = (result && result.message) || ERROR_MESSAGES.INVALID_NATIVE_RESPONSE;
       body.appendChild(note);
+      if (result && result.modelSetup === true) {
+        var host = doc.defaultView;
+        var handler = host && host.webkit && host.webkit.messageHandlers && host.webkit.messageHandlers.langformSummary;
+        if (handler && typeof handler.postMessage === "function") {
+          var setup = doc.createElement("button");
+          setup.type = "button";
+          setup.className = "langform-kurz-model-setup";
+          setup.textContent = "Google-Modell einrichten";
+          setup.addEventListener("click", function (event) {
+            event.preventDefault(); event.stopPropagation();
+            handler.postMessage({ action: "configureGemma" });
+          });
+          body.appendChild(setup);
+        }
+      }
       if (typeof panel.__langformKurzRetry === "function") {
         var retry = doc.createElement("button");
         retry.type = "button";
@@ -1036,6 +1177,12 @@
       return;
     }
     var summary = result.summary;
+    if (summary.model) {
+      var model = doc.createElement("p");
+      model.className = "langform-kurz-model";
+      model.textContent = summary.model + " · Auf deinem iPhone";
+      body.appendChild(model);
+    }
     function paragraphSection(title, text) {
       if (!text) return;
       var heading = doc.createElement("h3");
@@ -1045,7 +1192,7 @@
       body.appendChild(heading);
       body.appendChild(paragraph);
     }
-    paragraphSection("TLDR", summary.tldr);
+    paragraphSection("Auf einen Blick", summary.tldr);
     // Older native apps return only points. Show what they supplied without
     // inventing an introduction or a takeaway during an app update.
     if (summary.tldr || summary.takeaway) {
@@ -1076,6 +1223,8 @@
         : "Die Untertitel werden gelesen …";
     } else if (progress.phase === "reducing") {
       label = "Die Inhalte werden zusammengeführt …";
+    } else if (progress.phase === "checking") {
+      label = "Die Kurzfassung wird mit der Quelle abgeglichen …";
     } else if (progress.phase === "writing") {
       label = progress.tldr ? "Wird noch ergänzt … Die wichtigsten Punkte werden geschrieben." : "Die Kurzfassung wird geschrieben …";
     }
@@ -1087,7 +1236,7 @@
     while (body.firstChild) body.removeChild(body.firstChild);
     if (progress.tldr) {
       var heading = doc.createElement("h3");
-      heading.textContent = "TLDR";
+      heading.textContent = "Auf einen Blick";
       var tldr = doc.createElement("p");
       tldr.textContent = progress.tldr;
       body.appendChild(heading);

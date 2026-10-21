@@ -38,6 +38,14 @@ test('fullscreen caption status obstacles export only the three visible owned ba
 
 test('surface hydration trace contains only finite bounded motion scalars and an allowlisted animation state',t=>{const env=setup(t,true);env.win.__langformCommentsGestureTrace({phase:'surface-swap',reason:'hydration',motion:{oldTop:0,newTop:341.12345,oldConnected:false,state:'PRIVATE',oldTime:NaN,newStart:10000000,text:'PRIVATE TEXT'}});env.run();const motion=env.data().gestureTrace.at(-1).motion;assert.equal(motion.newTop,341.123);assert.equal(motion.oldConnected,false);assert.equal(motion.oldTime,null);assert.equal(motion.newStart,null);assert.equal(motion.state,'none');assert.ok(!JSON.stringify(motion).includes('PRIVATE'));});
 
+test('release trace exports only finite bounded velocity age and projected position without contact content',t=>{
+  const env=setup(t,true);
+  env.win.__langformCommentsGestureTrace({phase:'release',reason:'dismiss',motion:{velocity:749.70059,velocityAge:17,projected:265.46407,text:'PRIVATE TEXT',lastY:769}});env.run();
+  assert.deepEqual(env.data().gestureTrace.at(-1).motion,{velocity:749.701,velocityAge:17,projected:265.464});
+  env.win.__langformCommentsGestureTrace({phase:'release',reason:'rest',motion:{velocity:Infinity,velocityAge:10000000,projected:true}});env.win.document.body.click();env.run();
+  assert.deepEqual(env.data().gestureTrace.at(-1).motion,{velocity:null,velocityAge:null,projected:null});
+});
+
 test('chapter probe retains the visible native child beneath a visibility-hidden overlay and distinguishes the own chip',t=>{
   const env=setup(t,true),owner=env.win.document.createElement('ytm-player');
   owner.innerHTML='<div id="movie_player"><video></video></div><div id="player-control-overlay" style="visibility:hidden"><div class="ytwPlayerTimeDisplayPlayerBarActionContainer"><button style="visibility:visible" aria-label="Kapitel ansehen">PRIVATE NATIVE TITLE</button></div></div><button id="langform-chapter-chip" style="visibility:visible">PRIVATE OWN TITLE</button>';

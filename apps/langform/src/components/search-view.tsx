@@ -83,7 +83,7 @@ function SearchResults({ initial }: { initial: string }) {
     setOpenSuggestions(false);
     setSuggestions(null);
     setFailure(null);
-    if (trimmed === query && error) setAttempt((value) => value + 1);
+    if (trimmed === query && failure?.query === query) setAttempt((value) => value + 1);
     if (trimmed) rememberQuery(trimmed);
   }
 
