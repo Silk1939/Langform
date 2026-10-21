@@ -1,7 +1,7 @@
 {
   "date": "2026-10-22",
   "repository": "https://github.com/Silk1939/Langform",
-  "status": "prepared_for_publication",
+  "status": "published_and_anonymous_clone_verified",
   "scope": [
     "Native offline library and external link intake",
     "Local Gemma CPU runtime, model file validation, fresh runtime cache leases and associated tests",
@@ -76,5 +76,14 @@
     "Existing historical QA links intentionally refer to local files absent from public clone.",
     "Historical alternative-model evaluators can require excluded local manifests and are not standard tests.",
     "LF-74 dependency advisory remains open according to the last recorded investigation."
-  ]
+  ],
+  "sourceCommit": "e7b43883e8188b67e45499f7b6d805b3b6757958",
+  "publishedFiles": 461,
+  "anonymousClone": {
+    "credentialsDisabled": true,
+    "allFilesAndExecutableModesEqual": true,
+    "comparedFiles": 461
+  },
+  "publicationMethod": "Connected GitHub app Git database API; fast-forward ref update with expected parent, no force",
+  "postVerificationDocumentation": "Only this verification document and the central backlog are updated after the verified source commit; final branch verification is kept locally."
 }
